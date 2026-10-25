@@ -85,12 +85,8 @@ OUTPUT_TOLERANCE = 1e-4
 #: Why some cases cannot run in some environments (marks applied below).
 NEEDS_FWI = pytest.mark.xfail(condition=not has_memoizejac(), strict=True, raises=ImportError,
                               reason="PyFWI.fwi needs MemoizeJac, missing from current SciPy (step 1.1)")
-NEEDS_MODEL_DATASET = pytest.mark.xfail(condition=int(np.__version__.split(".")[0]) >= 2, strict=True,
-                                        raises=ImportError,
-                                        reason="PyFWI.model_dataset does not import with NumPy 2 (step 1.1)")
 NEEDS_TORCH = pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="PyTorch is not installed")
-EXAMPLE_MARKS = {"fwi": [NEEDS_FWI], "tlfwi": [NEEDS_FWI], "models": [NEEDS_MODEL_DATASET],
-                 "torch_gradient": [NEEDS_TORCH]}
+EXAMPLE_MARKS = {"fwi": [NEEDS_FWI], "tlfwi": [NEEDS_FWI], "torch_gradient": [NEEDS_TORCH]}
 
 
 def _compare_outputs(name, actual):

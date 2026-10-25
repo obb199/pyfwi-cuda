@@ -32,8 +32,9 @@ the user's code.
 - [Execution and verification roadmap](docs/cuda-migration/execution-roadmap.md): every step from
   the current state to version 0.4, with the tests and checks of each step.
 
-**Status:** Phase 0 (safety net). The package code under `src/PyFWI/` is still identical to
-PyFWI 0.1.10; so far the fork adds environments, tools, tests and documentation.
+**Status:** Phase 1 (host-side fixes, no change to the numerical results). The package code under
+`src/PyFWI/` differs from PyFWI 0.1.10 only by the changes listed in [CHANGELOG.md](CHANGELOG.md);
+the golden masters in `test/golden/` check that the results stay the same.
 
 ## Repository layout
 

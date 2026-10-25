@@ -3,7 +3,6 @@ import copy
 import logging
 import pyopencl as cl
 import numpy as np
-from numpy.core.arrayprint import dtype_is_implied
 import numpy.fft as fft
 import matplotlib.pyplot as plt
 

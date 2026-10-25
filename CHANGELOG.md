@@ -49,7 +49,10 @@ how much and in which numeric mode.
 
 ### Changed
 
-- None in the package: `src/PyFWI/` is identical to PyFWI 0.1.10.
+- `PyFWI.seismic_io`, `PyFWI.model_dataset`, `PyFWI.rock_physics`, `PyFWI.seiplot` and
+  `PyFWI.fwi_tools` import with NumPy 2: unused imports of `numpy.lib.function_base` and
+  `numpy.core` were removed, and `gaussian_filter` is imported from `scipy.ndimage` (public module)
+  instead of the deprecated `scipy.ndimage.filters`.
 
 ### Numerical changes
 

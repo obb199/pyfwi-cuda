@@ -4,9 +4,8 @@ import shutil
 import segyio
 import copy
 import numpy as np
-from numpy.core.defchararray import add
 import matplotlib.pyplot as plt
-from scipy.ndimage.filters import gaussian_filter
+from scipy.ndimage import gaussian_filter
 from scipy import interpolate as intp
 import PyFWI.rock_physics as rp
 import PyFWI.seismic_io as io

@@ -58,24 +58,15 @@ def example_names():
                   for p in glob.glob(os.path.join(EXAMPLES_DIR, "*.py")) if not os.path.basename(p).startswith("_"))
 
 
-#: Examples that import ``PyFWI.model_dataset``, which imports ``numpy.lib.function_base``
-#: (removed in NumPy 2) in PyFWI 0.1.10: they cannot run with NumPy 2 until step 1.1.
-NEEDS_MODEL_DATASET = {"models"}
-MODEL_DATASET_XFAIL = pytest.mark.xfail(condition=int(np.__version__.split(".")[0]) >= 2, strict=True,
-                                        raises=(ImportError, AssertionError),
-                                        reason="PyFWI.model_dataset does not import with NumPy 2 (step 1.1)")
-
 #: Examples that need PyTorch. The CPU CI does not install it (it is large), so they are skipped there.
 NEEDS_TORCH = {"torch_gradient"}
 TORCH_SKIP = pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="PyTorch is not installed")
 
 
 def example_params():
-    """``example_names()`` as pytest parameters, with the marks of ``NEEDS_FWI``, ``NEEDS_TORCH`` and
-    ``NEEDS_MODEL_DATASET``."""
+    """``example_names()`` as pytest parameters, with the marks of ``NEEDS_FWI`` and ``NEEDS_TORCH``."""
     def marks(name):
-        return ([FWI_IMPORT_XFAIL] * (name in NEEDS_FWI) + [TORCH_SKIP] * (name in NEEDS_TORCH)
-                + [MODEL_DATASET_XFAIL] * (name in NEEDS_MODEL_DATASET))
+        return [FWI_IMPORT_XFAIL] * (name in NEEDS_FWI) + [TORCH_SKIP] * (name in NEEDS_TORCH)
     return [pytest.param(n, marks=marks(n)) for n in example_names()]
 
 
@@ -274,7 +265,6 @@ def _total_variation(image):
     return float(np.abs(np.diff(image, axis=0)).sum() + np.abs(np.diff(image, axis=1)).sum())
 
 
-@MODEL_DATASET_XFAIL
 def test_models(run_example):
     results = run_example("models")
     elastic, rock_physics = {"vp", "vs", "rho"}, {"phi", "cc", "sw"}

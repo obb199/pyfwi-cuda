@@ -11,6 +11,11 @@ Race conditions are the exception: whether a race changes the result depends on
 thread scheduling, so a racy test may pass by chance. Those tests use
 ``strict=False`` and say so in their reason.
 
+Fixed bugs keep their test, without the marker, so that they cannot come back; the
+table below marks them "(done)". In the reference environment the tests run against
+the published 0.1.10, so the tests of bugs fixed in the fork are expected to fail there
+(``condition=REFERENCE``) unless the bug never showed up with the old dependencies.
+
 Where an ``xfail`` uses ``raises=``, the test only counts as "expected failure"
 if it fails with that exception type, so it cannot pass for the wrong reason.
 Bugs that depend on the environment (for example imports that only break with
@@ -33,7 +38,7 @@ and must pass everywhere else.
 | ``test_float_constants_have_the_f_suffix`` | literals without ``f`` make the kernels compute in FP64 | 2.4 |
 | ``test_device_choice_works_with_a_single_device_platform`` | ``inpa['device']`` fails on single-device platforms (PyOpenCL 2022 only) | 1.2 |
 | ``test_optimizer_modules_import`` | ``MemoizeJac`` no longer exported by SciPy | 1.1 |
-| ``test_numpy2_modules_import`` | ``numpy.lib.function_base`` removed in NumPy 2 | 1.1 |
+| ``test_numpy2_modules_import`` | ``numpy.lib.function_base`` removed in NumPy 2 | 1.1 (done) |
 | ``test_model_dataset_imports_without_segyio`` | ``segyio`` imported at module level, never declared | 1.1 |
 | ``test_pyopencl_is_a_declared_dependency`` | ``pyopencl`` missing from ``install_requires`` | 1.1 |
 | ``test_wheel_contains_torch_and_data`` | the wheel lacks ``PyFWI/torch`` and ``PyFWI/data`` | 1.1 |
@@ -302,10 +307,9 @@ def test_optimizer_modules_import(module):
     importlib.import_module(module)
 
 
-@pytest.mark.xfail(condition=NUMPY2, strict=True, raises=ImportError,
-                   reason="numpy.lib.function_base does not exist in NumPy 2")
 @pytest.mark.parametrize("module", ["PyFWI.seismic_io", "PyFWI.model_dataset"])
 def test_numpy2_modules_import(module):
+    # Fixed in step 1.1: unused imports of numpy.lib.function_base and numpy.core were removed.
     importlib.import_module(module)
 
 

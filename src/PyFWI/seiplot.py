@@ -2,7 +2,6 @@ import matplotlib.pyplot as plt
 import matplotlib as mlp
 from mpl_toolkits import axes_grid1
 from mpl_toolkits.axes_grid1.axes_divider import make_axes_locatable
-from numpy.core.shape_base import block
 import numpy as np
 
 def earth_model(model, keys=[],offset=None, depth= None, **kwargs):

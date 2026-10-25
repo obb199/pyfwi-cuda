@@ -1,5 +1,4 @@
 import numpy as np
-from numpy.core.shape_base import block
 from scipy.sparse import coo_matrix,linalg
 
 class Density:
