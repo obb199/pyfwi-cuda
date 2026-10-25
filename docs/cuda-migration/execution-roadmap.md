@@ -363,6 +363,22 @@ No computation of the propagator changes, so the criterion is BIT against the go
 - **Deciding check:** on NVIDIA, is the result with padding bit-for-bit equal to the golden master? If so, the change stays on the host, in the `legacy` mode. If not, it changes the arithmetic and moves to the `fixed` mode (step 2.4), recorded as such at G1.
 - **Tests:** BIT on NVIDIA and on POCL against the golden masters, now **without** the guard bands (the padding replaces them); the out-of-bounds `xfail`s start passing; plain runs no longer crash after a few propagations in one process, and the example scripts run as programs without the guard (`gradient.py` crashes plain 0.1.10 today).
 - **Criterion:** POCL finite and deterministic; decision about the mode recorded.
+- **Result (padding):** every buffer is a sub-buffer of `[margin | data | margin]`; the margin is
+  the largest of 64 KiB (the guard bands of the golden masters), `rec_top_right_var + 8` grid rows
+  (the unbounded right-well loop reads up to `rec_top_right_var` rows past a field) and `tnz + 8`
+  values (seismograms and residuals), rounded to the base-address alignment. **Deciding check:** plain
+  runs (no guard bands) reproduce the 16 propagation golden masters bit for bit on NVIDIA and on POCL,
+  so the change stays on the host, in the `legacy` mode. With guard bands placed outside the margins
+  and no 64 KiB minimum, no read (NaN bands) and no write (1.0 bands) goes beyond them, for the three
+  acquisitions and both orders; with margins one row too small the test fails. Found on the way: an
+  allocation created with `COPY_HOST_PTR` is placed on the NVIDIA device only for the sub-buffer
+  region the kernels use, so the margins held whatever the device memory held; each allocation is
+  now created empty and written whole by an explicit copy. Created that way it is also not wrapped by
+  the guard bands of the tests, which would nest overlapping sub-buffers in it: undefined in OpenCL,
+  and a segmentation fault of the NVIDIA driver when they are released (reproduced in isolation). The
+  out-of-bounds known-bug tests now fill PyFWI's own margins (NaN or 1.0) and
+  stay expected failures: the kernels still access outside their logical buffers until the `fixed`
+  mode of step 2.4.
 
 ### 1.8 Diagnostics
 

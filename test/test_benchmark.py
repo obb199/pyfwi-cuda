@@ -48,15 +48,19 @@ def test_counter_counts_every_launch_and_copy(opencl_platform):
     if running_reference():
         # 0.1.10: every copy blocks, and one residual sample is sent before each injection.
         checkpoint_blocking, seismograms_blocking, residual, on_device = 5, 5, 5 * adjoint_injections, 0
+        new_buffers_forward = new_buffers_gradient = 0  # created with COPY_HOST_PTR: no copy command
     else:
         # Step 1.4: seismograms read without blocking; the residual of a shot is sent once (a
         # blocking copy), then each sample is copied on the device. Step 1.5: the checkpoints are
-        # copied without blocking.
+        # copied without blocking. Step 1.7: every new buffer is written whole once (margins
+        # included): 5 per forward modelling (model and PML), 11 per gradient (adjoint fields and
+        # gradients).
         checkpoint_blocking, seismograms_blocking, residual, on_device = 0, 0, 5, 5 * adjoint_injections
-    assert forward["copies"] == ns * (5 * nchp + 5)
-    assert forward["blocking_copies"] == ns * (checkpoint_blocking * nchp + seismograms_blocking)
-    assert gradient["copies"] == ns * (5 * restores + residual + on_device) + 3
-    assert gradient["blocking_copies"] == ns * (checkpoint_blocking * restores + residual) + 3
+        new_buffers_forward, new_buffers_gradient = 5, 11
+    assert forward["copies"] == ns * (5 * nchp + 5) + new_buffers_forward
+    assert forward["blocking_copies"] == ns * (checkpoint_blocking * nchp + seismograms_blocking) + new_buffers_forward
+    assert gradient["copies"] == ns * (5 * restores + residual + on_device) + 3 + new_buffers_gradient
+    assert gradient["blocking_copies"] == ns * (checkpoint_blocking * restores + residual) + 3 + new_buffers_gradient
 
 
 def test_counter_restores_pyopencl():

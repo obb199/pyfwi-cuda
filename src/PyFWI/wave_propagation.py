@@ -17,6 +17,15 @@ from PyFWI.grad_switcher import grad_lmd_to_vd
 #: The five recorded components, in the order of the seismogram and residual buffers.
 COMPONENTS = ("vx", "vz", "taux", "tauz", "tauxz")
 
+#: Value of the margins around every device buffer (step 1.7 of the fork): what the out-of-bounds
+#: reads of the kernels of 0.1.10 return. 0 reproduces the golden masters, which 0.1.10 computed
+#: inside zero guard bands; the tests set NaN or 1.0 to see where the kernels read and write.
+MARGIN_FILL = 0.0
+
+#: Smallest margin before and after every device buffer, in bytes: the size of the guard bands
+#: with which the golden masters of 0.1.10 were made (test/oob_guard.py).
+MIN_MARGIN_BYTES = 1 << 16
+
 #: Names of the OpenCL kernels that PyFWI launches (in elastic.cl, and injSrc and Adj_injSrc
 #: also in elastic_crosswell.cl and elastic_surface.cl). WavePreparation retrieves each of them
 #: once, in ``self.knl``.
@@ -211,19 +220,28 @@ class WavePreparation:
 
         self.mf = cl.mem_flags
 
+        # Margins around every device buffer (step 1.7 of the fork). The kernels of 0.1.10 read and
+        # write outside their buffers: the stencils up to 4 grid rows before and after a field, the
+        # unbounded loop of the right well (acq_type 0 and 2) up to rec_top_right_var rows past the
+        # end of a field, and up to tnz values past the end of a seismogram or residual. In 0.1.10
+        # those accesses hit whatever lay next to the buffer (garbage, NaN on POCL, or a
+        # CL_OUT_OF_RESOURCES crash); now they hit margins of MARGIN_FILL inside the allocation.
+        # Sub-buffers must start at a multiple of the base-address alignment of the device.
+        align = max(max(d.mem_base_addr_align for d in self.ctx.devices) // 8, 4)
+        needed = max(MIN_MARGIN_BYTES, (int(self.rec_top_right_var) + 8) * int(self.tnx) * 4,
+                     (int(self.tnz) + 8) * 4)
+        self.margin_bytes = -(-needed // align) * align
+        # The allocation (margins included) of every device buffer, by attribute name.
+        self._allocations = {}
+
         # Buffer for residuals
         res = np.zeros((np.int32(self.nr))).astype(np.float32, order='C')
 
-        self.res_vx_b = cl.Buffer(self.ctx, self.mf.READ_WRITE |
-                                  self.mf.COPY_HOST_PTR, hostbuf=res)
-        self.res_vz_b = cl.Buffer(self.ctx, self.mf.READ_WRITE |
-                                  self.mf.COPY_HOST_PTR, hostbuf=res)
-        self.res_taux_b = cl.Buffer(self.ctx, self.mf.READ_WRITE |
-                                    self.mf.COPY_HOST_PTR, hostbuf=res)
-        self.res_tauz_b = cl.Buffer(self.ctx, self.mf.READ_WRITE |
-                                    self.mf.COPY_HOST_PTR, hostbuf=res)
-        self.res_tauxz_b = cl.Buffer(self.ctx, self.mf.READ_WRITE |
-                                     self.mf.COPY_HOST_PTR, hostbuf=res)
+        self._set_buffer("res_vx_b", res)
+        self._set_buffer("res_vz_b", res)
+        self._set_buffer("res_taux_b", res)
+        self._set_buffer("res_tauz_b", res)
+        self._set_buffer("res_tauxz_b", res)
         # The residual of one shot, every time sample, per component (residual_to_device);
         # created at the first gradient and reused while its size does not change.
         self.res_shot_b = {}
@@ -232,30 +250,20 @@ class WavePreparation:
         v = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
 
         # Buffer for forward modelling
-        self.vx_b = cl.Buffer(self.ctx, self.mf.READ_WRITE |
-                              self.mf.COPY_HOST_PTR, hostbuf=v)
-        self.vz_b = cl.Buffer(self.ctx, self.mf.READ_WRITE |
-                              self.mf.COPY_HOST_PTR, hostbuf=v)
-        self.taux_b = cl.Buffer(self.ctx, self.mf.READ_WRITE |
-                                self.mf.COPY_HOST_PTR, hostbuf=v)
-        self.tauz_b = cl.Buffer(self.ctx, self.mf.READ_WRITE |
-                                self.mf.COPY_HOST_PTR, hostbuf=v)
-        self.tauxz_b = cl.Buffer(self.ctx, self.mf.READ_WRITE |
-                                 self.mf.COPY_HOST_PTR, hostbuf=v)
+        self._set_buffer("vx_b", v)
+        self._set_buffer("vz_b", v)
+        self._set_buffer("taux_b", v)
+        self._set_buffer("tauz_b", v)
+        self._set_buffer("tauxz_b", v)
 
         # Buffer for seismograms
         seismogram_id = np.zeros((self.nt_ext, self.nr)).astype(np.float32, order='C')
 
-        self.seismogramid_vx_b = cl.Buffer(
-            self.ctx, self.mf.READ_WRITE | self.mf.COPY_HOST_PTR, hostbuf=seismogram_id)
-        self.seismogramid_vz_b = cl.Buffer(
-            self.ctx, self.mf.READ_WRITE | self.mf.COPY_HOST_PTR, hostbuf=seismogram_id)
-        self.seismogramid_taux_b = cl.Buffer(
-            self.ctx, self.mf.READ_WRITE | self.mf.COPY_HOST_PTR, hostbuf=seismogram_id)
-        self.seismogramid_tauz_b = cl.Buffer(
-            self.ctx, self.mf.READ_WRITE | self.mf.COPY_HOST_PTR, hostbuf=seismogram_id)
-        self.seismogramid_tauxz_b = cl.Buffer(
-            self.ctx, self.mf.READ_WRITE | self.mf.COPY_HOST_PTR, hostbuf=seismogram_id)
+        self._set_buffer("seismogramid_vx_b", seismogram_id)
+        self._set_buffer("seismogramid_vz_b", seismogram_id)
+        self._set_buffer("seismogramid_taux_b", seismogram_id)
+        self._set_buffer("seismogramid_tauz_b", seismogram_id)
+        self._set_buffer("seismogramid_tauxz_b", seismogram_id)
 
         # Make a list for seismograms
         self.seismogram = {
@@ -265,6 +273,53 @@ class WavePreparation:
             'tauz': np.zeros((self.nt_ext, self.nr, self.ns)).astype(np.float32, order='C'),
             'tauxz': np.zeros((self.nt_ext, self.nr, self.ns)).astype(np.float32, order='C'),
         }
+
+    def _set_buffer(self, name, host):
+        """Create the device buffer ``self.<name>`` holding ``host``, with margins (step 1.7 of the fork).
+
+        The allocation is ``[margin | the data of host | margin]``, the margins filled with
+        ``MARGIN_FILL`` and ``margin_bytes`` long; ``self.<name>`` is the sub-buffer of the data,
+        which the kernels use as before, and ``self._allocations[name]`` the whole allocation
+        (``margins_changed`` reads it). Replacing a buffer releases its old allocation.
+
+        Parameters
+        ----------
+        name : str
+            Attribute name, e.g. ``"vx_b"``.
+        host : numpy.ndarray
+            Initial content (float32 in PyFWI), copied to the device.
+        """
+        host = np.ascontiguousarray(host)
+        margin = self.margin_bytes
+        whole = np.full((2 * margin + host.nbytes) // host.itemsize, MARGIN_FILL, dtype=host.dtype)
+        whole.view(np.uint8)[margin:margin + host.nbytes] = host.reshape(-1).view(np.uint8)
+        # Allocated first, then written whole by an explicit copy. With COPY_HOST_PTR the NVIDIA
+        # driver places on the device only the region of the sub-buffer the kernels use, and the
+        # margins there hold whatever the device memory held. (Without hostbuf the buffer is also
+        # never wrapped by the guard bands of the tests, test/oob_guard.py: nesting their
+        # sub-buffers in this one would make overlapping sub-buffers, which crash the driver.)
+        allocation = cl.Buffer(self.ctx, self.mf.READ_WRITE, whole.nbytes)
+        cl.enqueue_copy(self.queue, allocation, whole)
+        self._allocations[name] = allocation
+        setattr(self, name, allocation.get_sub_region(margin, host.nbytes))
+
+    def margins_changed(self):
+        """Names of the device buffers whose margins no longer hold ``MARGIN_FILL`` (step 1.7).
+
+        A kernel wrote outside that buffer (or, with a NaN fill, accumulated into it). Used by the
+        tests of the out-of-bounds accesses; it reads every allocation back from the device.
+        """
+        changed = []
+        margin = self.margin_bytes
+        for name, allocation in self._allocations.items():
+            whole = np.empty(allocation.size // 4, np.float32)
+            cl.enqueue_copy(self.queue, whole, allocation)
+            data_bytes = getattr(self, name).size
+            margins = np.concatenate([whole[:margin // 4], whole[(margin + data_bytes) // 4:]])
+            intact = np.isnan(margins).all() if np.isnan(MARGIN_FILL) else (margins == np.float32(MARGIN_FILL)).all()
+            if not intact:
+                changed.append(name)
+        return changed
 
     @property
     def W(self):
@@ -292,33 +347,28 @@ class WavePreparation:
     def adjoint_buffer_preparing(self):
         # Buffer for gradient
         g_mu = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
-        self.Gmu_b = cl.Buffer(self.ctx, self.mf.READ_WRITE | self.mf.COPY_HOST_PTR, hostbuf=g_mu)
+        self._set_buffer("Gmu_b", g_mu)
 
         g_lam = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
-        self.Glam_b = cl.Buffer(self.ctx, self.mf.READ_WRITE | self.mf.COPY_HOST_PTR, hostbuf=g_lam)
+        self._set_buffer("Glam_b", g_lam)
 
         g_rho = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
-        self.Grho_b = cl.Buffer(self.ctx, self.mf.READ_WRITE | self.mf.COPY_HOST_PTR, hostbuf=g_rho)
+        self._set_buffer("Grho_b", g_rho)
 
         g_mu_precond = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
-        self.g_mu_precond_b = cl.Buffer(self.ctx, self.mf.READ_WRITE | self.mf.COPY_HOST_PTR, hostbuf=g_mu_precond)
+        self._set_buffer("g_mu_precond_b", g_mu_precond)
 
-        self.g_lam_precond_b = cl.Buffer(self.ctx, self.mf.READ_WRITE | self.mf.COPY_HOST_PTR, hostbuf=g_mu_precond)
+        self._set_buffer("g_lam_precond_b", g_mu_precond)
 
-        self.g_rho_precond_b = cl.Buffer(self.ctx, self.mf.READ_WRITE | self.mf.COPY_HOST_PTR, hostbuf=g_mu_precond)
+        self._set_buffer("g_rho_precond_b", g_mu_precond)
 
         # Buffer for backward modelling
         v = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
-        self.avx_b = cl.Buffer(self.ctx, self.mf.READ_WRITE |
-                              self.mf.COPY_HOST_PTR, hostbuf=v)
-        self.avz_b = cl.Buffer(self.ctx, self.mf.READ_WRITE |
-                              self.mf.COPY_HOST_PTR, hostbuf=v)
-        self.ataux_b = cl.Buffer(self.ctx, self.mf.READ_WRITE |
-                                self.mf.COPY_HOST_PTR, hostbuf=v)
-        self.atauz_b = cl.Buffer(self.ctx, self.mf.READ_WRITE |
-                                self.mf.COPY_HOST_PTR, hostbuf=v)
-        self.atauxz_b = cl.Buffer(self.ctx, self.mf.READ_WRITE |
-                                 self.mf.COPY_HOST_PTR, hostbuf=v)
+        self._set_buffer("avx_b", v)
+        self._set_buffer("avz_b", v)
+        self._set_buffer("ataux_b", v)
+        self._set_buffer("atauz_b", v)
+        self._set_buffer("atauxz_b", v)
 
     def gradient_reading(self):
         g_mu = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
@@ -480,10 +530,8 @@ class WavePreparation:
 
         vdx_pml = self.dx_pml * v_max
         vdz_pml = self.dz_pml * v_max
-        self.vdx_pml_b = cl.Buffer(self.ctx, self.mf.READ_WRITE |
-                                   self.mf.COPY_HOST_PTR, hostbuf=vdx_pml)
-        self.vdz_pml_b = cl.Buffer(self.ctx, self.mf.READ_WRITE |
-                                   self.mf.COPY_HOST_PTR, hostbuf=vdz_pml)
+        self._set_buffer("vdx_pml_b", vdx_pml)
+        self._set_buffer("vdz_pml_b", vdz_pml)
 
     def kernel_caller(self):
         '''
@@ -661,13 +709,10 @@ class WavePreparation:
 
         self.vs = model['vs']
 
-        self.rho_b = cl.Buffer(self.ctx, self.mf.COPY_HOST_PTR,
-                               hostbuf=1 / model['rho'])
+        self._set_buffer("rho_b", 1 / model['rho'])
 
-        self.mu_b = cl.Buffer(self.ctx, self.mf.COPY_HOST_PTR,
-                              hostbuf=self.mu)
-        self.lam_b = cl.Buffer(self.ctx, self.mf.COPY_HOST_PTR,
-                               hostbuf=self.lam)
+        self._set_buffer("mu_b", self.mu)
+        self._set_buffer("lam_b", self.lam)
 
 
 class WavePropagator(WavePreparation):

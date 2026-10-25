@@ -24,7 +24,7 @@ and must pass everywhere else.
 
 | Test | Bug | Fixed in roadmap step |
 | --- | --- | --- |
-| ``test_stencils_do_not_read_outside_buffers`` | stencils read past the end / before the start of the field buffers | 1.7 / 2.4 |
+| ``test_stencils_do_not_read_outside_buffers`` | stencils read past the end / before the start of the field buffers (inside the allocation since 1.7) | 2.4 |
 | ``test_kernels_do_not_write_outside_buffers`` | crosswell and right-well ``Adj_injSrc`` accumulate past the end of the adjoint fields | 2.4 |
 | ``test_receiver_loops_bound_the_receiver_index`` | 5 receiver loops have no bound on the receiver index | 2.4 |
 | ``test_default_geometry_is_deterministic`` | race conditions at source/receiver coincidences (non-strict: probabilistic) | 3.4 |
@@ -43,6 +43,7 @@ and must pass everywhere else.
 | ``test_pyopencl_is_a_declared_dependency`` | ``pyopencl`` missing from ``install_requires`` | 1.1 (done) |
 | ``test_wheel_contains_torch_and_data`` | the wheel lacks ``PyFWI/torch`` and ``PyFWI/data`` | 1.1 (done) |
 """
+import contextlib
 import importlib
 import importlib.metadata
 import importlib.util
@@ -107,12 +108,32 @@ def _defines(source):
 # Kernel arithmetic and recording
 # ---------------------------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="0.1.10 stencils read outside the field buffers (row Nz, and i-3 "
-                                       "with i=2); with NaN guard bands the outputs become NaN")
-def test_stencils_do_not_read_outside_buffers(opencl_platform):
-    from oob_guard import nan_guard_bands
+@contextlib.contextmanager
+def _filled_outside_buffers(monkeypatch, fill):
+    """Fill what lies just outside every device buffer with ``fill``; yield a function that lists the
+    buffers written outside, given the propagator.
 
-    with nan_guard_bands():
+    0.1.10 (reference environment): guard bands around its buffers (``oob_guard``). The fork (step
+    1.7): the margins it allocates itself around every buffer (``wave_propagation.MARGIN_FILL``),
+    read back by ``WavePropagator.margins_changed``. Either way a kernel that reads outside a buffer
+    sees ``fill``, and one that writes outside changes it.
+    """
+    from oob_guard import guard_bands
+
+    if REFERENCE:
+        with guard_bands(fill=fill) as report:
+            yield lambda W: report.touched()
+    else:
+        import PyFWI.wave_propagation as wave
+        monkeypatch.setattr(wave, "MARGIN_FILL", fill)
+        yield lambda W: W.margins_changed()
+
+
+@pytest.mark.xfail(strict=True, reason="the stencils read outside the field buffers (row Nz, and i-3 with i=2): "
+                                       "with NaN there, the outputs become NaN (step 1.7 keeps these reads inside "
+                                       "the allocation, the fixed mode of step 2.4 removes them)")
+def test_stencils_do_not_read_outside_buffers(opencl_platform, monkeypatch):
+    with _filled_outside_buffers(monkeypatch, np.nan):
         case = tiny_case()
         d_obs, grad = forward_and_gradient(case)
     assert all(np.isfinite(v).all() for v in d_obs.values()), "seismogram has NaN: read past a buffer"
@@ -127,14 +148,13 @@ def test_stencils_do_not_read_outside_buffers(opencl_platform):
     pytest.param(2, marks=pytest.mark.xfail(strict=True, reason="the right-well branch of Adj_injSrc in elastic.cl "
                                                                 "has no receiver bound")),
 ])
-def test_kernels_do_not_write_outside_buffers(opencl_platform, acq_type):
-    from oob_guard import guard_bands
-
-    # Bands of 1.0: a write, or an accumulation of a value read out of bounds, changes them.
-    with guard_bands(fill=1.0) as report:
-        forward_and_gradient(tiny_case(acq_type=acq_type, components=4))
-    touched = report.touched()
-    assert not touched, f"written outside {len(touched)} buffer(s) of shapes {[b.shape for b in touched]}"
+def test_kernels_do_not_write_outside_buffers(opencl_platform, monkeypatch, acq_type):
+    # 1.0 outside the buffers: a write, or an accumulation of a value read out of bounds, changes it.
+    with _filled_outside_buffers(monkeypatch, 1.0) as written_outside:
+        case = tiny_case(acq_type=acq_type, components=4)
+        forward_and_gradient(case)
+    touched = written_outside(case.W)
+    assert not touched, f"written outside {len(touched)} buffer(s): {touched}"
 
 
 @pytest.mark.xfail(strict=True, reason="elastic.cl lines 89 and 352 and elastic_crosswell.cl lines 24, 48 and 71 "

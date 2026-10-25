@@ -122,6 +122,14 @@ how much and in which numeric mode.
   CPU core, instead of two products with `(n, n)` diagonal matrices. Filtering per FWI iteration:
   22x faster in the small scenario of the benchmark, 11x in the medium one. They now work along any
   axis (0.1.10 only along axis 1).
+- Margins around every device buffer (step 1.7): each buffer is a sub-buffer of an allocation
+  `[margin | data | margin]`, the margins holding zeros (`wave_propagation.MARGIN_FILL`), at least
+  64 KiB and enough for the farthest out-of-bounds access of the kernels, aligned for sub-buffers,
+  and written whole by an explicit copy (one more copy per new buffer). The out-of-bounds reads and writes of the kernels (still
+  there, as in 0.1.10) now stay inside the allocation and read zeros, as inside the guard bands of
+  the golden masters: plain runs reproduce them bit for bit on NVIDIA and on POCL, where 0.1.10
+  depended on the memory layout (crosswell and combined acquisitions) and returned NaN on POCL.
+  `WavePropagator.margins_changed()` lists the buffers written outside.
 
 ### Numerical changes
 
