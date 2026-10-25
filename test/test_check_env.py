@@ -1,4 +1,17 @@
-"""Testes do verificador de ambiente (tools/check_env.py) e dos arquivos de ambiente."""
+"""Tests of the environment checker (``tools/check_env.py``) and of the environment files.
+
+What is covered
+---------------
+* Pure helpers of ``check_env`` (no device needed): FP64 counting in PTX, the
+  check/warning bookkeeping, the synthetic model, the output sanity rule.
+* The pinned environment files in ``requirements/``: the reference environment
+  must keep the versions of PyFWI 0.1.10, and both environments must use the
+  same POCL so that CPU results can be compared bit for bit.
+* ``tools/setup_envs.sh``: valid bash, usage error on a bad argument.
+* The command-line program, with and without a visible GPU.
+* With hardware: the PyFWI OpenCL kernels compile as CUDA (marker ``gpu``) and
+  the PyFWI smoke test is finite and deterministic on NVIDIA OpenCL (marker ``opencl``).
+"""
 import os
 import re
 import subprocess
@@ -10,8 +23,12 @@ import pytest
 
 from tools import check_env
 
+#: Absolute path of the repository root.
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
+#: A hand-written PTX listing with one kernel that uses FP64 and one that does not.
+#: ``.reg .f64`` is a register declaration, not an instruction, and must not be counted;
+#: ``cvt.f64.f32``, ``mul.f64`` and ``cvt.rn.f32.f64`` are three FP64 instructions.
 PTX = """
 .visible .entry k_double(
     .param .u64 p
@@ -36,7 +53,6 @@ PTX = """
 
 
 def test_count_fp64_counts_per_kernel():
-    # .reg .f64 é declaração, não instrução; as três instruções com .f64 contam.
     assert check_env.count_fp64(PTX) == {"k_double": 3, "k_float": 0}
 
 
@@ -46,35 +62,36 @@ def test_count_fp64_empty_ptx():
 
 def test_check_known_issue_is_warning_not_failure(capsys):
     check_env.FAILURES.clear()
-    assert check_env.check("passa", True)
-    assert not check_env.check("conhecido", False, known_issue="bug antigo")
-    assert check_env.FAILURES == []
-    assert not check_env.check("quebra", False)
-    assert check_env.FAILURES == ["quebra"]
+    assert check_env.check("passes", True)
+    assert not check_env.check("known", False, known_issue="old bug")
+    assert check_env.FAILURES == []  # a known issue is not a failure
+    assert not check_env.check("breaks", False)
+    assert check_env.FAILURES == ["breaks"]
     out = capsys.readouterr().out
-    assert "[AVISO] conhecido: bug antigo" in out and "[FALHA] quebra" in out
+    assert "[WARN ] known: old bug" in out and "[FAIL ] breaks" in out
     check_env.FAILURES.clear()
 
 
-def test_test_model_is_elastic_and_float32():
-    m = check_env.test_model(40, 50)
+def test_inclusion_model_is_elastic_and_float32():
+    m = check_env.inclusion_model(40, 50)
     assert set(m) == {"vp", "vs", "rho"}
     assert all(v.shape == (40, 50) and v.dtype == np.float32 for v in m.values())
     assert set(np.unique(m["vp"])) == {2500.0, 3000.0}
     np.testing.assert_allclose(m["vp"] / m["vs"], np.sqrt(3.0), rtol=1e-6)
-    smooth = check_env.test_model(40, 50, smooth=1)["vp"]
+    smooth = check_env.inclusion_model(40, 50, smooth=1)["vp"]
     assert 2500.0 <= smooth.min() and smooth.max() <= 3000.0 and len(np.unique(smooth)) > 2
 
 
 def test_outputs_ok():
     good = {"d_taux": np.ones(3), "d_vx": np.zeros(3), "g_vp": np.ones(2)}
-    assert check_env.outputs_ok(good)
+    assert check_env.outputs_ok(good)  # an all-zero d_vx is allowed (pressure-only recording)
     assert not check_env.outputs_ok({**good, "d_taux": np.array([1.0, np.nan, 0.0])})
     assert not check_env.outputs_ok({**good, "d_taux": np.zeros(3)})
     assert not check_env.outputs_ok({**good, "g_vp": np.zeros(2)})
 
 
 def _pins(name):
+    """Read ``requirements/<name>`` and return ``{package (lower case): version}`` for ``pkg==version`` lines."""
     pins = {}
     with open(os.path.join(REPO, "requirements", name)) as f:
         for line in f:
@@ -86,12 +103,12 @@ def _pins(name):
 
 def test_reference_env_matches_original_requirements():
     ref = _pins("ref-0.1.10.txt")
-    # Versões do requirements.txt da 0.1.10: a referência não pode depender de correções.
+    # Versions of the requirements.txt of 0.1.10: the reference must not depend on any fix.
     for pkg, ver in {"numpy": "1.21.6", "scipy": "1.7.3", "matplotlib": "3.5.3",
                      "pyopencl": "2022.2.4", "segyio": "1.9.11"}.items():
         assert ref[pkg] == ver, pkg
     assert ref["torch"].startswith("1.13.1")
-    assert "pyfwi" not in ref  # instalado à parte, do PyPI, sem dependências
+    assert "pyfwi" not in ref  # installed separately, from PyPI, without dependencies
 
 
 def test_dev_env_has_cuda13_stack():
@@ -102,19 +119,20 @@ def test_dev_env_has_cuda13_stack():
 
 
 def test_both_envs_pin_same_pocl():
-    # Comparações bit a bit no OpenCL de CPU exigem o mesmo compilador POCL nos dois lados.
+    # Bit-for-bit comparisons on the CPU OpenCL need the same POCL compiler on both sides.
     assert _pins("ref-0.1.10.txt")["pocl-binary-distribution"] == _pins("dev.txt")["pocl-binary-distribution"]
 
 
 def test_setup_envs_script_is_valid_bash():
     script = os.path.join(REPO, "tools", "setup_envs.sh")
     assert os.access(script, os.X_OK)
-    subprocess.run(["bash", "-n", script], check=True)
-    r = subprocess.run(["bash", script, "nada"], check=False, capture_output=True, text=True)
-    assert r.returncode == 2 and "uso:" in r.stderr
+    subprocess.run(["bash", "-n", script], check=True)  # -n: parse only, run nothing
+    r = subprocess.run(["bash", script, "nothing"], check=False, capture_output=True, text=True)
+    assert r.returncode == 2 and "usage:" in r.stderr
 
 
 def _run_check_env(*args, env=None):
+    """Run ``tools/check_env.py`` as a program with ``args``; return the CompletedProcess."""
     return subprocess.run([sys.executable, "-W", "ignore", os.path.join(REPO, "tools", "check_env.py"), *args],
                           check=False, capture_output=True, text=True, timeout=300, env=env)
 
@@ -123,24 +141,34 @@ def test_check_env_cli_runs():
     from conftest import _nvidia_opencl_platform
     gpu_flag = [] if _nvidia_opencl_platform() is not None else ["--no-gpu"]
     r = _run_check_env("--skip-pyfwi", *gpu_flag)
-    assert "== Versões ==" in r.stdout and "== Resultado ==" in r.stdout
+    assert "== Versions ==" in r.stdout and "== Result ==" in r.stdout
     assert r.returncode == 0, r.stdout[-2000:]
 
 
 def test_check_env_no_gpu_mode_turns_missing_gpu_into_info():
-    # Esconde a GPU (vale para o CUDA e para o OpenCL da NVIDIA), como numa máquina de CI.
+    # Hide the GPU (affects both CUDA and NVIDIA OpenCL), as on a CI machine.
     env = {**os.environ, "CUDA_VISIBLE_DEVICES": ""}
     strict = _run_check_env("--skip-pyfwi", env=env)
-    assert strict.returncode == 1 and "[FALHA] OpenCL NVIDIA presente" in strict.stdout
+    assert strict.returncode == 1 and "[FAIL ] NVIDIA OpenCL present" in strict.stdout
     relaxed = _run_check_env("--skip-pyfwi", "--no-gpu", env=env)
     assert relaxed.returncode == 0, relaxed.stdout[-2000:]
-    assert "[INFO ] OpenCL NVIDIA ausente (--no-gpu)" in relaxed.stdout
+    assert "[INFO ] NVIDIA OpenCL missing (--no-gpu)" in relaxed.stdout
 
 
 def _kernel_sources(order):
-    """Fontes geradas pelo kernel_caller da 0.1.10, sem precisar de contexto OpenCL."""
+    """Kernel sources generated by ``kernel_caller`` of 0.1.10, without an OpenCL context.
+
+    ``WavePreparation.kernel_caller`` only reads attributes of ``self``, so a
+    ``SimpleNamespace`` with plausible values for a 100x100 model + 20-point PML
+    (140x140 grid), 4 shots and 100 surface receivers is enough.
+
+    Returns the tuple ``(elastic.cl, elastic_crosswell.cl, elastic_surface.cl)`` sources.
+    """
     from PyFWI.wave_propagation import WavePreparation
-    fake = SimpleNamespace(sdo=order // 2, tnz=140, tnx=140, ns=4, nr=100, dt=0.004 / 7, dh=7.0,
+    fake = SimpleNamespace(sdo=order // 2,          # PyFWI stores half of the order
+                           tnz=140, tnx=140,        # grid size including the PML
+                           ns=4, nr=100,            # sources and receivers
+                           dt=0.004 / 7, dh=7.0,    # internal time step (s) and grid spacing (m)
                            npml=20, n_surface_rec=100, n_well_rec=0, src_cts=25,
                            rec_top_left_const=0, rec_top_left_var=0, rec_top_right_const=0,
                            rec_top_right_var=0, rec_surface_const=22, rec_surface_var=0)
@@ -155,7 +183,7 @@ def test_opencl_kernels_compile_as_cuda_and_legacy_uses_fp64(cuda_device, order)
     hot = ["update_velx", "update_velz", "update_tauz", "update_tauxz",
            "Adj_update_tau", "Adj_update_v", "Grad"]
     assert set(hot) <= set(counts)
-    # Caracteriza o modo legacy: literais sem sufixo f geram FP64 nos kernels quentes.
+    # Characterises the legacy numerics: literals without the f suffix make the hot kernels use FP64.
     assert all(counts[k] > 0 for k in hot), counts
     for src in (crosswell, surface):
         assert {"injSrc", "Adj_injSrc"} <= set(check_env.count_fp64(check_env.compile_ptx(src)))
