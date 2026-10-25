@@ -25,6 +25,9 @@ how much and in which numeric mode.
 - `test/test_reproducibility.py` and race-free geometry helpers: under zero guard bands and a
   race-free acquisition, PyFWI 0.1.10 is deterministic and NVIDIA OpenCL and POCL agree bit for
   bit, the basis of the golden masters.
+- `example/scripts/`: user-facing example scripts that use only the public API, each with a
+  `main(size, show)` function, run by `test/test_examples.py` with a physical check
+  (`forward_surface.py`: forward modelling with a surface acquisition).
 - GitHub Actions workflow `ci.yml` (CPU job: two lint passes, GPU-less environment check, test
   suite) with pinned dependencies in `requirements/ci-cpu.txt`, and a `[tool.ruff]` configuration.
 
