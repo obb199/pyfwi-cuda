@@ -31,7 +31,8 @@ how much and in which numeric mode.
   crosswell, surface and combined geometries, and how traces map to receivers; `gradient.py`: the
   adjoint-state gradient, the effect of `chpr` and the two parameterisations; `fwi.py`: multi-scale
   FWI with L-BFGS, and why the source amplitude matters with the absolute tolerances of 0.1.10;
-  `tlfwi.py`: cascaded time-lapse FWI).
+  `tlfwi.py`: cascaded time-lapse FWI; `torch_gradient.py`: the gradient through PyTorch with
+  `torchfwi.Fwi`, equal to PyFWI's own).
 - GitHub Actions workflow `ci.yml` (CPU job: two lint passes, GPU-less environment check, test
   suite) with pinned dependencies in `requirements/ci-cpu.txt`, and a `[tool.ruff]` configuration.
 

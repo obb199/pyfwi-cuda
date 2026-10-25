@@ -41,7 +41,7 @@ EXAMPLES_DIR = os.path.join(REPO, "example", "scripts")
 
 #: Examples that have a physical check in this file. ``test_every_example_has_a_check``
 #: fails if a script is added to example/scripts/ without one.
-CHECKED = {"forward_surface", "forward_acquisitions", "gradient", "fwi", "tlfwi"}
+CHECKED = {"forward_surface", "forward_acquisitions", "gradient", "fwi", "tlfwi", "torch_gradient"}
 
 #: Examples that import ``PyFWI.fwi`` or ``PyFWI.tl_fwi``. In PyFWI 0.1.10 those modules need
 #: ``scipy.optimize.optimize.MemoizeJac``, missing from current SciPy, so with current SciPy
@@ -58,9 +58,16 @@ def example_names():
                   for p in glob.glob(os.path.join(EXAMPLES_DIR, "*.py")) if not os.path.basename(p).startswith("_"))
 
 
+#: Examples that need PyTorch. The CPU CI does not install it (it is large), so they are skipped there.
+NEEDS_TORCH = {"torch_gradient"}
+TORCH_SKIP = pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="PyTorch is not installed")
+
+
 def example_params():
-    """``example_names()`` as pytest parameters, with ``FWI_IMPORT_XFAIL`` on the ``NEEDS_FWI`` examples."""
-    return [pytest.param(n, marks=FWI_IMPORT_XFAIL) if n in NEEDS_FWI else n for n in example_names()]
+    """``example_names()`` as pytest parameters, with the marks of ``NEEDS_FWI`` and ``NEEDS_TORCH``."""
+    def marks(name):
+        return [FWI_IMPORT_XFAIL] * (name in NEEDS_FWI) + [TORCH_SKIP] * (name in NEEDS_TORCH)
+    return [pytest.param(n, marks=marks(n)) for n in example_names()]
 
 
 def load_example(name):
@@ -238,3 +245,16 @@ def test_tlfwi(run_example):
     assert np.abs(dm[changed]).mean() > 3 * np.abs(dm[~changed]).mean()
     # ... and it looks like the true change.
     assert np.corrcoef(dm.ravel(), true_dm.ravel())[0, 1] > 0.5
+
+
+@TORCH_SKIP
+def test_torch_gradient(run_example):
+    r = run_example("torch_gradient")
+    assert r["loss"] > 0
+    for name in ("vp", "vs", "rho"):
+        torch_g, pyfwi_g = r["torch_gradient"][name], r["pyfwi_gradient"][name]
+        assert torch_g.shape == r["true"]["vp"].shape and np.isfinite(torch_g).all()
+        # For an L2 loss, autograd through torchfwi.Fwi gives PyFWI's own gradient.
+        np.testing.assert_allclose(torch_g, pyfwi_g, rtol=1e-5, atol=1e-6 * np.abs(pyfwi_g).max(), err_msg=name)
+    update, inside = -r["torch_gradient"]["vp"], r["true"]["vp"] == 3000.0
+    assert update[inside].mean() > 0 and update[inside].mean() > update[~inside].mean()
