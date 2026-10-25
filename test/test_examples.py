@@ -18,7 +18,10 @@ test session cannot hit the ``CL_OUT_OF_RESOURCES`` crash that plain runs of
 same bits as the NVIDIA GPU, so these tests also run in the CPU CI. Once step 1.7
 pads the buffers inside PyFWI itself, the guard will no longer be needed.
 
-The command-line test runs each script plainly (no guard) in a fresh process.
+The command-line test runs each script as a program (``runpy``, with its own
+argument parsing) in a fresh process, also inside zero guard bands: a plain run of
+``gradient.py`` makes more than a dozen propagations and crashes 0.1.10 on NVIDIA.
+Step 1.7 must make the guard unnecessary here too.
 """
 import glob
 import importlib.util
@@ -36,7 +39,7 @@ EXAMPLES_DIR = os.path.join(REPO, "example", "scripts")
 
 #: Examples that have a physical check in this file. ``test_every_example_has_a_check``
 #: fails if a script is added to example/scripts/ without one.
-CHECKED = {"forward_surface", "forward_acquisitions"}
+CHECKED = {"forward_surface", "forward_acquisitions", "gradient"}
 
 
 def example_names():
@@ -98,11 +101,24 @@ def test_example_has_docstring_and_main(name):
     assert {"small", "full"} <= set(module.SIZES)
 
 
+#: Program that runs an example script as ``__main__`` inside zero guard bands.
+#: argv: <test folder> <script> <script arguments...>
+GUARDED_PROGRAM = """
+import runpy, sys
+sys.path.insert(0, sys.argv[1])
+from oob_guard import zero_guard_bands
+script, sys.argv = sys.argv[2], sys.argv[2:]
+with zero_guard_bands():
+    runpy.run_path(script, run_name="__main__")
+"""
+
+
 @pytest.mark.parametrize("name", example_names())
 def test_example_runs_as_a_program(opencl_platform, name):
     env = {**os.environ, "MPLBACKEND": "Agg"}  # never open a window
-    r = subprocess.run([sys.executable, os.path.join(EXAMPLES_DIR, f"{name}.py"), "--size", "small", "--no-show"],
-                       check=False, capture_output=True, text=True, timeout=600, env=env)
+    script = os.path.join(EXAMPLES_DIR, f"{name}.py")
+    r = subprocess.run([sys.executable, "-c", GUARDED_PROGRAM, os.path.dirname(__file__), script, "--size", "small",
+                        "--no-show"], check=False, capture_output=True, text=True, timeout=600, env=env)
     assert r.returncode == 0, r.stderr[-3000:]
 
 
@@ -154,3 +170,26 @@ def test_forward_acquisitions(run_example):
     nr, n_well = r["rec_loc"].shape[0], r["n_well_rec"]
     picks = first_breaks(r["data"]["taux"][:, :nr])[:n_well]
     assert np.corrcoef(picks, np.hypot(*(r["rec_loc"][:n_well] - r["src_loc"][0]).T))[0, 1] < 0
+
+
+def test_gradient(run_example):
+    r = run_example("gradient")
+    true, gradients = r["true"], r["gradient"]
+    shape = true["vp"].shape
+    assert r["misfit"] > 0
+    for chpr, g in gradients.items():
+        for name in ("vp", "vs", "rho"):
+            assert g[name].shape == shape and np.isfinite(g[name]).all(), (chpr, name)
+    # Sign: minus the vp gradient (the steepest-descent update) is positive inside the faster
+    # inclusion and larger there than in the rest of the model.
+    update, inside = -gradients[20]["vp"], true["vp"] == 3000.0
+    assert update[inside].mean() > 0 and update[inside].mean() > update[~inside].mean()
+    # Checkpoints: a few percent already gives the gradient of dense checkpointing.
+    reference = gradients[20]["vp"]
+    cos5 = np.dot(gradients[5]["vp"].ravel(), reference.ravel()) / np.linalg.norm(gradients[5]["vp"]) / np.linalg.norm(reference)
+    assert cos5 > 0.99999
+    # Parameterisations: lam/mu/rho converted with grad_lmd_to_vd equals the vp/vs/rho gradient.
+    for name in ("vp", "vs", "rho"):
+        np.testing.assert_allclose(r["gradient_lmd_as_dv"][name], gradients[20][name], rtol=1e-5,
+                                   atol=1e-6 * np.abs(gradients[20][name]).max(), err_msg=name)
+    assert set(r["gradient_lmd"]) == {"lam", "mu", "rho"}

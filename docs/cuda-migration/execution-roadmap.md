@@ -276,7 +276,7 @@ No computation of the propagator changes, so the criterion is BIT against the go
 
 - **Goes in:** allocations with zeroed margins before and after every buffer (fields, seismograms and residuals), aligned to `CL_DEVICE_MEM_BASE_ADDR_ALIGN` and used through sub-buffers, so that the out-of-bounds reads and writes of the stencils and of the unbounded receiver loops fall inside the allocation. This also removes the `CL_OUT_OF_RESOURCES` crashes, which raises the priority of this step.
 - **Deciding check:** on NVIDIA, is the result with padding bit-for-bit equal to the golden master? If so, the change stays on the host, in the `legacy` mode. If not, it changes the arithmetic and moves to the `fixed` mode (step 2.4), recorded as such at G1.
-- **Tests:** BIT on NVIDIA and on POCL against the golden masters, now **without** the guard bands (the padding replaces them); the out-of-bounds `xfail`s start passing; plain runs no longer crash after a few propagations in one process.
+- **Tests:** BIT on NVIDIA and on POCL against the golden masters, now **without** the guard bands (the padding replaces them); the out-of-bounds `xfail`s start passing; plain runs no longer crash after a few propagations in one process, and the example scripts run as programs without the guard (`gradient.py` crashes plain 0.1.10 today).
 - **Criterion:** POCL finite and deterministic; decision about the mode recorded.
 
 ### 1.8 Diagnostics

@@ -23,6 +23,7 @@ and must pass everywhere else.
 | ``test_kernels_do_not_write_outside_buffers`` | crosswell and right-well ``Adj_injSrc`` accumulate past the end of the adjoint fields | 2.4 |
 | ``test_receiver_loops_bound_the_receiver_index`` | 5 receiver loops have no bound on the receiver index | 2.4 |
 | ``test_default_geometry_is_deterministic`` | race conditions at source/receiver coincidences (non-strict: probabilistic) | 3.4 |
+| ``test_chpr_zero_gives_the_checkpointed_gradient`` | ``chpr=0`` (the default) rebuilds the field backwards through the PML: wrong gradient | 4.2 |
 | ``test_crosswell_vz_seismogram_records_vz`` | the crosswell ``vz`` seismogram stores ``vx`` | 2.4 |
 | ``test_crosswell_kernels_assign_vz_to_vz_seismograms`` | same bug, lines 27 and 74 of ``elastic_crosswell.cl`` | 2.4 |
 | ``test_dt_define_is_not_truncated`` | ``#define dt`` keeps only 6 decimals | 2.4 |
@@ -177,6 +178,21 @@ def test_default_geometry_is_deterministic(opencl_platform, acq_type):
     for other in runs[1:]:
         for k in runs[0]:
             np.testing.assert_array_equal(other[k], runs[0][k], err_msg=k)
+
+
+@pytest.mark.xfail(strict=True, reason="with chpr=0 (the default of WavePropagator) only two snapshots are kept and "
+                                       "the forward field is rebuilt backwards through the absorbing boundary over "
+                                       "the whole recording, which is not exact: the gradient is wrong")
+def test_chpr_zero_gives_the_checkpointed_gradient(opencl_platform):
+    from oob_guard import zero_guard_bands
+
+    gradients = {}
+    for chpr in (0, 20):
+        with zero_guard_bands():
+            gradients[chpr] = forward_and_gradient(tiny_case(ns=2, chpr=chpr))[1]["vp"]
+    a, b = gradients[0].ravel(), gradients[20].ravel()
+    cosine = np.dot(a, b) / np.linalg.norm(a) / np.linalg.norm(b)
+    assert cosine > 0.999, f"cosine similarity with the checkpointed gradient: {cosine:.3f}"
 
 
 @pytest.mark.xfail(strict=True, reason="elastic_crosswell.cl stores vx in the vz seismogram")

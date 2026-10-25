@@ -28,7 +28,8 @@ how much and in which numeric mode.
 - `example/scripts/`: user-facing example scripts that use only the public API, each with a
   `main(size, show)` function, run by `test/test_examples.py` with a physical check
   (`forward_surface.py`: forward modelling with a surface acquisition; `forward_acquisitions.py`:
-  crosswell, surface and combined geometries, and how traces map to receivers).
+  crosswell, surface and combined geometries, and how traces map to receivers; `gradient.py`: the
+  adjoint-state gradient, the effect of `chpr` and the two parameterisations).
 - GitHub Actions workflow `ci.yml` (CPU job: two lint passes, GPU-less environment check, test
   suite) with pinned dependencies in `requirements/ci-cpu.txt`, and a `[tool.ruff]` configuration.
 
