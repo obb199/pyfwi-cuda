@@ -61,3 +61,16 @@ def test_ci_requirements_use_the_dev_versions():
     assert not different, f"ci-cpu.txt and dev.txt disagree (ci, dev): {different}"
     assert {"numpy", "scipy", "pyopencl", "pocl-binary-distribution", "pytest", "ruff"} <= set(ci)
     assert "cupy-cuda13x" not in ci and "torch" not in ci  # the CPU job has no GPU stack
+
+
+def test_gpu_workflow_targets_the_self_hosted_rtx_and_is_manual_until_the_runner_exists():
+    with open(os.path.join(WORKFLOWS, "gpu.yml"), encoding="utf-8") as f:
+        gpu = f.read()
+    active = "\n".join(line for line in gpu.splitlines() if not line.lstrip().startswith("#"))
+    assert "workflow_dispatch:" in active
+    # Until a runner is registered (docs/cuda-migration/self-hosted-runner.md), no automatic trigger.
+    assert "push:" not in active and "schedule:" not in active, "enable only once the runner exists"
+    assert "runs-on: [self-hosted, linux, x64, gpu]" in active
+    assert "tools/setup_envs.sh all" in active  # tests the checked-out commit, not a local checkout
+    assert 'pytest -m "not slow"' in active and "pytest -m slow" in active
+    assert "ref-0.1.10/bin/python -m pytest" in active

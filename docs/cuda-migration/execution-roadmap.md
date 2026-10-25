@@ -234,6 +234,7 @@ No change in the behaviour of the package. This phase builds everything that wil
 - **Goes in:** a GitHub Actions runner on this machine, restricted to the private repository; `opencl`, `gpu` and `sanitizer` jobs on every push, and a nightly DES job.
 - **Checks:** a test push triggers the jobs; a deliberately failing test makes the job fail; the runner does not run on PRs from forks.
 - **Criterion:** CPU and GPU CI green on `main`.
+- **Status:** prepared, waiting for the owner. `.github/workflows/gpu.yml` (manual-only until a runner exists) re-creates the environments from the commit under test and runs the environment check, the fast and slow suites and the reference-environment suite; a nightly job runs the benchmark. [self-hosted-runner.md](self-hosted-runner.md) explains how to register the runner safely (pending action 3).
 
 ### Gate G0
 

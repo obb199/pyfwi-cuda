@@ -1,0 +1,71 @@
+# GPU jobs of the PyFWI-CUDA fork, for a self-hosted runner on the RTX machine (roadmap step 0.9).
+#
+# Disabled until a runner with the labels [self-hosted, linux, x64, gpu] is registered for this
+# repository: until then it only runs when started by hand (workflow_dispatch). How to register the
+# runner: docs/cuda-migration/self-hosted-runner.md. Once it exists, uncomment the push and schedule
+# triggers below.
+#
+# Each job re-creates the reference and development environments from the checked-out commit with
+# tools/setup_envs.sh (the environments of the developer's own checkout point to that checkout, not
+# to the commit under test). With uv's cache this takes about a minute.
+#
+# This workflow never publishes anything: test/test_ci.py fails if any workflow does.
+name: GPU
+
+on:
+  workflow_dispatch:
+  # push:
+  #   branches: [main]
+  # schedule:
+  #   - cron: "0 3 * * *"  # nightly: slow suite and benchmark
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpu-${{ github.ref }}
+  cancel-in-progress: false  # never interrupt a GPU run halfway (benchmarks would be wrong)
+
+env:
+  ENVS_DIR: ${{ github.workspace }}/../pyfwi-ci-envs
+  FORCE: "1"
+
+jobs:
+  gpu:
+    name: RTX - environment check, fast and slow suites, reference environment
+    runs-on: [self-hosted, linux, x64, gpu]
+    timeout-minutes: 120
+    steps:
+      - name: Check out the repository with its full history
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Re-create the environments from this commit
+        run: tools/setup_envs.sh all
+
+      - name: Environment check (GPU required)
+        run: $ENVS_DIR/dev/bin/python tools/check_env.py
+
+      - name: Fast suite (NVIDIA OpenCL, CUDA, compute-sanitizer self-test)
+        run: $ENVS_DIR/dev/bin/python -m pytest -m "not slow" -ra
+
+      - name: Slow suite (characterisation of inversions and examples, mathematical baseline)
+        run: $ENVS_DIR/dev/bin/python -m pytest -m slow -ra
+
+      - name: The same tests against the published PyFWI 0.1.10
+        run: $ENVS_DIR/ref-0.1.10/bin/python -m pytest -ra
+
+  benchmark:
+    name: RTX - nightly benchmark
+    if: github.event_name == 'schedule'
+    needs: gpu
+    runs-on: [self-hosted, linux, x64, gpu]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - run: tools/setup_envs.sh dev
+      - run: $ENVS_DIR/dev/bin/python tools/benchmark.py --label nightly --out bench/nightly
+      - run: >-
+          $ENVS_DIR/dev/bin/python tools/benchmark_report.py bench/baseline/ref-0.1.10-pyopencl-2022.json
+          bench/nightly/nightly.json >> $GITHUB_STEP_SUMMARY
