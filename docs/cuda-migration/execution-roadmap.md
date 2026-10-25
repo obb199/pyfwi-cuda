@@ -9,15 +9,15 @@ This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into 
 | # | Step | Version / gate |
 | --- | --- | --- |
 | P | Environments, repository and environment checker | **done** (`babbc0e`) |
-| 0.1 | Fork hygiene: README, GPLv3 notice, CHANGELOG, lint configuration, CPU CI | Phase 0 |
-| 0.2 | Known bugs of 0.1.10 become strict `xfail` tests | |
-| 0.3 | Example scripts that exercise the public API and must never break | |
-| 0.4 | Golden-master generator in the reference environment | |
-| 0.5 | Characterisation tests in dev and reference × dev cross-check | |
-| 0.6 | Mathematical baseline of 0.1.10 (gradient, analytic solution, convergence, adjoint) | |
-| 0.7 | Reference benchmark in the three scenarios | |
-| 0.8 | Profiling bench: Nsight Systems, Nsight Compute, compute-sanitizer | |
-| 0.9 | Self-hosted runner on the RTX and GPU jobs | **G0** |
+| 0.1 | Fork hygiene: README, GPLv3 notice, CHANGELOG, lint configuration, CPU CI | Phase 0 · **done** |
+| 0.2 | Known bugs of 0.1.10 become strict `xfail` tests | **done** |
+| 0.3 | Example scripts that exercise the public API and must never break | **done** |
+| 0.4 | Golden-master generator in the reference environment | **done** |
+| 0.5 | Characterisation tests in dev and reference × dev cross-check | **done** |
+| 0.6 | Mathematical baseline of 0.1.10 (gradient, analytic solution, convergence, adjoint) | **done** |
+| 0.7 | Reference benchmark in the three scenarios | **done** |
+| 0.8 | Profiling bench: Nsight Systems, Nsight Compute, compute-sanitizer | **done** (Nsight Compute waits for the owner) |
+| 0.9 | Self-hosted runner on the RTX and GPU jobs | prepared (runner waits for the owner) · **[G0](gates/G0.md) approved with 2 exceptions** |
 | 1.1 | Imports and packaging (current SciPy and NumPy, declared dependencies) | Phase 1 |
 | 1.2 | Fixed OpenCL device selection | |
 | 1.3 | Cached kernels and fixed arguments | |
