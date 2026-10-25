@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-from golden_cases import propagation_cases
+from golden_cases import all_cases
 from golden_store import GOLDEN_DIR, load_manifest, verify_case
 
 #: Absolute path of the repository root.
@@ -34,9 +34,14 @@ def test_golden_masters_come_from_the_published_0_1_10():
 
 
 def test_every_case_of_the_matrix_is_stored_with_the_same_definition():
-    stored = {name: entry["params"] for name, entry in MANIFEST["cases"].items() if entry["kind"] == "propagation"}
-    expected = {case.name: case.as_dict() for case in propagation_cases()}
+    stored = {name: entry["params"] for name, entry in MANIFEST["cases"].items()}
+    expected = {case.name: case.as_dict() for case in all_cases()}
     assert stored == expected, "the case matrix changed: regenerate the golden masters"
+
+
+def test_cases_are_of_the_three_kinds():
+    kinds = {entry["kind"] for entry in MANIFEST["cases"].values()}
+    assert kinds == {"propagation", "inversion", "example"}
 
 
 @pytest.mark.parametrize("name", sorted(MANIFEST["cases"]) if MANIFEST else [])
