@@ -167,3 +167,14 @@ def test_step_1_5_the_host_no_longer_waits_for_checkpoint_copies():
     assert before["medium"]["forward_s"]["median"] / after["medium"]["forward_s"]["median"] > 2.5
     assert baseline["medium"]["gradient_s"]["median"] / after["medium"]["gradient_s"]["median"] > 1.4
     assert after["small"]["forward_s"]["median"] <= before["small"]["forward_s"]["median"]
+
+
+def test_release_0_1_11_is_faster_than_0_1_10_in_every_scenario():
+    # Gate G1 (docs/cuda-migration/reports/benchmark-0.1.11.md): no scenario slower than the baseline.
+    baseline = _stored("baseline", "ref-0.1.10-pyopencl-2022")["scenarios"]
+    release = _stored("release-0.1.11", "fork-0.1.11-pyopencl-2026")["scenarios"]
+    assert set(release) == set(baseline) == {"small", "medium", "large"}
+    for name in baseline:
+        for kind in ("forward_s", "gradient_s"):
+            assert release[name][kind]["median"] < baseline[name][kind]["median"], (name, kind)
+        assert release[name]["per_step"]["blocking_copies"] < 0.01, name

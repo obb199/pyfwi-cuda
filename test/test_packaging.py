@@ -57,6 +57,22 @@ def _source_files():
     return sorted(paths)
 
 
+def _version_in_sources():
+    """The version written in ``src/PyFWI/version.py`` (what the wheel must carry)."""
+    with open(os.path.join(PACKAGE, "version.py")) as f:
+        return re.fullmatch(r"version = '(.+)'", f.read().strip()).group(1)
+
+
+def test_a_release_version_has_a_dated_changelog_section():
+    # A version without ".dev" is a release: its CHANGELOG section must exist, with its date.
+    version = _version_in_sources()
+    if ".dev" in version:
+        pytest.skip(f"{version} is a development version")
+    with open(os.path.join(REPO, "CHANGELOG.md"), encoding="utf-8") as f:
+        changelog = f.read()
+    assert re.search(rf"^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}$", changelog, re.MULTILINE)
+
+
 def test_pyproject_declares_the_fork():
     project = _pyproject()["project"]
     assert project["name"] == DISTRIBUTION
@@ -87,7 +103,8 @@ def test_version_is_written_in_one_place():
     import PyFWI
     with open(os.path.join(PACKAGE, "version.py")) as f:
         assert f.read().strip() == f"version = '{PyFWI.__version__}'"
-    assert PyFWI.__version__ == "0.1.11.dev0"
+    # A release (0.1.11) or a development version after it (0.1.12.dev0): PEP 440, no local label.
+    assert re.fullmatch(r"0\.\d+\.\d+(\.dev\d+)?", PyFWI.__version__), PyFWI.__version__
     with open(os.path.join(REPO, "docs", "conf.py")) as f:
         conf = f.read()
     assert "from PyFWI.version import version as release" in conf  # the docs do not repeat the number
@@ -104,7 +121,7 @@ def test_wheel_metadata(built_distributions):
     fields = [line.split(": ", 1) for line in metadata.split("\n\n", 1)[0].splitlines() if ": " in line]
     single = dict(fields)
     assert single["Name"] == DISTRIBUTION
-    assert single["Version"] == "0.1.11.dev0"
+    assert single["Version"] == _version_in_sources()
     assert single["Requires-Python"] == ">=3.10"
     assert single["License-Expression"] == "GPL-3.0-or-later"
     requires = [value for key, value in fields if key == "Requires-Dist"]

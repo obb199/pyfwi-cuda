@@ -9,6 +9,18 @@ how much and in which numeric mode.
 
 ## [Unreleased]
 
+### Numerical changes
+
+- None.
+
+## [0.1.11] - 2026-10-25
+
+First release of the fork (Phase 1 of the roadmap, gate [G1](docs/cuda-migration/gates/G1.md)): PyFWI
+0.1.10 on its OpenCL engine, with exactly its results, installable with current NumPy and SciPy on
+Python 3.10 to 3.13, and faster in every scenario of the benchmark (forward / gradient against
+0.1.10: 3.5× / 2.5× small, 2.6× / 1.5× medium, 1.5× / 1.14× large;
+[report](docs/cuda-migration/reports/benchmark-0.1.11.md)).
+
 ### Added
 
 - `tools/check_env.py`: checks versions, OpenCL devices, the CUDA tool chain (NVRTC, CUDA Graphs,

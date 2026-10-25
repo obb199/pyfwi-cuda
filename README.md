@@ -32,9 +32,11 @@ the user's code.
 - [Execution and verification roadmap](docs/cuda-migration/execution-roadmap.md): every step from
   the current state to version 0.4, with the tests and checks of each step.
 
-**Status:** Phase 1 (host-side fixes, no change to the numerical results). The package code under
-`src/PyFWI/` differs from PyFWI 0.1.10 only by the changes listed in [CHANGELOG.md](CHANGELOG.md);
-the golden masters in `test/golden/` check that the results stay the same.
+**Status:** release 0.1.11, the end of Phase 1 ([gate G1](docs/cuda-migration/gates/G1.md)): the
+OpenCL engine of PyFWI 0.1.10 with exactly its results, installable with current NumPy and SciPy, and
+1.1 to 3.5 times faster ([benchmark](docs/cuda-migration/reports/benchmark-0.1.11.md)). Every change
+is listed in [CHANGELOG.md](CHANGELOG.md); the golden masters in `test/golden/` check that the results
+stay those of 0.1.10. Next: Phase 2, the CUDA backend.
 
 ## Repository layout
 

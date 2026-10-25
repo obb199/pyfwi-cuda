@@ -1,0 +1,230 @@
+{
+ "date": "2026-10-25T21:38:06+00:00",
+ "label": "fork-0.1.11-pyopencl-2026",
+ "machine": {
+  "cpu": "x86_64",
+  "driver": "580.95.05",
+  "numpy": "2.5.4",
+  "opencl_device": "NVIDIA GeForce RTX 3060",
+  "pyfwi": "0.1.11.dev0",
+  "pyfwi_path": "/home/user/Desktop/apps/cuda_pyfwi/pyfwi-cuda/src/PyFWI",
+  "pyopencl": "2026.1.4",
+  "python": "3.12.15"
+ },
+ "repeats": 5,
+ "scenarios": {
+  "large": {
+   "cv_forward": 0.0015290471367483463,
+   "cv_gradient": 0.0027372554607341323,
+   "definition": {
+    "chpr": 5,
+    "dh": 7.0,
+    "ns_run": 1,
+    "ns_target": 50,
+    "nx": 750,
+    "nz": 600,
+    "t": 3.427
+   },
+   "forward_s": {
+    "median": 503.9641016999667,
+    "runs": [
+     10.07216533999599,
+     10.066852284995548,
+     10.079282033999334,
+     10.09428735900292,
+     10.109042560005037
+    ]
+   },
+   "gpu_after": {
+    "power_w": 148.94,
+    "sm_clock_mhz": 1897.0,
+    "temperature_c": 71.0
+   },
+   "gpu_before": {
+    "power_w": 148.98,
+    "sm_clock_mhz": 1905.0,
+    "temperature_c": 71.0
+   },
+   "gradient_s": {
+    "median": 1346.7032543499954,
+    "runs": [
+     26.934065086999908,
+     27.082675192999886,
+     26.92592879699805,
+     27.07128628800274,
+     26.919961245002924
+    ]
+   },
+   "guard_bands": true,
+   "host_ms_per_step": {
+    "forward": 1.6804404858284985,
+    "gradient": 4.490507683727894
+   },
+   "internal_steps_per_shot": 5998,
+   "launches_by_kernel": {
+    "Adj_injSrc": 856,
+    "Adj_update_tau": 5997,
+    "Adj_update_v": 5997,
+    "Grad": 5997,
+    "MakeAllZero": 3,
+    "MakeGradZero": 1,
+    "injSrc": 857,
+    "update_tauxz": 11697,
+    "update_tauz": 11697,
+    "update_velx": 11697,
+    "update_velz": 11697
+   },
+   "per_step": {
+    "blocking_copies": 0.0040013337779259755,
+    "forward_copies": 0.25091697232410803,
+    "forward_launches": 4.143047682560853,
+    "gradient_copies": 0.9651550516838946,
+    "gradient_launches": 6.943314438146048
+   },
+   "scale": 50.0,
+   "scaled_to_shots": 50
+  },
+  "medium": {
+   "cv_forward": 0.00298783124780117,
+   "cv_gradient": 0.001425076988516214,
+   "definition": {
+    "chpr": 20,
+    "dh": 7.0,
+    "ns_run": 2,
+    "ns_target": 8,
+    "nx": 400,
+    "nz": 400,
+    "t": 1.713
+   },
+   "forward_s": {
+    "median": 17.944591984007275,
+    "runs": [
+     4.485299439998926,
+     4.4851990019960795,
+     4.518816669995431,
+     4.486147996001819,
+     4.503323750002892
+    ]
+   },
+   "gpu_after": {
+    "power_w": 135.75,
+    "sm_clock_mhz": 1905.0,
+    "temperature_c": 68.0
+   },
+   "gpu_before": {
+    "power_w": 138.07,
+    "sm_clock_mhz": 1905.0,
+    "temperature_c": 71.0
+   },
+   "gradient_s": {
+    "median": 38.7370972080098,
+    "runs": [
+     9.68427430200245,
+     9.665028005998465,
+     9.670730450001429,
+     9.694510311004706,
+     9.701566342999286
+    ]
+   },
+   "guard_bands": true,
+   "host_ms_per_step": {
+    "forward": 0.7481901260843593,
+    "gradient": 1.6151224653106153
+   },
+   "internal_steps_per_shot": 2998,
+   "launches_by_kernel": {
+    "Adj_injSrc": 856,
+    "Adj_update_tau": 5994,
+    "Adj_update_v": 5994,
+    "Grad": 5994,
+    "MakeAllZero": 6,
+    "MakeGradZero": 1,
+    "injSrc": 858,
+    "update_tauxz": 10794,
+    "update_tauz": 10794,
+    "update_velx": 10794,
+    "update_velz": 10794
+   },
+   "per_step": {
+    "blocking_copies": 0.004836557705136758,
+    "forward_copies": 1.0015010006671115,
+    "forward_launches": 4.14342895263509,
+    "gradient_copies": 1.715143428952635,
+    "gradient_launches": 6.34339559706471
+   },
+   "scale": 4.0,
+   "scaled_to_shots": 8
+  },
+  "small": {
+   "cv_forward": 0.042845716727766076,
+   "cv_gradient": 0.004298419367848399,
+   "definition": {
+    "chpr": 20,
+    "dh": 7.0,
+    "ns_run": 4,
+    "ns_target": 4,
+    "nx": 100,
+    "nz": 100,
+    "t": 0.6
+   },
+   "forward_s": {
+    "median": 0.4246345959982136,
+    "runs": [
+     0.45324394699855475,
+     0.4246345959982136,
+     0.43974469100066926,
+     0.3983045860004495,
+     0.4243281700037187
+    ]
+   },
+   "gpu_after": {
+    "power_w": 96.66,
+    "sm_clock_mhz": 1920.0,
+    "temperature_c": 67.0
+   },
+   "gpu_before": {
+    "power_w": 96.51,
+    "sm_clock_mhz": 1920.0,
+    "temperature_c": 66.0
+   },
+   "gradient_s": {
+    "median": 0.7615748289972544,
+    "runs": [
+     0.7676157469977625,
+     0.7613245710017509,
+     0.7629863490001298,
+     0.7615748289972544,
+     0.7574500030023046
+    ]
+   },
+   "guard_bands": true,
+   "host_ms_per_step": {
+    "forward": 0.10110347523766991,
+    "gradient": 0.18132734023744151
+   },
+   "internal_steps_per_shot": 1050,
+   "launches_by_kernel": {
+    "Adj_injSrc": 596,
+    "Adj_update_tau": 4196,
+    "Adj_update_v": 4196,
+    "Grad": 4196,
+    "MakeAllZero": 12,
+    "MakeGradZero": 1,
+    "injSrc": 600,
+    "update_tauxz": 7560,
+    "update_tauz": 7560,
+    "update_velx": 7560,
+    "update_velz": 7560
+   },
+   "per_step": {
+    "blocking_copies": 0.009285714285714286,
+    "forward_copies": 1.005952380952381,
+    "forward_launches": 4.143809523809524,
+    "gradient_copies": 1.7128571428571429,
+    "gradient_launches": 6.3411904761904765
+   },
+   "scale": 1.0,
+   "scaled_to_shots": 4
+  }
+ }
+}

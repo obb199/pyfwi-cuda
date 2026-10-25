@@ -26,7 +26,7 @@ This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into 
 | 1.6 | Element-wise low-pass filter | **done** |
 | 1.7 | Padded buffers: no more reads outside the allocation | **done** (and one shared context per device) |
 | 1.8 | `PyFWI.info()` and diagnostic log | **done** |
-| 1.9 | Fork release 0.1.11 | **G1** |
+| 1.9 | Fork release 0.1.11 | **done** · **[G1](gates/G1.md) approved** |
 | 2.1 | Engine and backend interface; OpenCL behind the interface | Phase 2 |
 | 2.2 | Backend selector and fallback | |
 | 2.3 | Parity CUDA backend (single source, `legacy` mode) | |
@@ -411,6 +411,13 @@ No computation of the propagator changes, so the criterion is BIT against the go
 - **Goes in:** CHANGELOG, version and tag.
 - **Tests:** full PKG (Python 3.10 to 3.13); the original scripts in `example/` and every script in `example/scripts/` run without edits; DES against the baseline; FWI.
 - **Criterion:** gate G1.
+- **Result:** version 0.1.11, tag `v0.1.11`. PKG: the wheel installs in fresh environments of Python
+  3.10, 3.11, 3.12 and 3.13 from the package index and runs an example on POCL; the original
+  `example/fwi_example_surface.py` and every script of `example/scripts/` run without edits
+  (`test/test_release.py`, `test/test_examples.py`). DES ([report](reports/benchmark-0.1.11.md)): no
+  scenario slower than the baseline; forward / gradient 3.5× / 2.5× (small), 2.6× / 1.5× (medium),
+  1.5× / 1.14× (large). FWI: the inversions of the golden masters bit for bit. Gate report:
+  [G1](gates/G1.md).
 
 ### Gate G1
 
