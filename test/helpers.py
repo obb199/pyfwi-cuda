@@ -5,12 +5,17 @@
 * ``tiny_case()`` and ``forward_and_gradient()`` -- a very small but complete PyFWI
   run (forward modelling + gradient) that takes well under a second on any OpenCL
   device, including POCL on a CI machine.
+* ``kernel_receiver_cells()``, ``coincidences()`` and ``race_free_geometry()`` -- find
+  and avoid the source and receiver positions that trigger race conditions in the
+  kernels of 0.1.10.
 
 Only the public API of PyFWI is used by ``tiny_case``/``forward_and_gradient``,
 so the same code runs in the reference environment (PyFWI 0.1.10 from PyPI)
 and in the development environment (this fork).
 """
 from types import SimpleNamespace
+
+import numpy as np
 
 from tools.check_env import inclusion_model
 
@@ -51,7 +56,176 @@ def kernel_sources(order, dt=0.004 / 7, dh=7.0):
     return WavePreparation.kernel_caller(fake)
 
 
-def tiny_case(acq_type=1, sdo=4, components=0, ns=1, nz=40, nx=40, t=0.2, chpr=20, inpa_extra=None):
+def grid_cell(loc, dh):
+    """Grid cell ``(ix, iz)`` of each position, as PyFWI computes it (``int(x / dh)``, ``int(z / dh)``).
+
+    Parameters
+    ----------
+    loc : numpy.ndarray
+        Positions in metres, shape ``(n, 2)``, columns ``(x, z)``.
+    dh : float
+        Grid spacing in metres.
+
+    Returns
+    -------
+    list of tuple
+        One ``(ix, iz)`` per position, without the PML offset (it is the same for every point).
+    """
+    cells = np.int32(np.asarray(loc, np.float32) / np.float32(dh))
+    return [tuple(c) for c in cells]
+
+
+def kernel_receiver_cells(rec_loc, n_well_rec, dh, rec_dis, nz):
+    """Grid cells where the kernels of 0.1.10 record seismograms and inject adjoint sources.
+
+    The kernels do not read the position of every receiver. For each receiver
+    line they take the cell of its *first* receiver and assume the others follow
+    every ``dxr = rec_dis / dh`` cells: along x for the surface line, along z
+    for a well. The right well (crosswell kernel, and right well of
+    ``acq_type=2``) has no bound on the receiver index, so it covers every
+    ``dxr``-th row from its first receiver down to the bottom of the grid.
+
+    ``rec_loc`` must be ordered as PyFWI builds it: surface line only
+    (``n_well_rec == 0``), right well only (crosswell, ``n_well_rec == nr``), or
+    left well + surface line + right well (``acq_type=2``).
+
+    Parameters
+    ----------
+    rec_loc : numpy.ndarray
+        Receiver positions in metres, shape ``(nr, 2)``, columns ``(x, z)``.
+    n_well_rec : int
+        Receivers per well (0 for a surface acquisition).
+    dh, rec_dis : float
+        Grid spacing and receiver spacing in metres.
+    nz : int
+        Number of grid rows of the model (rows of the PML below it are ignored:
+        no source is placed there).
+
+    Returns
+    -------
+    list of tuple
+        ``(ix, iz)`` cells without the PML offset, one per recorded point, in
+        kernel order (a cell appears twice if two receivers share it).
+    """
+    dxr = int(rec_dis / dh)
+    nr = rec_loc.shape[0]
+
+    def line(first, count, along_x):
+        ix, iz = grid_cell(first[None, :], dh)[0]
+        return [(ix + k * dxr, iz) if along_x else (ix, iz + k * dxr) for k in range(count)]
+
+    def unbounded_well(first):
+        ix, iz = grid_cell(first[None, :], dh)[0]
+        return [(ix, z) for z in range(iz, nz, dxr)]
+
+    if n_well_rec == 0:                       # surface acquisition
+        return line(rec_loc[0], nr, along_x=True)
+    if n_well_rec == nr:                      # crosswell: one (right) well
+        return unbounded_well(rec_loc[0])
+    n_surface = nr - 2 * n_well_rec          # both: left well, surface line, right well
+    return (line(rec_loc[0], n_well_rec, along_x=False)
+            + line(rec_loc[n_well_rec], n_surface, along_x=True)
+            + unbounded_well(rec_loc[-n_well_rec]))
+
+
+def coincidences(src_loc, rec_loc, n_well_rec, dh, rec_dis, nz):
+    """Find the grid points where PyFWI 0.1.10 has a race condition.
+
+    Two situations make the results of 0.1.10 depend on the order in which GPU
+    threads run (they change between runs and between devices):
+
+    * a **source on a receiver cell**: ``injSrc`` adds the source at a grid point
+      in one thread while other threads of the same launch record the receivers;
+      the receiver at that point records the field before or after the injection;
+    * **two receivers on one cell**: ``Adj_injSrc`` adds both residuals to the same
+      adjoint value from two threads with a non-atomic ``+=``; one addition can
+      be lost. The default ``acq_type=2`` geometry of ``acq_parameters`` does this
+      where the wells cross the surface line.
+
+    Receiver cells are those the kernels actually use (``kernel_receiver_cells``),
+    not simply the cells of ``rec_loc``.
+
+    Parameters
+    ----------
+    src_loc, rec_loc : numpy.ndarray
+        Source and receiver positions in metres, shape ``(n, 2)``, columns ``(x, z)``.
+    n_well_rec : int
+        Receivers per well (0 for a surface acquisition).
+    dh, rec_dis : float
+        Grid spacing and receiver spacing in metres.
+    nz : int
+        Number of grid rows of the model.
+
+    Returns
+    -------
+    dict
+        ``{"source_on_receiver": [...], "shared_receiver_cell": [...]}`` with the
+        offending ``(ix, iz)`` cells; both lists are empty for a race-free geometry.
+
+    Used by
+    -------
+    ``race_free_geometry()``, ``test_helpers.py`` and ``test_known_bugs.py``.
+    """
+    seen, shared = set(), []
+    for c in kernel_receiver_cells(rec_loc, n_well_rec, dh, rec_dis, nz):
+        if c in seen and c not in shared:
+            shared.append(c)
+        seen.add(c)
+    on_receiver = [c for c in grid_cell(src_loc, dh) if c in seen]
+    return {"source_on_receiver": on_receiver, "shared_receiver_cell": shared}
+
+
+def race_free_geometry(src_loc, rec_loc, n_well_rec, dh, rec_dis, nz):
+    """Adjust a PyFWI acquisition so that it has none of the race conditions of ``coincidences()``.
+
+    * ``acq_type=2``: the surface line keeps only the receivers strictly between
+      the two well columns. It must stay contiguous, because the kernels place
+      the surface receivers from the first one every ``dxr`` cells; removing a
+      receiver in the middle of the line would not remove its cell.
+    * Each source that sits on a receiver cell is moved one grid row up (towards
+      the surface) at a time, or one column to the right once it reaches the top
+      row, until it no longer does.
+
+    Parameters
+    ----------
+    src_loc, rec_loc : numpy.ndarray
+        Positions in metres, shape ``(n, 2)``, columns ``(x, z)``, as returned by
+        ``PyFWI.acquisition.acq_parameters``.
+    n_well_rec : int
+        Receivers per well (0 for a surface acquisition).
+    dh, rec_dis : float
+        Grid spacing and receiver spacing in metres.
+    nz : int
+        Number of grid rows of the model.
+
+    Returns
+    -------
+    src_loc, rec_loc : numpy.ndarray
+        Adjusted copies (``float32``).
+
+    Used by
+    -------
+    ``tiny_case()``, and the golden-master cases of Phase 0.
+    """
+    src = np.array(src_loc, np.float32)
+    rec = np.array(rec_loc, np.float32)
+    nr = rec.shape[0]
+    if 0 < n_well_rec < nr:  # left well + surface line + right well
+        left, surface, right = rec[:n_well_rec], rec[n_well_rec:-n_well_rec], rec[-n_well_rec:]
+        inside = (surface[:, 0] > left[0, 0]) & (surface[:, 0] < right[0, 0])
+        rec = np.vstack([left, surface[inside], right])
+    receiver_cells = set(kernel_receiver_cells(rec, n_well_rec, dh, rec_dis, nz))
+    for k in range(src.shape[0]):
+        while grid_cell(src[k:k + 1], dh)[0] in receiver_cells:
+            if src[k, 1] >= dh:
+                src[k, 1] -= dh   # one row up
+            else:
+                src[k, 0] += dh   # already at the top row: one column to the right
+    return src, rec
+
+
+def tiny_case(acq_type=1, sdo=4, components=0, ns=1, nz=40, nx=40, t=0.2, chpr=20, inpa_extra=None,
+              race_free=True):
     """Build a very small PyFWI problem: model, starting model, source, receivers, propagator.
 
     The OpenCL device is the one selected by the ``PYOPENCL_CTX`` environment
@@ -76,6 +250,10 @@ def tiny_case(acq_type=1, sdo=4, components=0, ns=1, nz=40, nx=40, t=0.2, chpr=2
         Percentage of time steps stored as checkpoints for the gradient.
     inpa_extra : dict, optional
         Extra entries for the ``inpa`` dictionary (e.g. ``{"energy_balancing": True}``).
+    race_free : bool, optional
+        If True (default), adjust the acquisition of ``acq_parameters`` with
+        ``race_free_geometry()`` so that the result does not depend on GPU thread
+        order (see ``coincidences()``). False keeps the default geometry of 0.1.10.
 
     Returns
     -------
@@ -98,6 +276,8 @@ def tiny_case(acq_type=1, sdo=4, components=0, ns=1, nz=40, nx=40, t=0.2, chpr=2
     model, m0 = inclusion_model(nz, nx), inclusion_model(nz, nx, smooth=1)
     src_loc, rec_loc, _, n_well_rec = acq.acq_parameters(ns, inpa["rec_dis"], inpa["dh"] * nx,
                                                          inpa["dh"] * nz, inpa["dh"], sdo, acq_type=acq_type)
+    if race_free:
+        src_loc, rec_loc = race_free_geometry(src_loc, rec_loc, n_well_rec, inpa["dh"], inpa["rec_dis"], nz)
     src = acq.Source(src_loc, inpa["dh"], inpa["dt"])
     src.Ricker(inpa["fdom"])
     W = wave.WavePropagator(inpa, src, rec_loc, (nz, nx), components=components,
