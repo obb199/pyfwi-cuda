@@ -7,6 +7,10 @@ turns that into a failure ("XPASS(strict)"), and the marker must be removed in
 the same commit as the fix. That way a fix can never land silently, and a
 regression can never come back silently.
 
+Race conditions are the exception: whether a race changes the result depends on
+thread scheduling, so a racy test may pass by chance. Those tests use
+``strict=False`` and say so in their reason.
+
 Where an ``xfail`` uses ``raises=``, the test only counts as "expected failure"
 if it fails with that exception type, so it cannot pass for the wrong reason.
 Bugs that depend on the environment (for example imports that only break with
@@ -18,6 +22,7 @@ and must pass everywhere else.
 | ``test_stencils_do_not_read_outside_buffers`` | stencils read past the end / before the start of the field buffers | 1.7 / 2.4 |
 | ``test_kernels_do_not_write_outside_buffers`` | crosswell and right-well ``Adj_injSrc`` accumulate past the end of the adjoint fields | 2.4 |
 | ``test_receiver_loops_bound_the_receiver_index`` | 5 receiver loops have no bound on the receiver index | 2.4 |
+| ``test_default_geometry_is_deterministic`` | race conditions at source/receiver coincidences (non-strict: probabilistic) | 3.4 |
 | ``test_crosswell_vz_seismogram_records_vz`` | the crosswell ``vz`` seismogram stores ``vx`` | 2.4 |
 | ``test_crosswell_kernels_assign_vz_to_vz_seismograms`` | same bug, lines 27 and 74 of ``elastic_crosswell.cl`` | 2.4 |
 | ``test_dt_define_is_not_truncated`` | ``#define dt`` keeps only 6 decimals | 2.4 |
@@ -154,6 +159,24 @@ def test_receiver_loops_bound_the_receiver_index():
                 if not re.search(r"(ir|[ij]\s*/\s*dxr)\s*<", window):
                     unbounded.append(f"{name}:{k + 1}")
     assert not unbounded, f"receiver loops without an index bound: {unbounded}"
+
+
+@pytest.mark.xfail(strict=False, reason="race conditions: with the default geometry of acq_parameters a source sits on "
+                                        "a receiver cell (acq_type 1) and two receivers share a cell where the wells "
+                                        "cross the surface line (acq_type 2); non-strict because a race may happen to "
+                                        "give equal results")
+@pytest.mark.parametrize("acq_type", [1, 2])
+def test_default_geometry_is_deterministic(opencl_platform, acq_type):
+    from oob_guard import zero_guard_bands
+
+    runs = []
+    for _ in range(3):
+        with zero_guard_bands():  # rule out the out-of-bounds effects: only the races remain
+            d, g = forward_and_gradient(tiny_case(acq_type=acq_type, components=4, ns=2, race_free=False))
+        runs.append({**d, **g})
+    for other in runs[1:]:
+        for k in runs[0]:
+            np.testing.assert_array_equal(other[k], runs[0][k], err_msg=k)
 
 
 @pytest.mark.xfail(strict=True, reason="elastic_crosswell.cl stores vx in the vz seismogram")
