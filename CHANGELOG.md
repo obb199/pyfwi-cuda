@@ -19,6 +19,9 @@ how much and in which numeric mode.
 - Test suite for the tools, the environment files and the documentation.
 - `docs/cuda-migration/`: analysis and migration plan, and the execution and verification roadmap.
 - Fork README with the GPLv3 modification notice, and this changelog.
+- `test/test_known_bugs.py`: the known bugs of 0.1.10 as strict expected failures, and
+  `test/oob_guard.py`, NaN guard bands that make out-of-bounds buffer reads deterministic and
+  detectable on any OpenCL device.
 - GitHub Actions workflow `ci.yml` (CPU job: two lint passes, GPU-less environment check, test
   suite) with pinned dependencies in `requirements/ci-cpu.txt`, and a `[tool.ruff]` configuration.
 

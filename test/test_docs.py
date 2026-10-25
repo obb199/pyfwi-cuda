@@ -71,8 +71,8 @@ def test_relative_links_and_anchors_resolve(doc):
     assert not broken, f"broken links in {os.path.basename(doc)}: {broken}"
 
 
-@pytest.mark.skipif(shutil.which("git") is None or not os.path.isdir(os.path.join(REPO, ".git")),
-                    reason="no git")
+@pytest.mark.skipif(shutil.which("git") is None or not os.path.exists(os.path.join(REPO, ".git")),
+                    reason="no git repository")  # .git is a file in a worktree, a folder otherwise
 @pytest.mark.parametrize("doc", DOCS, ids=os.path.basename)
 def test_cited_commits_exist(doc):
     # A commit is cited as a 7- to 40-character hexadecimal string in backticks, e.g. `1434a16`.
