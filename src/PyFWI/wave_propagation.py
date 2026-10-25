@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter
 
 import PyFWI.fwi_tools as tools
-from PyFWI._opencl_device import choose_devices
+from PyFWI._opencl_device import choose_devices, shared_context
 from PyFWI.fwi_tools import expand_model
 import PyFWI.acquisition as acq
 from PyFWI.processing import prepare_residual
@@ -193,7 +193,9 @@ class WavePreparation:
             os.environ['PYOPENCL_CTX'] = str(0 if platform is None else platform) + ':' + str(device)
             os.environ['PYOPENCL_COMPILER_OUTPUT'] = '1'
 
-        self.ctx = cl.Context(devices)
+        # One context per set of devices for the whole process (see shared_context: releasing
+        # contexts makes the NVIDIA driver fail after a few propagators); one queue per propagator.
+        self.ctx = shared_context(devices)
         self.queue = cl.CommandQueue(self.ctx)
         
         kernel, kernel_crosswell, kernel_surface = self.kernel_caller()

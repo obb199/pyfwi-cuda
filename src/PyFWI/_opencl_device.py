@@ -25,12 +25,18 @@ Which device is chosen (``choose_devices``), in order of precedence:
 
 PyOpenCL's own test variable ``PYOPENCL_TEST`` is not used.
 
+``shared_context`` gives every ``WavePropagator`` of the process the same OpenCL context for the
+same devices (step 1.7 of the fork), instead of a new one each time.
+
 Used by
 -------
 ``PyFWI.wave_propagation.WavePreparation.__init__``, which builds the OpenCL context of every
-``WavePropagator``. Tested by ``test/test_device_selection.py``.
+``WavePropagator``. Tested by ``test/test_device_selection.py`` and ``test/test_contexts.py``.
 """
 import os
+
+#: The OpenCL contexts created by ``shared_context``, by the handles of their devices.
+_contexts = {}
 
 
 def _platforms():
@@ -128,3 +134,30 @@ def choose_devices(platform=None, device=None, environ=None, platforms=None):
     if not device_answer:
         return [devices[0]]
     return [_match(devices, answer, "device") for answer in device_answer.split(",")]
+
+
+def shared_context(devices):
+    """The OpenCL context of ``devices``: created at the first call and reused for the whole process.
+
+    PyFWI 0.1.10 created a new context for every ``WavePropagator``. With the NVIDIA driver,
+    releasing a context while another one exists on the same device breaks the next ones: in a loop
+    that builds a propagator while the previous one is still referenced (``case = ...`` in a loop,
+    a notebook cell run again), the fourth one fails with ``CL_OUT_OF_RESOURCES`` (measured with
+    0.1.10 and with the fork; keeping the old contexts alive is enough to avoid it, which is also
+    why runs inside the guard bands of the tests never failed). A context per set of devices,
+    never released, avoids it, and saves creating a context for every propagator.
+
+    Parameters
+    ----------
+    devices : list of pyopencl.Device
+        As returned by ``choose_devices``.
+
+    Returns
+    -------
+    pyopencl.Context
+    """
+    import pyopencl as cl
+    key = tuple(device.int_ptr for device in devices)
+    if key not in _contexts:
+        _contexts[key] = cl.Context(devices)
+    return _contexts[key]

@@ -11,18 +11,20 @@ an example is a regression even if every unit test passes. Every example must
 
 How the examples are run here
 -----------------------------
-Inside zero guard bands (``test/oob_guard.py``): the out-of-bounds accesses of
-PyFWI 0.1.10 then have a defined result, the runs are reproducible, and a long
-test session cannot hit the ``CL_OUT_OF_RESOURCES`` crash that plain runs of
-0.1.10 cause on NVIDIA after a few propagations. With the guard, POCL gives the
-same bits as the NVIDIA GPU, so these tests also run in the CPU CI. Once step 1.7
-pads the buffers inside PyFWI itself, the guard will no longer be needed.
+As a user runs them: plain, without any test instrumentation. Since step 1.7 the fork
+pads its buffers (the out-of-bounds accesses of the kernels read zeros inside the
+allocation) and reuses one OpenCL context per device (0.1.10 crashed the NVIDIA driver
+after a few propagators), so POCL gives the same bits as the NVIDIA GPU and these tests
+also run in the CPU CI.
 
-The command-line test runs each script as a program (``runpy``, with its own
-argument parsing) in a fresh process, also inside zero guard bands: a plain run of
-``gradient.py`` makes more than a dozen propagations and crashes 0.1.10 on NVIDIA.
-Step 1.7 must make the guard unnecessary here too.
+Only the published 0.1.10 (reference environment) still runs inside zero guard bands
+(``test/oob_guard.py``), which give its out-of-bounds accesses a defined result and keep
+its contexts alive.
+
+The command-line test runs each script as a program (``runpy``, with its own argument
+parsing) in a fresh process, with the same rule.
 """
+import contextlib
 import glob
 import importlib.util
 import inspect
@@ -32,6 +34,8 @@ import sys
 
 import numpy as np
 import pytest
+
+from helpers import running_reference
 
 #: Absolute path of the repository root, and the folder of the example scripts.
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -68,12 +72,12 @@ def load_example(name):
 
 @pytest.fixture
 def run_example(opencl_platform):
-    """Return a function ``run(name)`` that runs ``main(size="small")`` of an example inside zero guard bands."""
+    """Return a function ``run(name)`` that runs ``main(size="small")`` of an example (see the module docstring)."""
     from oob_guard import zero_guard_bands
 
     def run(name):
         module = load_example(name)
-        with zero_guard_bands():
+        with zero_guard_bands() if running_reference() else contextlib.nullcontext():
             return module.main(size="small", show=False)
     return run
 
@@ -111,14 +115,14 @@ def test_example_has_docstring_and_main(name):
     assert {"small", "full"} <= set(module.SIZES)
 
 
-#: Program that runs an example script as ``__main__`` inside zero guard bands.
-#: argv: <test folder> <script> <script arguments...>
-GUARDED_PROGRAM = """
-import runpy, sys
+#: Program that runs an example script as ``__main__``, inside zero guard bands only for the
+#: published 0.1.10. argv: <test folder> <"guard" or "plain"> <script> <script arguments...>
+PROGRAM = """
+import contextlib, runpy, sys
 sys.path.insert(0, sys.argv[1])
 from oob_guard import zero_guard_bands
-script, sys.argv = sys.argv[2], sys.argv[2:]
-with zero_guard_bands():
+guard, script, sys.argv = sys.argv[2] == "guard", sys.argv[3], sys.argv[3:]
+with zero_guard_bands() if guard else contextlib.nullcontext():
     runpy.run_path(script, run_name="__main__")
 """
 
@@ -127,7 +131,8 @@ with zero_guard_bands():
 def test_example_runs_as_a_program(opencl_platform, name):
     env = {**os.environ, "MPLBACKEND": "Agg"}  # never open a window
     script = os.path.join(EXAMPLES_DIR, f"{name}.py")
-    r = subprocess.run([sys.executable, "-c", GUARDED_PROGRAM, os.path.dirname(__file__), script, "--size", "small",
+    mode = "guard" if running_reference() else "plain"
+    r = subprocess.run([sys.executable, "-c", PROGRAM, os.path.dirname(__file__), mode, script, "--size", "small",
                         "--no-show"], check=False, capture_output=True, text=True, timeout=600, env=env)
     assert r.returncode == 0, r.stderr[-3000:]
 

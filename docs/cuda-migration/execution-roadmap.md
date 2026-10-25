@@ -91,7 +91,7 @@ What the preparation step delivered and verified (`babbc0e`, `ad049b8`, `f0ee2d2
 | The NVRTC 13.4 installed by pip is newer than the driver (13.0): the PTX it generates cannot be loaded, only cubin can. | The CUDA backend always compiles to cubin for the real architecture; a test enforces it. Driver 580 is kept on purpose because it is the minimum supported. | 2.3, 2.6 |
 | The PTX of the hot kernels has from 43 (`update_velx`) to 138 (`Grad`) FP64 instructions in order 8 (the analysis measured 42 to 131). | Confirms the precision guard; the test already exists and flips in the `fixed` mode. | 2.4 |
 | The crosswell `vz` bug is on lines 27 and 74 of `elastic_crosswell.cl` (`injSrc` and `hessian_seismogram`). | Both lines are covered by the known-bug test. | 0.2, 2.4 |
-| The out-of-bounds stencil reads can **crash** the NVIDIA kernel (`CL_OUT_OF_RESOURCES`): in one process, the 4th forward + gradient of a 50×50 case fails every time, also with the published 0.1.10. With zero-filled guard bands around the buffers the same sequence runs. | A user running several propagations in one process (a notebook, TL-FWI) can hit it. Step 1.7 removes the cause; until then the test suite runs PyFWI cases inside zero guard bands. | 0.2, 0.4, 1.7 |
+| In one process, the 4th forward + gradient of a 50×50 case **crashes** the NVIDIA driver (`CL_OUT_OF_RESOURCES`), also with the published 0.1.10; with zero-filled guard bands around the buffers the same sequence runs. Attributed here to the out-of-bounds reads; step 1.7 found the real cause: releasing a context while another one exists on the same device (the guard bands kept every context alive). | A user running several propagations in one process (a notebook, TL-FWI) can hit it. Fixed in step 1.7 by one shared context per device; until then the test suite ran PyFWI cases inside zero guard bands. | 0.2, 0.4, 1.7 (done) |
 | Five receiver loops have no bound on the receiver index (`elastic.cl` lines 89 and 352, right well; `elastic_crosswell.cl` lines 24, 48 and 71). Rows beyond the last receiver are recorded into the next time sample, and `Adj_injSrc` reads past the end of the residual and accumulates past the end of the five adjoint fields. | With `acq_type` 0 and 2 the results of 0.1.10 depend on what lies next to the buffers: with `acq_type` 2 they even differ between two processes with a different allocation history. Only the surface acquisition is reproducible as is. | 0.2, 0.4, 2.4 |
 | Race conditions at two kinds of grid points: a source on a receiver cell (`injSrc` injects and records in the same launch) and two receivers on one cell (`Adj_injSrc` adds with a non-atomic `+=`). The kernels place receivers from the first one of each line every `dxr` cells, and the right well runs to the bottom of the grid, so the default geometry of `acq_parameters` hits both (sources on the surface line; wells crossing it in `acq_type` 2). | Results change between runs and between devices. `test/helpers.py` models the cells the kernels really use and builds race-free geometries; the golden masters and the examples use them. Fixed for good when injection and recording become separate 1D kernels. | 0.2, 0.3, 0.4, 3.4 |
 | With zero guard bands and a race-free geometry, 0.1.10 is deterministic and **NVIDIA OpenCL and POCL agree bit for bit** (acquisitions 0, 1, 2; orders 4 and 8; seismograms and gradients). For the surface acquisition a plain run gives the same bits. | The CPU CI can check results against golden masters made on the GPU from step 0.5 on, instead of waiting for step 1.7. | 0.4, 0.5 |
@@ -379,6 +379,17 @@ No computation of the propagator changes, so the criterion is BIT against the go
   out-of-bounds known-bug tests now fill PyFWI's own margins (NaN or 1.0) and
   stay expected failures: the kernels still access outside their logical buffers until the `fixed`
   mode of step 2.4.
+- **Result (crash):** the padding did **not** remove the `CL_OUT_OF_RESOURCES` crash, and the
+  experiments located its real cause, which Phase 0 had attributed to the out-of-bounds accesses: a
+  loop that builds a new propagator while the previous one is still referenced fails at the fourth
+  (with 0.1.10, and with the fork before and after the padding); building each one after the
+  previous is released, or keeping only the old contexts alive, never fails. Releasing an OpenCL
+  context while another exists on the same device breaks the NVIDIA driver. The guard bands avoided
+  it only because they keep a command queue, hence the context, of every propagator. The fork now
+  reuses one context per set of devices (`shared_context`); the loop runs (`test/test_contexts.py`,
+  an expected failure for 0.1.10). With both changes the characterisation and the examples run
+  **without** guard bands in dev, on NVIDIA and on POCL; only the reference environment still uses
+  them.
 
 ### 1.8 Diagnostics
 

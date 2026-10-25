@@ -23,6 +23,13 @@ How strict the comparison is
 A failure prints the worst arrays, so a regression can be traced to the first layer
 that changes (raw seismogram -> data -> raw gradient -> gradient).
 
+Guard bands
+-----------
+The golden masters were made inside zero guard bands (``test/oob_guard.py``), which give the
+out-of-bounds accesses of 0.1.10 a defined result. The published 0.1.10 (reference environment)
+still needs them; the fork pads its own buffers since step 1.7 and runs here **without** them
+(``GUARD``), so these tests also check that the padding reproduces the guard bands bit for bit.
+
 Mutation test (measured): scaling the source wavelet by 1 + 1e-7 is caught in the
 bit-for-bit mode (15 arrays flagged) but **not** in the tolerance mode. That blind spot
 is why the PML fix is the first change of step 1.1.
@@ -36,10 +43,13 @@ import scipy
 from golden_cases import example_cases, inversion_cases, propagation_cases
 from golden_runner import run_case, run_propagation_case
 from golden_store import load_case, load_manifest
-from helpers import pml_matches_0_1_10
+from helpers import pml_matches_0_1_10, running_reference
 
 #: True where the comparison must be bit for bit (see the module docstring).
 BITWISE = pml_matches_0_1_10()
+
+#: Run inside zero guard bands: only for the published 0.1.10 (see the module docstring).
+GUARD = running_reference()
 
 #: Interim relative-L2 tolerances per output layer, used only when BITWISE is False.
 TOLERANCE = {"raw_seismogram": 1e-6, "observed": 1e-6, "predicted": 1e-6, "raw_gradient": 1e-4, "gradient": 1e-4}
@@ -62,7 +72,7 @@ def relative_l2(expected, actual):
 @pytest.mark.skipif(MANIFEST is None, reason="no golden masters")
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_propagation_matches_golden(opencl_platform, name):
-    golden, actual = load_case(name), run_propagation_case(CASES[name])
+    golden, actual = load_case(name), run_propagation_case(CASES[name], guard=GUARD)
     assert actual.keys() == golden.keys()
     failures = []
     for key, expected in golden.items():
@@ -122,7 +132,7 @@ def _compare_outputs(name, actual):
 @pytest.mark.skipif(MANIFEST is None, reason="no golden masters")
 @pytest.mark.parametrize("case", inversion_cases(), ids=lambda c: c.name)
 def test_inversion_matches_golden(opencl_platform, case):
-    failures = _compare_outputs(case.name, run_case(case))
+    failures = _compare_outputs(case.name, run_case(case, guard=GUARD))
     assert not failures, "\n".join(failures)
 
 
@@ -131,5 +141,5 @@ def test_inversion_matches_golden(opencl_platform, case):
 @pytest.mark.parametrize("case", [pytest.param(c, marks=EXAMPLE_MARKS.get(c.script, []), id=c.name)
                                   for c in example_cases()])
 def test_example_matches_golden(opencl_platform, case):
-    failures = _compare_outputs(case.name, run_case(case))
+    failures = _compare_outputs(case.name, run_case(case, guard=GUARD))
     assert not failures, "\n".join(failures)

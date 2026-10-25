@@ -130,6 +130,12 @@ how much and in which numeric mode.
   the golden masters: plain runs reproduce them bit for bit on NVIDIA and on POCL, where 0.1.10
   depended on the memory layout (crosswell and combined acquisitions) and returned NaN on POCL.
   `WavePropagator.margins_changed()` lists the buffers written outside.
+- One OpenCL context per set of devices for the whole process (step 1.7,
+  `PyFWI._opencl_device.shared_context`), instead of one per `WavePropagator`. Fixed: on NVIDIA,
+  building propagators in a loop while the previous one is still referenced failed at the fourth
+  with `CL_OUT_OF_RESOURCES`, because releasing a context while another one exists on the same device
+  breaks the driver. Each propagator keeps its own command queue; `W.ctx` is now the same object for
+  every propagator on the same devices.
 
 ### Numerical changes
 

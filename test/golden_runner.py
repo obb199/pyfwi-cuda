@@ -24,8 +24,10 @@ Key                    Content
 ``gradient/<p>``       What ``W.gradient`` returns: vp, vs, rho (``"dv"``) or lam, mu, rho.
 =====================  ==================================================================
 
-Every run happens inside zero guard bands with a race-free geometry, the two rules
-that make PyFWI 0.1.10 reproducible (see ``test_reproducibility.py``).
+Every run uses a race-free geometry and, by default, zero guard bands: the two rules that
+make PyFWI 0.1.10 reproducible (see ``test_reproducibility.py``). Since step 1.7 the fork
+pads its buffers itself, so the characterisation tests run it without guard bands
+(``guard=False``) and still get the bits of the golden masters.
 
 Used by
 -------
@@ -84,9 +86,10 @@ def run_propagation_case(case: PropagationCase, guard=True):
         The case to run.
     guard : bool, optional
         True (default): run inside zero guard bands, the reproducible definition used
-        by the golden masters. False: a plain run, only used by ``tools/make_golden.py``
-        to record whether 0.1.10 itself gives the same bits (in a fresh process,
-        because plain runs can crash the NVIDIA kernel after a few propagations).
+        by the golden masters. False: a plain run, used for the fork since step 1.7 (its
+        margins replace the guard bands) and by ``tools/make_golden.py`` to record whether
+        0.1.10 itself gives the same bits (in a fresh process, because plain runs of 0.1.10
+        can crash the NVIDIA driver after a few propagations).
 
     Returns
     -------
@@ -166,7 +169,7 @@ def flatten(obj, prefix=""):
     return out
 
 
-def run_inversion_case(case):
+def run_inversion_case(case, guard=True):
     """Run a short FWI or time-lapse FWI (``InversionCase``) and return its flattened outputs.
 
     Returns
@@ -182,7 +185,8 @@ def run_inversion_case(case):
     import PyFWI.processing as process
     from helpers import tiny_case
 
-    with zero_guard_bands(), redirect_stdout(io.StringIO()):  # PyFWI prints every misfit evaluation
+    guard_bands = zero_guard_bands() if guard else contextlib.nullcontext()  # see run_propagation_case
+    with guard_bands, redirect_stdout(io.StringIO()):  # PyFWI prints every misfit evaluation
         c = tiny_case(ns=case.ns, nz=case.nz, nx=case.nx, inpa_extra={"energy_balancing": True})
         c.src.w = c.src.w * np.float32(1000)  # misfit of order 1 (see InversionCase)
         observed = process.prepare_residual(c.W.forward_modeling(c.model, show=False), 1)
@@ -204,8 +208,11 @@ def run_inversion_case(case):
         return {**flatten(models), **flatten(misfit, "misfit/")}
 
 
-def run_example_case(case):
-    """Run ``main(size="small")`` of an example script (``ExampleCase``) and return its flattened outputs."""
+def run_example_case(case, guard=True):
+    """Run ``main(size="small")`` of an example script (``ExampleCase``) and return its flattened outputs.
+
+    ``guard`` as in ``run_propagation_case``.
+    """
     import importlib.util
     import io
     import os
@@ -215,18 +222,18 @@ def run_example_case(case):
     spec = importlib.util.spec_from_file_location(f"golden_example_{case.script}", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    with zero_guard_bands(), redirect_stdout(io.StringIO()):
+    with zero_guard_bands() if guard else contextlib.nullcontext(), redirect_stdout(io.StringIO()):
         return flatten(module.main(size="small", show=False))
 
 
 def run_case(case, guard=True):
     """Run any golden-master case and return its outputs (dispatch on the case type).
 
-    ``guard`` only applies to propagation cases (see ``run_propagation_case``).
+    ``guard`` as in ``run_propagation_case``.
     """
     from golden_cases import ExampleCase, InversionCase
     if isinstance(case, InversionCase):
-        return run_inversion_case(case)
+        return run_inversion_case(case, guard=guard)
     if isinstance(case, ExampleCase):
-        return run_example_case(case)
+        return run_example_case(case, guard=guard)
     return run_propagation_case(case, guard=guard)
