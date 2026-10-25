@@ -4,7 +4,8 @@ Documentation rots silently: a renamed file or heading breaks a link, and a
 rebase can make a commit hash cited in the roadmap disappear. These tests catch
 both without network access (external ``http(s)://`` links are not checked).
 
-Checked files: every ``.md`` under ``docs/cuda-migration/``.
+Checked files: every ``.md`` under ``docs/cuda-migration/``, plus ``README.md`` and
+``CHANGELOG.md`` at the repository root.
 """
 import glob
 import os
@@ -18,7 +19,8 @@ import pytest
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 #: Markdown files whose links and commit hashes are checked.
-DOCS = sorted(glob.glob(os.path.join(REPO, "docs", "cuda-migration", "**", "*.md"), recursive=True))
+DOCS = sorted(glob.glob(os.path.join(REPO, "docs", "cuda-migration", "**", "*.md"), recursive=True)) + [
+    os.path.join(REPO, "README.md"), os.path.join(REPO, "CHANGELOG.md")]
 
 #: A Markdown link ``[text](target)`` that is not an image (``![alt](src)``);
 #: group 1 is the target.
@@ -49,8 +51,8 @@ def test_slug_matches_github_style():
 
 
 def test_docs_exist():
-    names = {os.path.basename(p) for p in DOCS}
-    assert {"analysis-and-plan.md", "execution-roadmap.md"} <= names
+    names = {os.path.basename(p) for p in DOCS if os.path.exists(p)}
+    assert {"analysis-and-plan.md", "execution-roadmap.md", "README.md", "CHANGELOG.md"} <= names
 
 
 @pytest.mark.parametrize("doc", DOCS, ids=os.path.basename)
