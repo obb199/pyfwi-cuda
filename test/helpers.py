@@ -13,11 +13,25 @@ Only the public API of PyFWI is used by ``tiny_case``/``forward_and_gradient``,
 so the same code runs in the reference environment (PyFWI 0.1.10 from PyPI)
 and in the development environment (this fork).
 """
+import os
 from types import SimpleNamespace
 
 import numpy as np
 
 from tools.check_env import inclusion_model
+
+
+def running_reference():
+    """True when the installed PyFWI is the published 0.1.10 (reference environment), not this fork.
+
+    Bugs fixed in the fork still exist in 0.1.10, so their tests are expected to fail there:
+    ``test_known_bugs.py`` uses this as the ``condition`` of their ``xfail`` markers, and
+    ``test_optional_dependencies.py`` skips itself.
+    """
+    import PyFWI  # imported here so that importing this module never needs PyFWI
+    repository = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    return PyFWI.__version__ == "0.1.10" and not os.path.abspath(PyFWI.__file__).startswith(repository + os.sep)
+
 
 #: Bits (float32 viewed as uint32) of ``fwi_tools.pml_delta_calculation(np.float32(10.0), 10, 1e-5)``
 #: in PyFWI 0.1.10 with NumPy 1.21: the damping profile of a 10-point PML with a 10 m grid.

@@ -39,7 +39,7 @@ and must pass everywhere else.
 | ``test_device_choice_works_with_a_single_device_platform`` | ``inpa['device']`` fails on single-device platforms (PyOpenCL 2022 only) | 1.2 |
 | ``test_optimizer_modules_import`` | ``MemoizeJac`` no longer exported by SciPy | 1.1 (done) |
 | ``test_numpy2_modules_import`` | ``numpy.lib.function_base`` removed in NumPy 2 | 1.1 (done) |
-| ``test_model_dataset_imports_without_segyio`` | ``segyio`` imported at module level, never declared | 1.1 |
+| ``test_model_dataset_imports_without_segyio`` | ``segyio`` imported at module level, never declared | 1.1 (done) |
 | ``test_pyopencl_is_a_declared_dependency`` | ``pyopencl`` missing from ``install_requires`` | 1.1 |
 | ``test_wheel_contains_torch_and_data`` | the wheel lacks ``PyFWI/torch`` and ``PyFWI/data`` | 1.1 |
 """
@@ -56,12 +56,12 @@ import zipfile
 import numpy as np
 import pytest
 
-from helpers import forward_and_gradient, kernel_sources, pml_matches_0_1_10, tiny_case
+from helpers import forward_and_gradient, kernel_sources, pml_matches_0_1_10, running_reference, tiny_case
 
 #: Absolute path of the repository root.
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-
-
+#: True in the reference environment (published 0.1.10): fixed bugs are still expected to fail there.
+REFERENCE = running_reference()
 
 
 def _pyopencl_rejects_single_device_answer():
@@ -306,13 +306,14 @@ def test_numpy2_modules_import(module):
     importlib.import_module(module)
 
 
-@pytest.mark.xfail(strict=True, raises=ImportError, reason="segyio is imported at module level but is not a "
-                                                           "declared dependency")
+@pytest.mark.xfail(condition=REFERENCE, strict=True, raises=ImportError,
+                   reason="0.1.10 imports segyio at module level but does not declare it (fixed in the fork)")
 def test_model_dataset_imports_without_segyio(monkeypatch):
     # Pretend segyio is not installed, and force a fresh import of the modules that use it.
     monkeypatch.setitem(sys.modules, "segyio", None)
     for name in ("PyFWI.model_dataset", "PyFWI.seismic_io"):
         monkeypatch.delitem(sys.modules, name, raising=False)
+    # Fixed in step 1.1: segyio is imported only by the functions that read SEG-Y files.
     try:
         importlib.import_module("PyFWI.model_dataset")
     except ImportError as e:

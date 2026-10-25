@@ -1,7 +1,6 @@
 import os
 import requests
 import shutil
-import segyio
 import copy
 import numpy as np
 import matplotlib.pyplot as plt
@@ -298,6 +297,7 @@ class ModelGenerator(Circular, Laminar):
             shutil.rmtree(path + "elastic-marmousi-model")
             os.remove(target_path)
             
+        segyio = io._import_segyio()  # optional dependency, only needed here
         with segyio.open(path + "Marmousi_P.segy", "r", strict=False) as segy:
             models = np.transpose(np.array([segy.trace[trid]
                                             for trid in range(segy.tracecount)]))

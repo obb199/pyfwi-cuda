@@ -63,6 +63,11 @@ how much and in which numeric mode.
   module `PyFWI._scipy_compat` provides `MemoizeJac` (removed from SciPy's public names in 1.8)
   and an `fmin_l_bfgs_b` that drops `iprint` and `disp` when the installed SciPy no longer accepts
   them (they only control printing). With such a SciPy the optimiser no longer prints its progress.
+- `segyio` is now an optional dependency: `PyFWI.seismic_io` and `PyFWI.model_dataset` import it
+  only inside the functions that read SEG-Y files (`seismic_io.read_segy` and the Marmousi model of
+  `model_dataset`). Without it the rest of PyFWI works, and reading SEG-Y raises an `ImportError`
+  that says how to install it. In 0.1.10 importing either module failed without `segyio`, which was
+  never a declared dependency.
 
 ### Numerical changes
 

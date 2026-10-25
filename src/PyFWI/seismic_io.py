@@ -1,11 +1,33 @@
 import numpy as np
-import segyio
 import os
 from urllib.request import urlretrieve
 import scipy.io as sio
 import datetime
 import pickle
 import hdf5storage as hdf5
+
+
+def _import_segyio():
+    """Import segyio when it is first needed.
+
+    segyio is an optional dependency: only reading SEG-Y files (``read_segy`` and the
+    Marmousi model of ``model_dataset``) needs it, so importing PyFWI must not require it.
+
+    Returns
+    -------
+    module
+        The ``segyio`` module.
+
+    Raises
+    ------
+    ImportError
+        With installation instructions, if segyio is not installed.
+    """
+    try:
+        import segyio
+    except ImportError as error:
+        raise ImportError("Reading SEG-Y files needs the optional package segyio: pip install segyio") from error
+    return segyio
 
 
 def read_segy(path):
@@ -17,6 +39,7 @@ def read_segy(path):
     Returns:
         data: The data stored in segy.
     """
+    segyio = _import_segyio()
     with segyio.open(path, "r", strict=False) as segy:
         models = np.transpose(np.array([segy.trace[trid]
                                         for trid in range(segy.tracecount)]))
