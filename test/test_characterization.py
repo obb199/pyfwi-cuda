@@ -2,7 +2,8 @@
 
 Every case of the golden-master matrix is run again with the PyFWI installed in the
 current environment and compared, layer by layer, with what the published 0.1.10
-produced in the reference environment (``test/golden/``).
+produced in the reference environment (``test/golden/``): the propagation cases
+(fast), and the inversion and example cases (marked ``slow``: several minutes).
 
 How strict the comparison is
 ----------------------------
@@ -24,13 +25,15 @@ Mutation test (measured): scaling the source wavelet by 1 + 1e-7 is caught in th
 bit-for-bit mode (15 arrays flagged) but **not** in the tolerance mode. That blind spot
 is why the PML fix is the first change of step 1.1.
 """
+import importlib.util
+
 import numpy as np
 import pytest
 
-from golden_cases import propagation_cases
-from golden_runner import run_propagation_case
+from golden_cases import example_cases, inversion_cases, propagation_cases
+from golden_runner import run_case, run_propagation_case
 from golden_store import load_case, load_manifest
-from helpers import pml_matches_0_1_10
+from helpers import has_memoizejac, pml_matches_0_1_10
 
 #: True where the comparison must be bit for bit (see the module docstring).
 BITWISE = pml_matches_0_1_10()
@@ -72,4 +75,50 @@ def test_propagation_matches_golden(opencl_platform, name):
             ok, detail = error <= TOLERANCE[layer], f"relative L2 {error:.1e} > {TOLERANCE[layer]:.0e}"
         if not ok:
             failures.append(f"{key}: {detail}")
+    assert not failures, "\n".join(failures)
+
+
+#: Interim relative-L2 tolerance for inversion and example outputs, used only when BITWISE is
+#: False: they contain gradients (up to 2.8e-5 measured) and models updated from them.
+OUTPUT_TOLERANCE = 1e-4
+
+#: Why some cases cannot run in some environments (marks applied below).
+NEEDS_FWI = pytest.mark.xfail(condition=not has_memoizejac(), strict=True, raises=ImportError,
+                              reason="PyFWI.fwi needs MemoizeJac, missing from current SciPy (step 1.1)")
+NEEDS_MODEL_DATASET = pytest.mark.xfail(condition=int(np.__version__.split(".")[0]) >= 2, strict=True,
+                                        raises=ImportError,
+                                        reason="PyFWI.model_dataset does not import with NumPy 2 (step 1.1)")
+NEEDS_TORCH = pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="PyTorch is not installed")
+EXAMPLE_MARKS = {"fwi": [NEEDS_FWI], "tlfwi": [NEEDS_FWI], "models": [NEEDS_MODEL_DATASET],
+                 "torch_gradient": [NEEDS_TORCH]}
+
+
+def _compare_outputs(name, actual):
+    """Compare flattened inversion/example outputs with the golden master; return the failures."""
+    golden = load_case(name)
+    failures = [f"missing or unexpected keys: {sorted(set(golden) ^ set(actual))}"] if golden.keys() != actual.keys() else []
+    for key in sorted(set(golden) & set(actual)):
+        expected = golden[key]
+        if BITWISE:
+            if not (actual[key].dtype == expected.dtype and np.array_equal(actual[key], expected)):
+                failures.append(f"{key}: relative L2 {relative_l2(expected, actual[key]):.1e} (bit-for-bit required)")
+        elif (error := relative_l2(expected, actual[key])) > OUTPUT_TOLERANCE:
+            failures.append(f"{key}: relative L2 {error:.1e} > {OUTPUT_TOLERANCE:.0e}")
+    return failures
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(MANIFEST is None, reason="no golden masters")
+@pytest.mark.parametrize("case", [pytest.param(c, marks=[NEEDS_FWI], id=c.name) for c in inversion_cases()])
+def test_inversion_matches_golden(opencl_platform, case):
+    failures = _compare_outputs(case.name, run_case(case))
+    assert not failures, "\n".join(failures)
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(MANIFEST is None, reason="no golden masters")
+@pytest.mark.parametrize("case", [pytest.param(c, marks=EXAMPLE_MARKS.get(c.script, []), id=c.name)
+                                  for c in example_cases()])
+def test_example_matches_golden(opencl_platform, case):
+    failures = _compare_outputs(case.name, run_case(case))
     assert not failures, "\n".join(failures)

@@ -15,8 +15,9 @@ build-backend = "setuptools.build_meta"
 [tool.pytest.ini_options]
 testpaths = ["test"]
 markers = [
-    "gpu: precisa de GPU NVIDIA com CuPy e cuda.core",
-    "opencl: precisa de uma plataforma OpenCL NVIDIA",
+    "gpu: needs an NVIDIA GPU with CuPy and cuda.core",
+    "opencl: needs the NVIDIA OpenCL platform",
+    "slow: takes minutes; excluded from the fast suite (pytest -m 'not slow') and run before commits and at gates",
 ]
 
 [tool.ruff]
