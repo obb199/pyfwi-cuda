@@ -18,7 +18,7 @@ This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into 
 | 0.7 | Reference benchmark in the three scenarios | **done** |
 | 0.8 | Profiling bench: Nsight Systems, Nsight Compute, compute-sanitizer | **done** (Nsight Compute waits for the owner) |
 | 0.9 | Self-hosted runner on the RTX and GPU jobs | prepared (runner waits for the owner) · **[G0](gates/G0.md) approved with 2 exceptions** |
-| 1.1 | Imports and packaging (current SciPy and NumPy, declared dependencies) | Phase 1 |
+| 1.1 | Imports and packaging (current SciPy and NumPy, declared dependencies) | Phase 1 · **done** |
 | 1.2 | Fixed OpenCL device selection | |
 | 1.3 | Cached kernels and fixed arguments | |
 | 1.4 | Residual and wavelet on the GPU; non-blocking copies | |
@@ -257,6 +257,19 @@ No computation of the propagator changes, so the criterion is BIT against the go
 - **Goes in:** first of all, `pml_delta_calculation` computed explicitly in float64, which restores the PML profile of 0.1.10 under NumPy 2 and with it the bit-for-bit characterisation in dev (step 0.5); then our own `MemoizeJac` (a small class, not depending on private SciPy names); `np.kaiser` instead of `numpy.lib.function_base`; `segyio` imported lazily, only in the functions that read SEG-Y; `pyopencl` in `install_requires`; `package_data` with `torch/` and `data/`; metadata in `pyproject.toml`; distribution name `pyfwi-cuda` with the `PyFWI` import; `python_requires >= 3.10`.
 - **Tests:** PKG (wheel in a clean venv, every module imports with NumPy 2.5 and SciPy 1.18, files present); UNI of `MemoizeJac` (same behaviour as the original of SciPy 1.7.3: caches `fun` and `jac`); CAR, now including the FWI cases; EXA, now including the FWI examples in dev; the import and `segyio` `xfail`s start passing.
 - **Criterion:** every module imports in dev; CAR and EXA approved.
+- **Result:** done in five commits: the NumPy 2 imports (`aca0e30`, made during Phase 0 for the
+  examples), the PML profile in float64 (`32422f9`), SciPy compatibility (`94859e0`), optional
+  `segyio` (`fc7f969`) and the `pyfwi-cuda` packaging (`6c2c387`). Every module imports with
+  NumPy 2.5 and SciPy 1.18, also from the wheel installed in a fresh environment
+  (`tools/check_install.py`: kernels, `data/` and `PyFWI.torch` present, the `dupuy` model reads
+  its data); the wheel and the source distribution
+  contain every file of `src/PyFWI`. CAR: in dev, the 16 forward + gradient cases, the 10 inversions
+  and the examples match the golden masters bit for bit (float64 optimiser outputs within 1e-12,
+  because SciPy's L-BFGS-B changed implementation after 1.7.3); the slow suite passes (21 tests).
+  EXA: every example script runs in dev, FWI ones included. Six known-bug tests now pass in dev
+  (PML profile, optimiser imports, NumPy 2 imports, `segyio`, `pyopencl` dependency, wheel content);
+  those whose bug shows in the reference environment (`segyio`, `pyopencl`) are still expected
+  failures there.
 
 ### 1.2 Device selection
 
