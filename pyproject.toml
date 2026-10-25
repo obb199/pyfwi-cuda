@@ -11,3 +11,10 @@ requires = [
     "datetime",
 ]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+markers = [
+    "gpu: precisa de GPU NVIDIA com CuPy e cuda.core",
+    "opencl: precisa de uma plataforma OpenCL NVIDIA",
+]
