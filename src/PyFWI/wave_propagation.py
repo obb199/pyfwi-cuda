@@ -8,6 +8,7 @@ from scipy.ndimage import gaussian_filter
 
 import PyFWI.fwi_tools as tools
 from PyFWI._opencl_device import choose_devices, shared_context
+import PyFWI._info as _info
 from PyFWI.fwi_tools import expand_model
 import PyFWI.acquisition as acq
 from PyFWI.processing import prepare_residual
@@ -990,6 +991,8 @@ class WavePropagator(WavePreparation):
             Seismic section
         """
         self.forward_show = show
+        # The summary of PyFWI.info() goes to the "PyFWI" logger (INFO) at the first run (step 1.8).
+        _info.log_first_run(self.ctx.devices)
         model = model0.copy()
 
         for params in model:

@@ -25,7 +25,7 @@ This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into 
 | 1.5 | Contiguous checkpoints; `W.W` as a view | **done** |
 | 1.6 | Element-wise low-pass filter | **done** |
 | 1.7 | Padded buffers: no more reads outside the allocation | **done** (and one shared context per device) |
-| 1.8 | `PyFWI.info()` and diagnostic log | |
+| 1.8 | `PyFWI.info()` and diagnostic log | **done** |
 | 1.9 | Fork release 0.1.11 | **G1** |
 | 2.1 | Engine and backend interface; OpenCL behind the interface | Phase 2 |
 | 2.2 | Backend selector and fallback | |
@@ -395,6 +395,16 @@ No computation of the propagator changes, so the criterion is BIT against the go
 
 - **Goes in:** `PyFWI.info()`, with the package origin (fork and commit), backend, device, versions and numeric mode; the same summary goes to the log on the first propagation.
 - **Tests:** UNI (fields present; works without a GPU); API (`import PyFWI` still has no side effects).
+- **Result:** `PyFWI.info()` returns a dict shown as a readable summary (`PyFWI._info`): version and
+  origin, source folder and git commit (only for the `src/PyFWI` of a checkout, `-dirty` with local
+  changes), backend `opencl`, numeric mode `legacy`, the device chosen as by a propagator (optionally
+  with `inpa`-like `platform` and `device`), every OpenCL platform and device, and the versions of
+  Python, NumPy, SciPy, PyOpenCL, matplotlib, hdf5storage, segyio and torch. Without OpenCL it reports
+  the reason instead of failing. The summary is logged once per process at INFO, at the first forward
+  modelling while INFO is enabled. `test/test_info.py`: fields, commit (and none for a folder of
+  another repository), device for each platform, no OpenCL, logging once, and an `import PyFWI` that
+  loads no heavy module, adds no logging handler and changes no environment variable (also checked
+  against 0.1.10).
 
 ### 1.9 Fork release 0.1.11
 

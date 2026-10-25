@@ -114,6 +114,21 @@ Optional dependencies (extras):
 The original PyFWI (`python3 -m pip install PyFWI`) and the fork both provide the `PyFWI` package,
 so they cannot be installed in the same environment: uninstall one before installing the other.
 
+## What is running
+
+`PyFWI.info()` says which PyFWI runs and on what: the fork and its git commit (when it runs from a
+checkout), the backend (`opencl`) and numeric mode (`legacy`: the results of PyFWI 0.1.10), the
+OpenCL device a propagator would use, the OpenCL platforms and the versions of the libraries. Attach
+it to any bug report.
+
+```python
+import PyFWI
+print(PyFWI.info())                        # inpa-like arguments: PyFWI.info(platform=1, device=0)
+```
+
+The same summary goes to the `"PyFWI"` logger, at level INFO, at the first forward modelling of
+the process; Python shows it with `logging.basicConfig(level=logging.INFO)`.
+
 ## Citing PyFWI
 
 If you use this software, please cite the original PyFWI paper:

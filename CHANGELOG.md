@@ -45,6 +45,11 @@ how much and in which numeric mode.
   kernels and data files present, every module imports, the `dupuy` model reads its data); the CI
   runs it on the wheel installed in a fresh environment.
 - Optional dependencies (extras) `segy` (`segyio`) and `torch` (`torch`).
+- `PyFWI.info()` (step 1.8): which PyFWI runs (the fork, its git commit when it runs from a
+  checkout), its backend and numeric mode, the OpenCL device a propagator would use, the OpenCL
+  platforms and the library versions; works without a GPU or OpenCL. The same summary goes to the
+  `"PyFWI"` logger (INFO) at the first forward modelling of the process. `import PyFWI` still loads
+  nothing else.
 - The test suite reports OpenCL tests as skipped, with a warning annotation on GitHub, when PoCL
   cannot compile kernels for the CPU of the machine (PoCL 3.0 with LLVM 14 does not know the AMD
   EPYC 9V45 of some GitHub-hosted runners); any other failure still fails.

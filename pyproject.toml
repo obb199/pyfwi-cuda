@@ -93,7 +93,6 @@ extend-exclude = [
     "example/fwi_example_surface.py",
     "example/*.ipynb",
     "test/test_ricker.py",
-    "src/PyFWI/__init__.py",
     "src/PyFWI/acquisition.py",
     "src/PyFWI/fwi.py",
     "src/PyFWI/fwi_tools.py",
