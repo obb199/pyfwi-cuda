@@ -41,7 +41,7 @@ EXAMPLES_DIR = os.path.join(REPO, "example", "scripts")
 
 #: Examples that have a physical check in this file. ``test_every_example_has_a_check``
 #: fails if a script is added to example/scripts/ without one.
-CHECKED = {"forward_surface", "forward_acquisitions", "gradient", "fwi"}
+CHECKED = {"forward_surface", "forward_acquisitions", "gradient", "fwi", "tlfwi"}
 
 #: Examples that import ``PyFWI.fwi`` or ``PyFWI.tl_fwi``. In PyFWI 0.1.10 those modules need
 #: ``scipy.optimize.optimize.MemoizeJac``, missing from current SciPy, so with current SciPy
@@ -225,3 +225,16 @@ def test_fwi(run_example):
     np.testing.assert_array_equal(estimate["vs"], start["vs"])
     np.testing.assert_array_equal(estimate["rho"], start["rho"])
     assert np.isfinite(r["misfit"]).all()
+
+
+@FWI_IMPORT_XFAIL
+def test_tlfwi(run_example):
+    r = run_example("tlfwi")
+    dm, changed, true_dm = r["dm"]["vp"], r["changed"], r["true_dm"]
+    assert dm.shape == true_dm.shape and np.isfinite(dm).all()
+    # vp dropped in the changed zone: the estimate is negative there (about half of the true -10 %) ...
+    assert dm[changed].mean() < 0.25 * true_dm[changed].mean() < 0
+    # ... much larger there than anywhere else ...
+    assert np.abs(dm[changed]).mean() > 3 * np.abs(dm[~changed]).mean()
+    # ... and it looks like the true change.
+    assert np.corrcoef(dm.ravel(), true_dm.ravel())[0, 1] > 0.5
