@@ -68,6 +68,28 @@ A CUDA backend needs an NVIDIA GPU of the Turing generation or newer (RTX 20 ser
 driver of the 580 series or newer. Without a GPU, `check_env.py --no-gpu` and the test suite still
 run, using OpenCL on the CPU (POCL).
 
+## Tests
+
+```bash
+../envs/dev/bin/python -m pytest -m "not slow"     # fast suite, run before every commit (a few minutes)
+../envs/dev/bin/python -m pytest                   # everything, including the slow characterisation
+../envs/ref-0.1.10/bin/python -m pytest            # the same tests against the published PyFWI 0.1.10
+```
+
+How to read the results:
+
+- **Markers.** `opencl` and `gpu` tests need the NVIDIA OpenCL platform or a CUDA GPU and skip
+  themselves elsewhere; `slow` tests take minutes (inversions, examples against the golden masters,
+  the mathematical baseline).
+- **Expected failures.** `test/test_known_bugs.py` states the correct behaviour for each bug inherited
+  from PyFWI 0.1.10 and marks it `xfail`; a bug fix turns it into a pass, and the marker must then be
+  removed. `xfailed` in the summary is therefore normal.
+- **Golden masters.** `test/golden/` holds outputs of the published 0.1.10 (16 forward + gradient
+  cases, 10 inversions, every example script). `test/test_characterization.py` compares the installed
+  PyFWI with them, bit for bit where possible.
+- **Examples.** Every script in `example/scripts/` is run by `test/test_examples.py` with a physical
+  check, and must keep working.
+
 ## Using the original package
 
 The fork is not published on PyPI yet. The original PyFWI is installed with:
