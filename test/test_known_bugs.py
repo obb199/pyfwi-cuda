@@ -26,6 +26,7 @@ and must pass everywhere else.
 | ``test_chpr_zero_gives_the_checkpointed_gradient`` | ``chpr=0`` (the default) rebuilds the field backwards through the PML: wrong gradient | 4.2 |
 | ``test_lbfgs_iterates_with_physically_scaled_data`` | absolute ``pgtol = 1e-8``: L-BFGS stops at iteration 0 on realistic data | 2.4 |
 | ``test_pml_profile_does_not_depend_on_numpy`` | NumPy 2 type promotion changes the PML profile in the last bit | 1.1 |
+| ``test_source_injection_does_not_excite_grid_noise`` | the source is added once every ``dt_scale`` steps: grid-scale noise at dh of 4-6 m | 2.4 |
 | ``test_crosswell_vz_seismogram_records_vz`` | the crosswell ``vz`` seismogram stores ``vx`` | 2.4 |
 | ``test_crosswell_kernels_assign_vz_to_vz_seismograms`` | same bug, lines 27 and 74 of ``elastic_crosswell.cl`` | 2.4 |
 | ``test_dt_define_is_not_truncated`` | ``#define dt`` keeps only 6 decimals | 2.4 |
@@ -224,6 +225,19 @@ def test_lbfgs_iterates_with_physically_scaled_data(opencl_platform, monkeypatch
                           "computes part of it in float32 instead of float64 and changes the last bit")
 def test_pml_profile_does_not_depend_on_numpy():
     assert pml_matches_0_1_10()
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="the source sample is added once every dt_scale internal steps (an impulse train); at "
+                          "grid spacings of 4 to 6 m it excites a grid-scale checkerboard mode that never leaves")
+def test_source_injection_does_not_excite_grid_noise(opencl_platform):
+    from tools.math_baseline import homogeneous_run
+
+    # 600 m homogeneous model, 5 m grid, 1.2 s: the wave should leave through the absorbing boundary.
+    _, W = homogeneous_run(600.0, 5.0, 4, (300.0, 300.0), [(400.0, 300.0), (500.0, 300.0)], t=1.2, chpr=10)
+    energy = [float(np.sum(W.W["taux"][:, :, 0, k].astype(np.float64) ** 2)) for k in range(W.nchp)]
+    # Measured: 2e-2 with dt = 4 ms (dt_scale = 7); 2e-9 when the source is injected at every step.
+    assert energy[-1] / max(energy) < 1e-6
 
 
 @pytest.mark.xfail(strict=True, reason="elastic_crosswell.cl stores vx in the vz seismogram")

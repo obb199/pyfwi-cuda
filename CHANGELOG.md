@@ -36,6 +36,9 @@ how much and in which numeric mode.
 - Golden masters of PyFWI 0.1.10 (`test/golden/`, 16 pairwise cases) with their generator
   (`tools/make_golden.py`), and characterisation tests that compare the installed PyFWI with them
   (`test/test_characterization.py`).
+- Mathematical baseline of 0.1.10 (`tools/math_baseline.py`, `test/golden/math_baseline.json`):
+  gradient against finite differences, analytic solution, boundary reflection, residual energy; and
+  `test/test_math.py`, which requires later versions not to be worse.
 - GitHub Actions workflow `ci.yml` (CPU job: two lint passes, GPU-less environment check, test
   suite) with pinned dependencies in `requirements/ci-cpu.txt`, and a `[tool.ruff]` configuration.
 
