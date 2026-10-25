@@ -31,6 +31,8 @@ Used by
 -------
 ``tools/make_golden.py`` and the characterisation tests.
 """
+import contextlib
+
 import numpy as np
 
 from golden_cases import PropagationCase
@@ -71,7 +73,7 @@ def case_inputs(case: PropagationCase):
             "src": src, "rec_loc": rec_loc, "n_well_rec": n_well_rec}
 
 
-def run_propagation_case(case: PropagationCase):
+def run_propagation_case(case: PropagationCase, guard=True):
     """Run the forward modelling and the gradient of one case and return the layered outputs.
 
     The OpenCL device is the one selected by ``PYOPENCL_CTX``.
@@ -80,6 +82,11 @@ def run_propagation_case(case: PropagationCase):
     ----------
     case : PropagationCase
         The case to run.
+    guard : bool, optional
+        True (default): run inside zero guard bands, the reproducible definition used
+        by the golden masters. False: a plain run, only used by ``tools/make_golden.py``
+        to record whether 0.1.10 itself gives the same bits (in a fresh process,
+        because plain runs can crash the NVIDIA kernel after a few propagations).
 
     Returns
     -------
@@ -92,7 +99,7 @@ def run_propagation_case(case: PropagationCase):
 
     x = case_inputs(case)
     out = {}
-    with zero_guard_bands():
+    with zero_guard_bands() if guard else contextlib.nullcontext():
         W = wave.WavePropagator(x["inpa"], x["src"], x["rec_loc"], (case.nz, case.nx), components=case.components,
                                 n_well_rec=x["n_well_rec"], chpr=case.chpr)
         observed = W.forward_modeling(x["true"], show=False)
