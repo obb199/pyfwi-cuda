@@ -85,6 +85,16 @@ how much and in which numeric mode.
   `dupuy` model failed with `FileNotFoundError` with the wheel of 0.1.10), and the licence file.
 - The version is written only in `src/PyFWI/version.py`; the package metadata and the Sphinx
   configuration read it from there.
+- The OpenCL device is chosen by PyFWI itself (`PyFWI._opencl_device.choose_devices`) instead of
+  `pyopencl.create_some_context()`, with the same rules: `inpa['platform']` and `inpa['device']`,
+  otherwise `PYOPENCL_CTX` (index or part of the name, as in PyOpenCL), otherwise the first device of
+  the first platform. Fixed: `inpa['device']` failed on a platform with a single device with
+  PyOpenCL 2022; the range of `inpa['device']` was checked against the devices of the first
+  platform; `inpa['platform']` without `inpa['device']` was ignored (it now selects device 0 of
+  that platform). PyFWI no longer asks in the terminal which device to use when nothing is
+  configured: it takes the default answer of that question (first platform, first device). A
+  device that does not exist raises a `ValueError` that lists the available ones. As before, a
+  choice made with `inpa['device']` is also written to `PYOPENCL_CTX`.
 
 ### Numerical changes
 

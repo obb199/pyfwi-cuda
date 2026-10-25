@@ -36,7 +36,7 @@ and must pass everywhere else.
 | ``test_crosswell_kernels_assign_vz_to_vz_seismograms`` | same bug, lines 27 and 74 of ``elastic_crosswell.cl`` | 2.4 |
 | ``test_dt_define_is_not_truncated`` | ``#define dt`` keeps only 6 decimals | 2.4 |
 | ``test_float_constants_have_the_f_suffix`` | literals without ``f`` make the kernels compute in FP64 | 2.4 |
-| ``test_device_choice_works_with_a_single_device_platform`` | ``inpa['device']`` fails on single-device platforms (PyOpenCL 2022 only) | 1.2 |
+| ``test_device_choice_works_with_a_single_device_platform`` | ``inpa['device']`` fails on single-device platforms (PyOpenCL 2022 only) | 1.2 (done) |
 | ``test_optimizer_modules_import`` | ``MemoizeJac`` no longer exported by SciPy | 1.1 (done) |
 | ``test_numpy2_modules_import`` | ``numpy.lib.function_base`` removed in NumPy 2 | 1.1 (done) |
 | ``test_model_dataset_imports_without_segyio`` | ``segyio`` imported at module level, never declared | 1.1 (done) |
@@ -273,10 +273,12 @@ def test_float_constants_have_the_f_suffix():
 # Device selection
 # ---------------------------------------------------------------------------------------------
 
-@pytest.mark.xfail(condition=SINGLE_DEVICE_BUG, strict=True, raises=_pyopencl_error(),
+@pytest.mark.xfail(condition=REFERENCE and SINGLE_DEVICE_BUG, strict=True, raises=_pyopencl_error(),
                    reason="with PyOpenCL 2022, create_some_context reports a 'left over' device choice "
-                          "on single-device platforms")
+                          "on single-device platforms (fixed in the fork)")
 def test_device_choice_works_with_a_single_device_platform(single_device_platform):
+    # Fixed in step 1.2: the fork chooses the device itself (PyFWI._opencl_device), so it no
+    # longer depends on the PyOpenCL version; test_device_selection.py simulates the case.
     case = tiny_case(inpa_extra={"platform": single_device_platform, "device": 0})
     assert case.W.ctx.devices[0].platform.name == _platform_name(single_device_platform)
 

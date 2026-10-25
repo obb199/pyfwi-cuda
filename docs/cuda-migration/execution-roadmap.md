@@ -19,7 +19,7 @@ This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into 
 | 0.8 | Profiling bench: Nsight Systems, Nsight Compute, compute-sanitizer | **done** (Nsight Compute waits for the owner) |
 | 0.9 | Self-hosted runner on the RTX and GPU jobs | prepared (runner waits for the owner) · **[G0](gates/G0.md) approved with 2 exceptions** |
 | 1.1 | Imports and packaging (current SciPy and NumPy, declared dependencies) | Phase 1 · **done** |
-| 1.2 | Fixed OpenCL device selection | |
+| 1.2 | Fixed OpenCL device selection | **done** |
 | 1.3 | Cached kernels and fixed arguments | |
 | 1.4 | Residual and wavelet on the GPU; non-blocking copies | |
 | 1.5 | Contiguous checkpoints; `W.W` as a view | |
@@ -86,7 +86,7 @@ What the preparation step delivered and verified (`babbc0e`, `ad049b8`, `f0ee2d2
 | On POCL, 0.1.10 returns 99% NaN in the seismogram and different results on every run. With zeros after the end of the buffers the seismogram becomes finite and deterministic; the gradient still has NaN, consistent with the reads before the start (`i − 3` with `i = 2`). | POCL cannot be a reference for 0.1.10 as it is. Golden masters come from NVIDIA OpenCL, and the CPU CI only compares outputs after step 1.7. | 0.2, 0.4, 1.7 |
 | `segyio` is imported at the top of `model_dataset.py` and `seismic_io.py`, but it is not in `install_requires` and is commented out in `requirements.txt`. | `pip install PyFWI` is not even enough to build a model. | 1.1 |
 | `from numpy.lib.function_base import kaiser` breaks with NumPy 2. | `model_dataset` and `seismic_io` do not import in the dev environment. | 1.1 |
-| `inpa['device']` fails when the platform has a single device: `create_some_context` reports a "left over" choice. It happens with PyOpenCL 2022.2.4 (reference environment), not with PyOpenCL 2026.1.4. | With old PyOpenCL the device must be chosen through `PYOPENCL_CTX`. Step 1.2 removes the dependency on `create_some_context` (the backend selector needs explicit device choice anyway). | 0.2, 1.2 |
+| `inpa['device']` fails when the platform has a single device: `create_some_context` reports a "left over" choice. It happens with PyOpenCL 2022.2.4 (reference environment), not with PyOpenCL 2026.1.4. | With old PyOpenCL the device must be chosen through `PYOPENCL_CTX`. Step 1.2 removed the dependency on `create_some_context` (the backend selector needs explicit device choice anyway). | 0.2, 1.2 (done) |
 | The same forward takes 1.42 s with PyOpenCL 2022.2.4 and 2.07 s with PyOpenCL 2026.1.4 (probably `RepeatedKernelRetrieval`). | The reference benchmark must record both versions. Step 1.3 should remove the difference. | 0.7, 1.3 |
 | The NVRTC 13.4 installed by pip is newer than the driver (13.0): the PTX it generates cannot be loaded, only cubin can. | The CUDA backend always compiles to cubin for the real architecture; a test enforces it. Driver 580 is kept on purpose because it is the minimum supported. | 2.3, 2.6 |
 | The PTX of the hot kernels has from 43 (`update_velx`) to 138 (`Grad`) FP64 instructions in order 8 (the analysis measured 42 to 131). | Confirms the precision guard; the test already exists and flips in the `fixed` mode. | 2.4 |
@@ -276,6 +276,14 @@ No computation of the propagator changes, so the criterion is BIT against the go
 - **Goes in:** explicit platform and device choice without `create_some_context`, keeping the meaning of `inpa['platform']` and `inpa['device']`.
 - **Tests:** UNI with simulated platforms (one, several and no device); the single-device `xfail` passes; API (the same call as in 0.1.10 picks the same device).
 - **Criterion:** works with one or several devices; the old behaviour is kept where it already worked.
+- **Result:** `PyFWI._opencl_device.choose_devices` replaces `create_some_context`. On simulated
+  platforms (one device, two devices, none, a platform without devices) it gives the same choice as
+  PyOpenCL 2026's own `choose_devices` for 17 values of `PYOPENCL_CTX`, and an error where PyOpenCL
+  fails; it never prompts. On the real platforms (NVIDIA, POCL), the default and `PYOPENCL_CTX`
+  select the same device in dev and with the published 0.1.10, and `inpa['device']` works on both
+  single-device platforms. Behaviour changes, all where 0.1.10 failed or ignored the input:
+  single-device platforms, the range check against the right platform, `inpa['platform']` alone, no
+  prompt (the default answer is taken).
 
 ### 1.3 Cached kernels and fixed arguments
 

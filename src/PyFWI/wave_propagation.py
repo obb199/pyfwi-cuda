@@ -2,11 +2,11 @@ import os
 import numpy as np
 # from numpy.core.shape_base import block
 import pyopencl as cl
-from pyopencl.tools import get_test_platforms_and_devices
 import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter
 
 import PyFWI.fwi_tools as tools
+from PyFWI._opencl_device import choose_devices
 from PyFWI.fwi_tools import expand_model
 import PyFWI.acquisition as acq
 from PyFWI.processing import prepare_residual
@@ -160,22 +160,20 @@ class WavePreparation:
         self.components = components
 
         # To call openCl
-        # Select the platform (if not provided, pick 0)
-        if "platform" in keys:
-            platform = inpa["platform"]
-        else:
-            platform = 0
-
-        # Choose th device (pick 0 if not provided)
-        devices = get_test_platforms_and_devices()[0][1] # (platforms, devices)
-        if "device" in keys:
-            device = inpa["device"]
-            if device >= len(devices):
-                raise Exception("Bad chosen device. There are {} available device(s).".format(len(devices)))
-            os.environ['PYOPENCL_CTX'] = str(platform) + ':' + str(device)
+        # The OpenCL device: inpa['platform'] and inpa['device'] (0 when missing), otherwise the
+        # PYOPENCL_CTX environment variable, otherwise the first device of the first platform.
+        # PyFWI._opencl_device.choose_devices replaces pyopencl.create_some_context(), which
+        # failed on single-device platforms with PyOpenCL 2022 and could ask the user.
+        platform = inpa.get("platform")
+        device = inpa.get("device")
+        devices = choose_devices(platform, device)
+        if device is not None:
+            # As in 0.1.10, the choice is also written to the environment, so that a later
+            # WavePropagator created without inpa['device'] runs on the same device.
+            os.environ['PYOPENCL_CTX'] = str(0 if platform is None else platform) + ':' + str(device)
             os.environ['PYOPENCL_COMPILER_OUTPUT'] = '1'
-        
-        self.ctx = cl.create_some_context()
+
+        self.ctx = cl.Context(devices)
         self.queue = cl.CommandQueue(self.ctx)
         
         kernel, kernel_crosswell, kernel_surface = self.kernel_caller()
