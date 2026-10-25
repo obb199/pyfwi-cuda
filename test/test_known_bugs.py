@@ -40,16 +40,14 @@ and must pass everywhere else.
 | ``test_optimizer_modules_import`` | ``MemoizeJac`` no longer exported by SciPy | 1.1 (done) |
 | ``test_numpy2_modules_import`` | ``numpy.lib.function_base`` removed in NumPy 2 | 1.1 (done) |
 | ``test_model_dataset_imports_without_segyio`` | ``segyio`` imported at module level, never declared | 1.1 (done) |
-| ``test_pyopencl_is_a_declared_dependency`` | ``pyopencl`` missing from ``install_requires`` | 1.1 |
-| ``test_wheel_contains_torch_and_data`` | the wheel lacks ``PyFWI/torch`` and ``PyFWI/data`` | 1.1 |
+| ``test_pyopencl_is_a_declared_dependency`` | ``pyopencl`` missing from ``install_requires`` | 1.1 (done) |
+| ``test_wheel_contains_torch_and_data`` | the wheel lacks ``PyFWI/torch`` and ``PyFWI/data`` | 1.1 (done) |
 """
 import importlib
 import importlib.metadata
 import importlib.util
 import os
 import re
-import shutil
-import subprocess
 import sys
 import zipfile
 
@@ -322,25 +320,22 @@ def test_model_dataset_imports_without_segyio(monkeypatch):
         pytest.skip(f"PyFWI.model_dataset fails to import for another reason: {e}")
 
 
-@pytest.mark.xfail(strict=True, reason="pyopencl is only in build-system.requires, not in install_requires")
+@pytest.mark.xfail(condition=REFERENCE, strict=True,
+                   reason="0.1.10 lists pyopencl only in build-system.requires, not as a dependency (fixed in the fork)")
 def test_pyopencl_is_a_declared_dependency():
-    requires = importlib.metadata.requires("PyFWI") or []
-    names = {re.split(r"[ ;<>=!~\[]", r, maxsplit=1)[0].lower() for r in requires}
+    # Fixed in step 1.1. The distribution that provides the PyFWI package is "PyFWI" for the
+    # published 0.1.10 and "pyfwi-cuda" for the fork.
+    distribution = (importlib.metadata.packages_distributions().get("PyFWI") or ["PyFWI"])[0]
+    requires = importlib.metadata.requires(distribution) or []
+    names = {re.split(r"[ ;<>=!~\[]", r, maxsplit=1)[0].lower() for r in requires if "extra ==" not in r}
     assert "pyopencl" in names, sorted(names)
 
 
-@pytest.mark.skipif(importlib.util.find_spec("setuptools") is None, reason="setuptools is needed to build the wheel")
-@pytest.mark.xfail(strict=True, reason="setup.py only packages PyFWI and the .cl files")
-def test_wheel_contains_torch_and_data(tmp_path):
-    # Build from a copy, so that the build artefacts never touch the working tree.
-    for name in ("setup.py", "pyproject.toml", "README.md"):
-        shutil.copy(os.path.join(REPO, name), tmp_path)
-    shutil.copytree(os.path.join(REPO, "src"), tmp_path / "src",
-                    ignore=shutil.ignore_patterns("__pycache__", "*.egg-info"))
-    build = subprocess.run([sys.executable, "-c", "from setuptools import build_meta as b; print(b.build_wheel('dist'))"],
-                           cwd=tmp_path, check=True, capture_output=True, text=True)
-    wheel = tmp_path / "dist" / build.stdout.strip().splitlines()[-1]
-    with zipfile.ZipFile(wheel) as zf:
+def test_wheel_contains_torch_and_data(built_distributions):
+    # Fixed in step 1.1 (setup.py of 0.1.10 only packaged PyFWI and the .cl files). The wheel is
+    # built from this repository, so the test runs where setuptools is installed (not in the
+    # reference environment).
+    with zipfile.ZipFile(built_distributions["wheel"]) as zf:
         names = zf.namelist()
     assert "PyFWI/wave_propagation.py" in names  # sanity check of the build itself
     assert "PyFWI/torch/wave_propagation.py" in names, "PyFWI/torch is missing from the wheel"

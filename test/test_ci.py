@@ -6,7 +6,7 @@ late. These tests catch the important ones locally:
 * no workflow may publish to PyPI (the fork must never upload under the name of
   the original package by accident), and the inherited workflows stay removed;
 * the CI job runs the steps the roadmap promises (both lint passes, the GPU-less
-  environment check and the test suite);
+  environment check, the test suite and the wheel installed in a fresh environment);
 * the CI dependency file uses exactly the versions of the development
   environment, so "passes locally" and "passes in CI" mean the same thing.
 """
@@ -53,6 +53,10 @@ def test_ci_workflow_runs_the_promised_steps():
     assert re.search(r"run: ruff check \.\s*$", ci, re.MULTILINE)
     assert "tools/check_env.py --no-gpu" in ci
     assert 'pytest -m "not slow"' in ci
+    # Packaging (PKG): wheel in a fresh environment, checked outside the checkout (step 1.1).
+    assert "pip wheel --no-deps --no-build-isolation --wheel-dir dist ." in ci
+    assert '-m pip install dist/pyfwi_cuda-*.whl' in ci
+    assert 'cd "$RUNNER_TEMP" && "$RUNNER_TEMP/clean/bin/python" "$GITHUB_WORKSPACE/tools/check_install.py"' in ci
 
 
 def test_ci_requirements_use_the_dev_versions():

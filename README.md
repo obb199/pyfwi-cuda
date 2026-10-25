@@ -44,6 +44,7 @@ the golden masters in `test/golden/` check that the results stay the same.
 | `example/` | The original examples (notebooks and one script) |
 | `test/` | Test suite (`pytest`); hardware-dependent tests skip themselves when the hardware is missing |
 | `tools/check_env.py` | Checks that an environment can run PyFWI and the CUDA tool chain |
+| `tools/check_install.py` | Checks an installed copy of the package (files, metadata, every module imports) |
 | `tools/setup_envs.sh` | Re-creates the reference and development environments |
 | `requirements/` | Pinned package versions of each environment |
 | `docs/cuda-migration/` | Analysis, roadmap and, later, gate reports |
@@ -91,13 +92,27 @@ How to read the results:
 - **Examples.** Every script in `example/scripts/` is run by `test/test_examples.py` with a physical
   check, and must keep working.
 
-## Using the original package
+## Installing the fork
 
-The fork is not published on PyPI yet. The original PyFWI is installed with:
+The fork is distributed as `pyfwi-cuda` and imported as `PyFWI`, like the original. It is not on
+PyPI yet; install it from a checkout of this repository:
 
 ```bash
-python3 -m pip install PyFWI
+python3 -m pip install .                  # PyFWI with its OpenCL engine (Python 3.10 or newer)
+python3 -m pip install ".[segy]"          # also reads SEG-Y files (segyio)
+python3 -m pip install ".[torch]"         # also PyFWI.torchfwi, gradients through PyTorch
+python3 tools/check_install.py            # checks the installed copy (run it outside src/)
 ```
+
+Optional dependencies (extras):
+
+| Extra | Installs | Needed by |
+| --- | --- | --- |
+| `segy` | `segyio` | `seismic_io.read_segy` and the Marmousi model of `model_dataset` |
+| `torch` | `torch` | `PyFWI.torchfwi` and `PyFWI.torch` |
+
+The original PyFWI (`python3 -m pip install PyFWI`) and the fork both provide the `PyFWI` package,
+so they cannot be installed in the same environment: uninstall one before installing the other.
 
 ## Citing PyFWI
 

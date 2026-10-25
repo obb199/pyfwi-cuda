@@ -41,11 +41,17 @@ how much and in which numeric mode.
   `test/test_math.py`, which requires later versions not to be worse.
 - GitHub Actions workflow `ci.yml` (CPU job: two lint passes, GPU-less environment check, test
   suite) with pinned dependencies in `requirements/ci-cpu.txt`, and a `[tool.ruff]` configuration.
+- `tools/check_install.py`: checks an installed copy of the package (distribution metadata,
+  kernels and data files present, every module imports, the `dupuy` model reads its data); the CI
+  runs it on the wheel installed in a fresh environment.
+- Optional dependencies (extras) `segy` (`segyio`) and `torch` (`torch`).
 
 ### Removed
 
 - The inherited workflows `pr.yml` (tested Python 3.8–3.10 with the old requirements) and
   `publish.yml` (uploaded to PyPI under the name of the original package).
+- `setup.py` and `requirements.txt`: the package metadata is in `pyproject.toml`, and the pinned
+  0.1.10 stack is in `requirements/ref-0.1.10.txt`.
 
 ### Changed
 
@@ -68,6 +74,14 @@ how much and in which numeric mode.
   `model_dataset`). Without it the rest of PyFWI works, and reading SEG-Y raises an `ImportError`
   that says how to install it. In 0.1.10 importing either module failed without `segyio`, which was
   never a declared dependency.
+- Packaging (`pyproject.toml`): the distribution is named `pyfwi-cuda` (the import name stays
+  `PyFWI`), version `0.1.11.dev0`, Python 3.10 or newer. `pyopencl` is now a declared dependency
+  (0.1.10 listed it only as a build requirement, so `pip install PyFWI` did not install the
+  engine); `setuptools`, `wheel` and `datetime` are no longer runtime dependencies (`datetime` on
+  PyPI is an unrelated package). The wheel now contains `PyFWI.torch` and `PyFWI/data/` (the
+  `dupuy` model failed with `FileNotFoundError` with the wheel of 0.1.10), and the licence file.
+- The version is written only in `src/PyFWI/version.py`; the package metadata and the Sphinx
+  configuration read it from there.
 
 ### Numerical changes
 

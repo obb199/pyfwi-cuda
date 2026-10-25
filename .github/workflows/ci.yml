@@ -4,7 +4,9 @@
 #   1. lint: critical errors on the whole repository (inherited code included) and the
 #      full rule set on the fork's own code (configuration in pyproject.toml);
 #   2. environment check without GPU (OpenCL on the CPU through POCL);
-#   3. the test suite; tests that need the RTX (markers gpu and opencl) skip themselves.
+#   3. the test suite; tests that need the RTX (markers gpu and opencl) skip themselves;
+#   4. packaging: the wheel installed in a fresh environment, with its dependencies resolved
+#      from PyPI as a user gets them (not from the pinned file), must import completely.
 # GPU jobs (parity, compute-sanitizer, benchmarks) will run on a self-hosted runner on the
 # RTX machine (docs/cuda-migration/execution-roadmap.md, step 0.9).
 #
@@ -58,3 +60,10 @@ jobs:
 
       - name: Test suite
         run: python -m pytest -m "not slow" -ra
+
+      - name: Packaging - install the wheel in a fresh environment and check it
+        run: |
+          python -m pip wheel --no-deps --no-build-isolation --wheel-dir dist .
+          python -m venv "$RUNNER_TEMP/clean"
+          "$RUNNER_TEMP/clean/bin/python" -m pip install dist/pyfwi_cuda-*.whl
+          cd "$RUNNER_TEMP" && "$RUNNER_TEMP/clean/bin/python" "$GITHUB_WORKSPACE/tools/check_install.py"

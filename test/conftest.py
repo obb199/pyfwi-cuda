@@ -9,7 +9,10 @@ pytest loads this file automatically before the tests in ``test/``. It:
 Markers (declared in ``pyproject.toml``): ``gpu`` needs CuPy + an NVIDIA GPU +
 cuda.core; ``opencl`` needs the NVIDIA OpenCL platform.
 """
+import json
 import os
+import shutil
+import subprocess
 import sys
 
 import pytest
@@ -116,3 +119,28 @@ def cuda_device():
     except ImportError:
         pytest.skip("no cuda.core")
     return 0
+
+
+@pytest.fixture(scope="session")
+def built_distributions(tmp_path_factory):
+    """Wheel and source distribution of this repository, built once per test session.
+
+    They are built from a copy of the files a build reads (``pyproject.toml``, ``README.md``,
+    ``LICENSE`` and ``src/``), so that the build artefacts (``build/``, ``*.egg-info``) never touch
+    the working tree. The build uses the setuptools of the running environment, without network.
+
+    Returns ``{"wheel": path, "sdist": path}`` (``pathlib.Path``). Skips the test when setuptools
+    is not installed (the reference environment has none).
+
+    Used by ``test_packaging.py`` and ``test_known_bugs.py::test_wheel_contains_torch_and_data``.
+    """
+    pytest.importorskip("setuptools", reason="setuptools is needed to build the wheel")
+    source = tmp_path_factory.mktemp("source")
+    for name in ("pyproject.toml", "README.md", "LICENSE"):
+        shutil.copy(os.path.join(REPO, name), source)
+    shutil.copytree(os.path.join(REPO, "src"), source / "src", ignore=shutil.ignore_patterns("__pycache__", "*.egg-info"))
+    build = ("import json; from setuptools import build_meta as b; "
+             "json.dump({'wheel': b.build_wheel('dist'), 'sdist': b.build_sdist('dist')}, open('built.json', 'w'))")
+    subprocess.run([sys.executable, "-c", build], cwd=source, check=True, capture_output=True, text=True)
+    with open(source / "built.json") as f:
+        return {kind: source / "dist" / name for kind, name in json.load(f).items()}

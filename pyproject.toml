@@ -1,16 +1,75 @@
 [build-system]
-requires = [
-    "setuptools>=42",
-    "wheel",
-    "numpy",
-    "pyopencl",
-    "matplotlib",
-    "scipy",
-    "hdf5storage",
-    "requests",
-    "datetime",
-]
+# setuptools 77 is the first version that understands the SPDX licence expression below.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
+
+[project]
+# Distribution name of the fork. The import name stays `PyFWI`, so that scripts written for
+# PyFWI 0.1.10 run unchanged. Both distributions provide the `PyFWI` package, so they must not be
+# installed in the same environment (`pip uninstall PyFWI` first).
+name = "pyfwi-cuda"
+dynamic = ["version"]  # read from src/PyFWI/version.py (see [tool.setuptools.dynamic])
+description = "PyFWI with a CUDA backend: elastic full-waveform inversion and reservoir monitoring on NVIDIA GPUs"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [
+    # Authors of PyFWI (setup.py of 0.1.10 and the SoftwareX paper).
+    { name = "Amir Mardan", email = "mardan.amir.h@gmail.com" },
+    { name = "Bernard Giroux" },
+    { name = "Gabriel Fabien-Ouellet" },
+]
+maintainers = [{ name = "Gabriel Carvalho" }]  # of the fork
+keywords = ["seismic", "full-waveform inversion", "FWI", "time-lapse", "OpenCL", "CUDA", "GPU"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+# What PyFWI needs to run. 0.1.10 forgot pyopencl (only in build-system.requires) and listed
+# setuptools, wheel and datetime, which are not runtime dependencies ("datetime" on PyPI is an
+# unrelated Zope package; PyFWI uses the standard-library module).
+dependencies = [
+    "numpy",
+    "scipy",        # optimisers (fwi, tl_fwi, optimization) and filters
+    "matplotlib",   # seiplot
+    "hdf5storage",  # .mat files (seismic_io, model_dataset)
+    "requests",     # download of the Marmousi model (model_dataset)
+    "pyopencl",     # the OpenCL engine (wave_propagation)
+]
+
+[project.optional-dependencies]
+segy = ["segyio"]  # reading SEG-Y files: seismic_io.read_segy and the Marmousi model of model_dataset
+torch = ["torch"]  # PyFWI.torchfwi (gradients through PyTorch) and PyFWI.torch
+
+[project.urls]
+Source = "https://github.com/obb199/pyfwi-cuda"
+Changelog = "https://github.com/obb199/pyfwi-cuda/blob/main/CHANGELOG.md"
+"Original project" = "https://github.com/AmirMardan/PyFWI"
+"Original documentation" = "https://pyfwi.readthedocs.io"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]  # finds PyFWI and its subpackage PyFWI.torch
+
+[tool.setuptools.package-data]
+# Files that are not Python modules: the OpenCL kernels, and the rock-physics data of
+# model_dataset (the "dupuy" model). 0.1.10 shipped the kernels only.
+PyFWI = ["*.cl", "data/*.mat"]
+
+[tool.setuptools.dynamic]
+version = { attr = "PyFWI.version.version" }
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
@@ -30,7 +89,6 @@ markers = [
 line-length = 127
 target-version = "py310"
 extend-exclude = [
-    "setup.py",
     "docs/conf.py",
     "example/fwi_example_surface.py",
     "example/*.ipynb",
@@ -52,6 +110,11 @@ extend-exclude = [
     "src/PyFWI/wave_propagation.py",
     "src/PyFWI/torch/wave_propagation.py",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# N999 (invalid module name): the import name PyFWI is inherited and public, so it cannot follow
+# the lower-case convention in new modules of the package either.
+"src/PyFWI/**/__init__.py" = ["N999"]
 
 [tool.ruff.lint.isort]
 # Modules of this repository, imported from the tests (test/ is on sys.path under pytest).
