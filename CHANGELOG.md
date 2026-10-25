@@ -117,7 +117,14 @@ how much and in which numeric mode.
   shape, dtype, axis order and values; writing into it changes the checkpoints, and assigning it
   replaces them, as before. Replacing an entry of the dictionary it returns no longer has an effect.
   Same results bit for bit; peak memory unchanged.
+- Low-pass filter of the multi-scale inversion (step 1.6): `fwi_tools.lowpass` and `adj_lowpass`
+  multiply the spectrum element by element by `|h|²`, with the real FFT of `scipy.fft` on every
+  CPU core, instead of two products with `(n, n)` diagonal matrices. Filtering per FWI iteration:
+  22x faster in the small scenario of the benchmark, 11x in the medium one. They now work along any
+  axis (0.1.10 only along axis 1).
 
 ### Numerical changes
 
-- None.
+- `fwi_tools.lowpass` and `adj_lowpass` (step 1.6): results differ from those of 0.1.10 by at most
+  about 1e-15 relative (rounding of a different but equivalent computation, float64). The inversions
+  and examples of the golden masters are unchanged: float32 outputs bit for bit, float64 within 1e-12.

@@ -23,7 +23,7 @@ This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into 
 | 1.3 | Cached kernels and fixed arguments | **done** |
 | 1.4 | Residual and wavelet on the GPU; non-blocking copies | **done** (wavelet: Phase 3) |
 | 1.5 | Contiguous checkpoints; `W.W` as a view | **done** |
-| 1.6 | Element-wise low-pass filter | |
+| 1.6 | Element-wise low-pass filter | **done** |
 | 1.7 | Padded buffers: no more reads outside the allocation | |
 | 1.8 | `PyFWI.info()` and diagnostic log | |
 | 1.9 | Fork release 0.1.11 | **G1** |
@@ -344,6 +344,18 @@ No computation of the propagator changes, so the criterion is BIT against the go
 - **Goes in:** `lowpass` and `adj_lowpass` with `|h|²·X` instead of `np.diag(h) @ X`; observed data filtered once per band.
 - **Tests:** UNI with relative difference ≤ 1e-12 against the old version (kept in the test as a reference), for several `nt`, numbers of traces, orders and axes; DES (65 to 75×); 2-iteration FWI within the tolerances; the adjoint identity ⟨lowpass x, y⟩ = ⟨x, adj_lowpass y⟩ still holds.
 - **Criterion:** tolerances met; gain measured.
+- **Result:** `|h|²·X` element by element, with the real FFT of `scipy.fft` on every core and the
+  zero padding done by the FFT (`test/test_lowpass.py` keeps the 0.1.10 versions as reference).
+  UNI: largest relative difference ≤ 1e-12 (measured 5e-16 to 7e-16) for float32 and float64 data,
+  four sizes, orders 1 to 5; the adjoint identity holds to 1e-12; the filter now also works along
+  other axes. FWI: the 10 inversions and the examples still match the golden masters (float32
+  outputs bit for bit, float64 within 1e-12). DES, filtering per FWI iteration (observed and
+  predicted data, and the adjoint of the residual): 0.48 s to 0.022 s (22×) with the data of the
+  small scenario, 5.46 s to 0.48 s (11×) with those of the medium one. Element-wise products alone
+  gave only 3 to 4× (the complex FFT of NumPy, on one core, then dominated): hence the real FFT on
+  every core; the 65–75× of the analysis compared the matrix product with the product alone.
+  Filtering the observed data once per band is not done: it would save 7 ms per iteration in the
+  small scenario and 0.16 s of about 56 s in the medium one.
 
 ### 1.7 Padded buffers
 

@@ -3,7 +3,7 @@ import copy
 import logging
 import pyopencl as cl
 import numpy as np
-import numpy.fft as fft
+import scipy.fft as scipy_fft
 import matplotlib.pyplot as plt
 
 from scipy.signal import butter, hilbert, freqz
@@ -1190,76 +1190,82 @@ def cost_preparation(dpre, dobs,
     return x_pre, x_obs
 
 
-def lowpass(x1, highcut, fn, order=1, axis=1, show=False):
-    x = copy.deepcopy(x1)
+def _zero_phase_filter(x, highcut, fn, order, axis):
+    """Zero-phase Butterworth low-pass filter of ``x`` along ``axis``, in the frequency domain.
 
-    # Zero padding
+    Shared by ``lowpass`` and ``adj_lowpass`` (step 1.6 of the fork). 0.1.10 filtered the complex
+    spectrum with the response ``h`` of the filter and then with its conjugate (which cancels the
+    phase shift), each time as a product with an ``(n, n)`` diagonal matrix, ``np.diag(h) @ X``:
+    O(n^2) operations per trace for an O(n) result. Here:
+
+    * the spectrum is multiplied element by element by ``|h|^2 = conj(h) * h``, the same operator,
+      which is its own adjoint;
+    * as the data are real and ``|h|^2`` is even, the real FFT (``scipy.fft.rfft``, half of the
+      spectrum) gives the same result, on every CPU core (``workers=-1``);
+    * the zero padding is done by the FFT (``n``) instead of a padded copy of the data.
+
+    The results differ from those of 0.1.10 by about 1e-16 (rounding; ``test/test_lowpass.py``).
+
+    Parameters
+    ----------
+    x : numpy.ndarray
+        Data, filtered along ``axis``; the inversion passes ``(components, time samples, traces)``
+        with ``axis=1``, the only axis 0.1.10 supported. Computed in float64 whatever its dtype,
+        as in 0.1.10.
+    highcut : float
+        Cut-off frequency of the low-pass filter (Hz).
+    fn : float
+        Nyquist frequency of the data (Hz).
+    order : int
+        Order of the Butterworth filter.
+    axis : int
+        Time axis.
+
+    Returns
+    -------
+    numpy.ndarray
+        Filtered data, float64, same shape as ``x``.
+    """
+    # Zero padding, so that the circular convolution of the FFT does not wrap around: the FFT
+    # pads each trace with zeros up to nt samples.
     padding = 512
-    x = np.hstack((x, np.zeros((x.shape[0], padding, x.shape[2]))))
+    x = np.asarray(x, dtype=np.float64)
+    n_samples = x.shape[axis]
+    nt = n_samples + padding
 
-    nt = x.shape[axis]
+    # Frequency response of the Butterworth filter (highcut scaled between 0 and 1) at the nt
+    # frequencies of the FFT, its squared modulus, and the half that rfft uses.
+    b, a = butter(order, 2 * highcut / fn, btype='lowpass', output="ba")
+    _, h = freqz(b, a, worN=nt, whole=True)
+    gain = (h.real ** 2 + h.imag ** 2)[:nt // 2 + 1]
+    shape = [1] * x.ndim
+    shape[axis] = gain.size
 
-    # Bring the data to frequency domain
-    x_fft = fft.fft(x, n=nt, axis=axis)
+    # Filter in the frequency domain, element by element, and come back to the time domain.
+    x_fft = scipy_fft.rfft(x, n=nt, axis=axis, workers=-1)
+    x_fft *= gain.reshape(shape)
+    filtered = scipy_fft.irfft(x_fft, n=nt, axis=axis, workers=-1)
 
-    # Calculate the highcut btween 0 to 1
-    scaled_highcut = 2*highcut/fn
+    # Remove the padding
+    return np.take(filtered, np.arange(n_samples), axis=axis)
 
-    # Generate the filter
-    b, a = butter(order, scaled_highcut, btype='lowpass', output="ba")
 
-    # Get the frequency response
-    w, h1 = freqz(b, a, worN=nt, whole=True)
-    h = np.diag(h1)
+def lowpass(x1, highcut, fn, order=1, axis=1, show=False):
+    """Zero-phase low-pass filter of seismic data (``_zero_phase_filter``); ``show`` is not used.
 
-    # Apply the filter in the frequency domain
-    fd = h @ x_fft
-
-    #Double filtering by the conjugate to make up the shift
-    h = np.diag(np.conjugate(h1))
-    fd = h @ fd
-
-    # Bring back to time domaine
-    f_inv = fft.ifft(fd, n=nt, axis=axis).real
-    f_inv = f_inv[:, :-padding, :]
-
-    return f_inv
+    Used by ``cost_preparation`` for the multi-scale inversion: observed and predicted data are
+    filtered with the same filter.
+    """
+    return _zero_phase_filter(x1, highcut, fn, order, axis)
 
 
 def adj_lowpass(x, highcut, fn, order, axis=1):
+    """Adjoint of ``lowpass``, applied to the residual by ``adj_cost_preparation``.
 
-    # Zero padding
-    padding = 512
-    x = np.hstack((x, np.zeros((x.shape[0], padding, x.shape[2]))))
-
-    nt = x.shape[axis]
-
-    # Bring the data to frequency domain
-    x_fft = np.fft.fft(x, n=nt, axis=axis)
-
-    # Calculate the highcut btween 0 to 1
-    scaled_highcut = 2*highcut / fn
-
-    # Generate the filter
-    b, a = butter(order, scaled_highcut, btype='lowpass', output="ba")
-
-    # Get the frequency response
-    w, h = freqz(b, a, worN=nt, whole=True)
-
-    # Get the conjugate of the filter
-    h_c = np.diag(np.conjugate(h))
-
-    # Apply the adjoint filter in the frequency domain
-    fd = h_c @ x_fft
-
-    # Double filtering by the conjugate to make up the shift
-    h_c = np.diag(h)
-    fd = h_c @ fd
-
-    # Bring back to time domaine
-    adj_f_inv = np.fft.ifft(fd, axis=axis).real
-    adj_f_inv = adj_f_inv[:, :-padding, :]
-    return adj_f_inv
+    The zero-phase filter is its own adjoint, so this is the same operator (0.1.10 computed it
+    with the two diagonal matrices in the other order).
+    """
+    return _zero_phase_filter(x, highcut, fn, order, axis)
 
 
 def adj_cost_preparation(res,
