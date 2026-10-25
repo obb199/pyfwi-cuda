@@ -110,6 +110,13 @@ how much and in which numeric mode.
   read with non-blocking copies and one wait. Same values, same results bit for bit.
   `make_residual` is kept, unused. The copy counter of `tools/benchmark.py` no longer counts copies
   between two device buffers as blocking.
+- Contiguous checkpoints (step 1.5): the checkpoints of the forward field are stored as
+  `(ns, nchp, tnz, tnx)` per component, so that each field is copied straight from and to the
+  device without blocking (0.1.10: `(tnz, tnx, ns, nchp)`, a temporary array and a blocking copy
+  for each of them). `W.W` becomes a property that shows them in the 0.1.10 layout, as views: same
+  shape, dtype, axis order and values; writing into it changes the checkpoints, and assigning it
+  replaces them, as before. Replacing an entry of the dictionary it returns no longer has an effect.
+  Same results bit for bit; peak memory unchanged.
 
 ### Numerical changes
 

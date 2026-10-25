@@ -1,0 +1,65 @@
+{
+ "gpu_fraction": 0.8848499110796625,
+ "gpu_s": 12.60867619200003,
+ "kernels": {
+  "Adj_injSrc": {
+   "launches": 856,
+   "mean_us": 5.875140186915836,
+   "total_s": 0.0050291199999999555
+  },
+  "Adj_update_tau": {
+   "launches": 5994,
+   "mean_us": 266.20855522189123,
+   "total_s": 1.5956540800000159
+  },
+  "Adj_update_v": {
+   "launches": 5994,
+   "mean_us": 309.4264611277944,
+   "total_s": 1.8547022079999997
+  },
+  "Grad": {
+   "launches": 5994,
+   "mean_us": 417.5391444778105,
+   "total_s": 2.502729631999996
+  },
+  "MakeAllZero": {
+   "launches": 6,
+   "mean_us": 86.528,
+   "total_s": 0.000519168
+  },
+  "MakeGradZero": {
+   "launches": 1,
+   "mean_us": 100.352,
+   "total_s": 0.000100352
+  },
+  "injSrc": {
+   "launches": 858,
+   "mean_us": 5.9424895104894695,
+   "total_s": 0.0050986559999999645
+  },
+  "update_tauxz": {
+   "launches": 10794,
+   "mean_us": 131.29791217343046,
+   "total_s": 1.4172296640000084
+  },
+  "update_tauz": {
+   "launches": 10794,
+   "mean_us": 222.75202075226883,
+   "total_s": 2.40438531199999
+  },
+  "update_velx": {
+   "launches": 10794,
+   "mean_us": 131.1146785251075,
+   "total_s": 1.4152518400000105
+  },
+  "update_velz": {
+   "launches": 10794,
+   "mean_us": 130.44062997961922,
+   "total_s": 1.4079761600000096
+  }
+ },
+ "launches": 62879,
+ "mean_kernel_us": 200.52284851858377,
+ "scenario": "medium",
+ "wall_s": 14.249508344997594
+}

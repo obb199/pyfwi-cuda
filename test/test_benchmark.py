@@ -5,11 +5,12 @@ and blocking copies per step), so they are checked against the exact structure o
 time loops of PyFWI 0.1.10:
 
 * forward, per shot: one ``MakeAllZero``, 4 field updates per internal step, one
-  ``injSrc`` every ``dt_scale`` steps; 5 blocking copies per checkpoint and 5 for the
-  seismograms (read without blocking since step 1.4);
+  ``injSrc`` every ``dt_scale`` steps; 5 copies per checkpoint (blocking in 0.1.10, not
+  since step 1.5) and 5 for the seismograms (not blocking since step 1.4);
 * gradient, per shot: ``Grad`` (and both adjoint updates) at every step of the
-  backward loop, i.e. ``nt - 1`` times; 5 blocking copies per restored checkpoint, and
-  the residual: 5 blocking copies per injection in 0.1.10, 5 per shot since step 1.4.
+  backward loop, i.e. ``nt - 1`` times; 5 copies per restored checkpoint (blocking in
+  0.1.10, not since step 1.5), and the residual: 5 blocking copies per injection in
+  0.1.10, 5 per shot since step 1.4.
 """
 import json
 
@@ -46,15 +47,16 @@ def test_counter_counts_every_launch_and_copy(opencl_platform):
     adjoint_injections = len([t for t in range(nt - 1, 0, -1) if t % scale == 0])
     if running_reference():
         # 0.1.10: every copy blocks, and one residual sample is sent before each injection.
-        seismograms_blocking, residual_blocking, on_device = 5, 5 * adjoint_injections, 0
+        checkpoint_blocking, seismograms_blocking, residual, on_device = 5, 5, 5 * adjoint_injections, 0
     else:
-        # Step 1.4: seismograms read without blocking; the residual of a shot is sent once, then
-        # each sample is copied on the device.
-        seismograms_blocking, residual_blocking, on_device = 0, 5, 5 * adjoint_injections
+        # Step 1.4: seismograms read without blocking; the residual of a shot is sent once (a
+        # blocking copy), then each sample is copied on the device. Step 1.5: the checkpoints are
+        # copied without blocking.
+        checkpoint_blocking, seismograms_blocking, residual, on_device = 0, 0, 5, 5 * adjoint_injections
     assert forward["copies"] == ns * (5 * nchp + 5)
-    assert forward["blocking_copies"] == ns * (5 * nchp + seismograms_blocking)
-    assert gradient["blocking_copies"] == ns * (5 * restores + residual_blocking) + 3
-    assert gradient["copies"] == gradient["blocking_copies"] + ns * on_device
+    assert forward["blocking_copies"] == ns * (checkpoint_blocking * nchp + seismograms_blocking)
+    assert gradient["copies"] == ns * (5 * restores + residual + on_device) + 3
+    assert gradient["blocking_copies"] == ns * (checkpoint_blocking * restores + residual) + 3
 
 
 def test_counter_restores_pyopencl():
@@ -148,3 +150,16 @@ def test_step_1_4_removed_the_blocking_residual_copies():
     assert before["per_step"]["blocking_copies"] == pytest.approx(2.71, abs=0.01)
     assert after["per_step"]["blocking_copies"] == pytest.approx(2.00, abs=0.01)
     assert after["gradient_s"]["median"] <= before["gradient_s"]["median"]
+
+
+def test_step_1_5_the_host_no_longer_waits_for_checkpoint_copies():
+    # Roadmap step 1.5: contiguous checkpoints copied without blocking. Recorded results.
+    baseline = _stored("baseline", "ref-0.1.10-pyopencl-2022")["scenarios"]
+    before = _stored("step-1.3", "fork-1.3-pyopencl-2026")["scenarios"]
+    after = _stored("step-1.5", "fork-1.5-pyopencl-2026")["scenarios"]
+    for name in ("small", "medium"):
+        assert after[name]["per_step"]["blocking_copies"] < 0.01, name
+    # Medium scenario: the copies dominated after step 1.3.
+    assert before["medium"]["forward_s"]["median"] / after["medium"]["forward_s"]["median"] > 2.5
+    assert baseline["medium"]["gradient_s"]["median"] / after["medium"]["gradient_s"]["median"] > 1.4
+    assert after["small"]["forward_s"]["median"] <= before["small"]["forward_s"]["median"]

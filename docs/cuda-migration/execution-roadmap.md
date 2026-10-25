@@ -22,7 +22,7 @@ This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into 
 | 1.2 | Fixed OpenCL device selection | **done** |
 | 1.3 | Cached kernels and fixed arguments | **done** |
 | 1.4 | Residual and wavelet on the GPU; non-blocking copies | **done** (wavelet: Phase 3) |
-| 1.5 | Contiguous checkpoints; `W.W` as a view | |
+| 1.5 | Contiguous checkpoints; `W.W` as a view | **done** |
 | 1.6 | Element-wise low-pass filter | |
 | 1.7 | Padded buffers: no more reads outside the allocation | |
 | 1.8 | `PyFWI.info()` and diagnostic log | |
@@ -325,6 +325,19 @@ No computation of the propagator changes, so the criterion is BIT against the go
 - **Goes in:** `(ns, nchp, nz, nx)` layout; `W.W` becomes a property that returns a view with the same `[:, :, s, c]` axis order.
 - **Tests:** API (shape, `dtype`, values and axis order of `W.W` equal to 0.1.10; the gradient example of the docs runs); BIT; DES (≈50× per copy at 400×400); MEM (peak RAM does not grow).
 - **Criterion:** BIT; API intact.
+- **Result:** checkpoints stored as `(ns, nchp, tnz, tnx)` and copied straight from and to the device
+  without blocking; `W.W` is a property (with a setter, which `PyFWI.optimization` uses) that shows
+  them as `(tnz, tnx, ns, nchp)` views. API (`test/test_checkpoints.py`, also run against 0.1.10):
+  same shape, dtype, axis order and values, writing into `W.W` and assigning it change the gradient
+  as in 0.1.10. BIT holds. MEM: peak traced memory of forward + gradient unchanged (1.03 MB in a case
+  with 50 MB of checkpoints, before and after). DES (`bench/step-1.5/`): one copy of a 440 × 440
+  field takes 110 µs instead of 368 µs (device to host) and 107 µs instead of 271 µs (host to
+  device), i.e. 3× and not the ≈50× of the analysis, because here the PCIe transfer itself
+  (≈7 GB/s from pageable memory) dominates once the strided scatter is gone. The larger gain is that
+  the host no longer waits: blocking copies per step fall from 2.00 to 0.01, the GPU is busy 88 %
+  of the time in the medium scenario (53 % before) and 73 % in the small one. Medium scenario:
+  forward 47.9 s to 17.8 s (2.7× faster than 0.1.10), gradient 52.1 s to 38.6 s (1.5×); small
+  scenario: 0.41 s and 0.76 s (3.6× and 2.5× faster than 0.1.10).
 
 ### 1.6 Element-wise low-pass filter
 

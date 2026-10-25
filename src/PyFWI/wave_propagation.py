@@ -158,13 +158,13 @@ class WavePreparation:
         self.dx_pml, self.dz_pml = tools.pml_counstruction(self.tnz, self.tnx, self.dh, self.npml,
                                                      pmlR, pml_dir)
 
-        self.W = {
-            'vx': np.zeros((self.tnz, self.tnx, self.ns, self.nchp), dtype=np.float32),
-            'vz': np.zeros((self.tnz, self.tnx, self.ns, self.nchp), dtype=np.float32),
-            'taux': np.zeros((self.tnz, self.tnx, self.ns, self.nchp), dtype=np.float32),
-            'tauz': np.zeros((self.tnz, self.tnx, self.ns, self.nchp), dtype=np.float32),
-            'tauxz': np.zeros((self.tnz, self.tnx, self.ns, self.nchp), dtype=np.float32),
-        }
+        # Checkpoints of the forward field: for each component an array (ns, nchp, tnz, tnx), so
+        # that the field of one shot at one checkpoint is a contiguous block, copied straight from
+        # and to the device without blocking (step 1.5 of the fork). 0.1.10 stored them as
+        # (tnz, tnx, ns, nchp), where that field is scattered with a stride of ns * nchp values;
+        # the attribute W still shows them in that layout (see the W property).
+        self._checkpoints = {par: np.zeros((self.ns, self.nchp, self.tnz, self.tnx), dtype=np.float32)
+                             for par in COMPONENTS}
 
         self.D = tools.Fdm(order=self.sdo * 2)
 
@@ -265,6 +265,29 @@ class WavePreparation:
             'tauz': np.zeros((self.nt_ext, self.nr, self.ns)).astype(np.float32, order='C'),
             'tauxz': np.zeros((self.nt_ext, self.nr, self.ns)).astype(np.float32, order='C'),
         }
+
+    @property
+    def W(self):
+        """Checkpoints of the forward field, ``{component: array (tnz, tnx, ns, nchp)}``, as in 0.1.10.
+
+        ``W['vx'][:, :, s, c]`` is the field ``vx`` of shot ``s`` at checkpoint ``c`` (time step
+        ``chp[c]``), absorbing boundary included. Since step 1.5 the arrays are views of the
+        checkpoint storage (``_checkpoints``, layout ``(ns, nchp, tnz, tnx)``): same shape, dtype,
+        axis order and values as in 0.1.10, and writing into them changes the checkpoints, as
+        before. The dictionary itself is new at each access, so replacing one of its entries has
+        no effect; assign ``W`` instead (setter below).
+        """
+        return {par: store.transpose(2, 3, 0, 1) for par, store in self._checkpoints.items()}
+
+    @W.setter
+    def W(self, value):
+        """Replace the checkpoints with ``{component: array (tnz, tnx, ns, nchp)}``, the 0.1.10 layout.
+
+        Used by ``PyFWI.optimization`` (``FO_waves.W = copy.deepcopy(W)``). The arrays are copied
+        into the storage layout, as float32.
+        """
+        self._checkpoints = {par: np.ascontiguousarray(np.asarray(array, dtype=np.float32).transpose(2, 3, 0, 1))
+                             for par, array in value.items()}
 
     def adjoint_buffer_preparing(self):
         # Buffer for gradient
@@ -703,11 +726,18 @@ class WavePropagator(WavePreparation):
 
             self.__kernel(s, coeff)
 
+        # The checkpoint copies did not block: wait for them before W can be read.
+        self.queue.finish()
+
         if self.acq_type == 2:
             for par in self.seismogram:
                 self.seismogram[par][:, :self.n_well_rec] = np.flip(self.seismogram[par][:, :self.n_well_rec], axis=1)
         return self.seismogram
     
+    def _field_buffers(self):
+        """The five device buffers of the forward field, in the order of ``COMPONENTS``."""
+        return (self.vx_b, self.vz_b, self.taux_b, self.tauz_b, self.tauxz_b)
+
     def _launch(self, kernel):
         """Launch ``kernel`` on the whole grid with the arguments set before (``set_args``/``set_arg``).
 
@@ -782,21 +812,11 @@ class WavePropagator(WavePreparation):
             self.__update_fwd(coeff=coeff)
 
             if t in self.chp:
-                copy_purpose = np.zeros((self.tnz, self.tnx), dtype=np.float32)
-                cl.enqueue_copy(self.queue, copy_purpose, self.vx_b)
-                self.W['vx'][:, :, s, chpc] = np.copy(copy_purpose)
-
-                cl.enqueue_copy(self.queue, copy_purpose, self.vz_b)
-                self.W['vz'][:, :, s, chpc] = np.copy(copy_purpose)
-
-                cl.enqueue_copy(self.queue, copy_purpose, self.taux_b)
-                self.W['taux'][:, :, s, chpc] = np.copy(copy_purpose)
-
-                cl.enqueue_copy(self.queue, copy_purpose, self.tauz_b)
-                self.W['tauz'][:, :, s, chpc] = np.copy(copy_purpose)
-
-                cl.enqueue_copy(self.queue, copy_purpose, self.tauxz_b)
-                self.W['tauxz'][:, :, s, chpc] = np.copy(copy_purpose)
+                # Straight into the contiguous checkpoint storage, without blocking (step 1.5).
+                # The queue runs in order, so the next updates start after the copies; the host
+                # waits once, at the end of forward_propagator.
+                for par, buffer in zip(COMPONENTS, self._field_buffers()):
+                    cl.enqueue_copy(self.queue, self._checkpoints[par][s, chpc], buffer, is_blocking=False)
 
                 chpc += 1
 
@@ -869,20 +889,10 @@ class WavePropagator(WavePreparation):
         # time loop
         for t in range(self.nt - 1, 0, -1):  # range(self.nt-1,self.nt-2,-1):#
             if t == self.chp[chpc]:
-                vx = np.copy(self.W['vx'][:, :, s, chpc])
-                cl.enqueue_copy(self.queue, self.vx_b, vx)
-
-                vz = np.copy(self.W['vz'][:, :, s, chpc])
-                cl.enqueue_copy(self.queue, self.vz_b, vz)
-
-                taux = np.copy(self.W['taux'][:, :, s, chpc])
-                cl.enqueue_copy(self.queue, self.taux_b, taux)
-
-                tauz = np.copy(self.W['tauz'][:, :, s, chpc])
-                cl.enqueue_copy(self.queue, self.tauz_b, tauz)
-
-                tauxz = np.copy(self.W['tauxz'][:, :, s, chpc])
-                cl.enqueue_copy(self.queue, self.tauxz_b, tauxz)
+                # Straight from the contiguous checkpoint storage, without blocking (step 1.5):
+                # the checkpoints do not change during the gradient.
+                for par, buffer in zip(COMPONENTS, self._field_buffers()):
+                    cl.enqueue_copy(self.queue, buffer, self._checkpoints[par][s, chpc], is_blocking=False)
 
                 chpc -= 1
 
