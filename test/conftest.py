@@ -4,7 +4,9 @@ pytest loads this file automatically before the tests in ``test/``. It:
 
 * puts the repository root on ``sys.path`` so tests can ``import tools.*``;
 * provides fixtures that **skip** a test when the hardware it needs is absent,
-  so the same suite runs on the RTX machine and on GPU-less CI runners.
+  so the same suite runs on the RTX machine and on GPU-less CI runners;
+* reports a test as skipped, not failed, when PoCL cannot compile kernels for the
+  CPU of the machine (``pytest_runtest_makereport``), with a warning on GitHub.
 
 Markers (declared in ``pyproject.toml``): ``gpu`` needs CuPy + an NVIDIA GPU +
 cuda.core; ``opencl`` needs the NVIDIA OpenCL platform.
@@ -20,6 +22,56 @@ import pytest
 #: Absolute path of the repository root (the parent of ``test/``).
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, REPO)
+
+#: Error of PoCL 3.0 (LLVM 14, the OpenCL-on-CPU of the pinned PyOpenCL wheels) on a CPU that
+#: LLVM 14 does not know, such as the AMD EPYC 9V45 (Zen 5) of some GitHub-hosted runners: PoCL
+#: then asks LLVM to compile for the CPU "generic", which LLVM 14 rejects, so no kernel builds.
+#: PoCL 3.0 has no option to name another CPU (checked: build options are filtered).
+POCL_UNKNOWN_CPU = "unknown target CPU 'generic'"
+#: Skip reason of the tests hit by ``POCL_UNKNOWN_CPU``.
+POCL_UNKNOWN_CPU_REASON = ("PoCL 3.0 cannot compile OpenCL kernels for this CPU (LLVM 14 does not know it: "
+                           "\"unknown target CPU 'generic'\"); a limitation of the machine, not of PyFWI")
+#: Node ids of the tests skipped for that reason in this session (for the summary).
+_pocl_unknown_cpu_skips = []
+
+
+def pocl_cannot_compile_here(error):
+    """True if ``error`` (an exception) is PoCL failing to build a kernel because it does not know the CPU.
+
+    Used by ``pytest_runtest_makereport``; tested by ``test_ci.py``.
+    """
+    return POCL_UNKNOWN_CPU in str(error)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Turn a failure caused by ``POCL_UNKNOWN_CPU`` into a skip with an explicit reason.
+
+    pytest calls this hook for the setup, the call and the teardown of every test. Only that exact
+    compiler error is converted, so any other failure of the same test is still a failure. The
+    local suites (NVIDIA and PoCL on the RTX machine) are not affected: PoCL knows their CPU.
+    """
+    outcome = yield
+    report = outcome.get_result()
+    if report.failed and call.excinfo is not None and pocl_cannot_compile_here(call.excinfo.value):
+        report.outcome = "skipped"
+        line = (item.location[1] or 0) + 1  # location is 0-based; reports show 1-based lines
+        report.longrepr = (str(item.path), line, f"Skipped: {POCL_UNKNOWN_CPU_REASON}")
+        _pocl_unknown_cpu_skips.append(item.nodeid)
+
+
+def pytest_terminal_summary(terminalreporter):
+    """After the run, say how many tests ``POCL_UNKNOWN_CPU`` skipped; on GitHub Actions, as a warning.
+
+    A line ``::warning title=...::message`` in the output becomes a warning annotation on the page
+    of the workflow run, so the lost coverage is visible without reading the log.
+    """
+    if not _pocl_unknown_cpu_skips:
+        return
+    message = f"{len(_pocl_unknown_cpu_skips)} tests skipped: {POCL_UNKNOWN_CPU_REASON}"
+    terminalreporter.write_line(message, yellow=True)
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        terminalreporter.write_line(f"::warning title=PoCL cannot compile on this CPU::{message}")
 
 
 def _nvidia_opencl_platform():

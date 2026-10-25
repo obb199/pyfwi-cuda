@@ -45,6 +45,9 @@ how much and in which numeric mode.
   kernels and data files present, every module imports, the `dupuy` model reads its data); the CI
   runs it on the wheel installed in a fresh environment.
 - Optional dependencies (extras) `segy` (`segyio`) and `torch` (`torch`).
+- The test suite reports OpenCL tests as skipped, with a warning annotation on GitHub, when PoCL
+  cannot compile kernels for the CPU of the machine (PoCL 3.0 with LLVM 14 does not know the AMD
+  EPYC 9V45 of some GitHub-hosted runners); any other failure still fails.
 
 ### Removed
 

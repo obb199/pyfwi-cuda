@@ -8,11 +8,16 @@ late. These tests catch the important ones locally:
 * the CI job runs the steps the roadmap promises (both lint passes, the GPU-less
   environment check, the test suite and the wheel installed in a fresh environment);
 * the CI dependency file uses exactly the versions of the development
-  environment, so "passes locally" and "passes in CI" mean the same thing.
+  environment, so "passes locally" and "passes in CI" mean the same thing;
+* on a runner whose CPU PoCL cannot compile for, the OpenCL tests are reported
+  as skipped with a warning, not as failures (hook in ``conftest.py``).
 """
 import glob
 import os
 import re
+import shutil
+import subprocess
+import sys
 
 #: Absolute path of the repository root.
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -78,3 +83,22 @@ def test_gpu_workflow_targets_the_self_hosted_rtx_and_is_manual_until_the_runner
     assert "tools/setup_envs.sh all" in active  # tests the checked-out commit, not a local checkout
     assert 'pytest -m "not slow"' in active and "pytest -m slow" in active
     assert "ref-0.1.10/bin/python -m pytest" in active
+
+
+def test_pocl_unknown_cpu_failures_become_skips_with_a_warning(tmp_path):
+    # A throw-away test session with a copy of conftest.py: one test fails with the PoCL error of
+    # an unknown CPU, the other with a different build error, which must stay a failure.
+    shutil.copy(os.path.join(REPO, "test", "conftest.py"), tmp_path)
+    (tmp_path / "test_sample.py").write_text(
+        "def test_unknown_cpu():\n"
+        "    raise RuntimeError(\"clBuildProgram failed: BUILD_PROGRAM_FAILURE\\nerror: unknown target CPU 'generic'\")\n"
+        "\n"
+        "def test_other_build_error():\n"
+        "    raise RuntimeError('clBuildProgram failed: BUILD_PROGRAM_FAILURE\\nerror: use of undeclared identifier')\n")
+    run = subprocess.run([sys.executable, "-m", "pytest", "-q", "-ra", "-p", "no:cacheprovider", str(tmp_path)],
+                         cwd=tmp_path, capture_output=True, text=True, check=False,
+                         env={**os.environ, "GITHUB_ACTIONS": "true"})
+    assert "1 failed, 1 skipped" in run.stdout, run.stdout
+    assert "FAILED test_sample.py::test_other_build_error" in run.stdout
+    assert "SKIPPED [1] test_sample.py:1: PoCL 3.0 cannot compile OpenCL kernels for this CPU" in run.stdout
+    assert "::warning title=PoCL cannot compile on this CPU::1 tests skipped" in run.stdout
