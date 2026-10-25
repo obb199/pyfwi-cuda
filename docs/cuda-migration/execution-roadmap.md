@@ -24,7 +24,7 @@ This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into 
 | 1.4 | Residual and wavelet on the GPU; non-blocking copies | **done** (wavelet: Phase 3) |
 | 1.5 | Contiguous checkpoints; `W.W` as a view | **done** |
 | 1.6 | Element-wise low-pass filter | **done** |
-| 1.7 | Padded buffers: no more reads outside the allocation | |
+| 1.7 | Padded buffers: no more reads outside the allocation | **done** (and one shared context per device) |
 | 1.8 | `PyFWI.info()` and diagnostic log | |
 | 1.9 | Fork release 0.1.11 | **G1** |
 | 2.1 | Engine and backend interface; OpenCL behind the interface | Phase 2 |
