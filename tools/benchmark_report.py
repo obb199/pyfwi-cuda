@@ -49,7 +49,9 @@ def render(runs):
               "Launches per step fwd / grad | Blocking copies per step | CV fwd / grad | GPU °C before / after |")
     lines += ["", note, "", header, "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     reference = runs[0]["scenarios"]
-    scenarios = [s for s in reference if all(s in r["scenarios"] for r in runs)]
+    order = {name: i for i, name in enumerate(("tiny", "small", "medium", "large"))}  # by size, unknown names last
+    scenarios = sorted((s for s in reference if all(s in r["scenarios"] for r in runs)),
+                       key=lambda s: (order.get(s, len(order)), s))
     for scenario in scenarios:
         for run in runs:
             r = run["scenarios"][scenario]
@@ -57,7 +59,7 @@ def render(runs):
             fwd, grad = r["forward_s"]["median"], r["gradient_s"]["median"]
             speed = f"{ref['forward_s']['median'] / fwd:.2f} / {ref['gradient_s']['median'] / grad:.2f}"
             temps = f"{r['gpu_before'].get('temperature_c', '?')} / {r['gpu_after'].get('temperature_c', '?')}"
-            scale = f" (x{r['scale']:g} shots)" if r["scale"] != 1 else ""
+            scale = f" (scaled x{r['scale']:g} to {r['scaled_to_shots']} shots)" if r["scale"] != 1 else ""
             lines.append(
                 f"| {scenario}{scale} | {run['label']} | {fwd:.2f} | {grad:.2f} | {speed} | "
                 f"{r['host_ms_per_step']['forward']:.3f} / {r['host_ms_per_step']['gradient']:.3f} | "

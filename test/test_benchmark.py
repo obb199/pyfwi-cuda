@@ -74,3 +74,26 @@ def test_report_shows_speed_ups_relative_to_the_first_run():
     assert "| small | before | 2.00 | 4.00 | 1.00 / 1.00 |" in text
     assert "| small | after | 1.00 | 1.00 | 2.00 / 4.00 |" in text
     assert text.count("\n|") >= 6  # header rows + one row per run and scenario
+
+
+def test_report_orders_scenarios_by_size_and_states_the_scaling():
+    from tools.benchmark_report import render
+    run = _fake_run("only", 1.0, 1.0)
+    run["scenarios"]["large"] = {**run["scenarios"]["small"], "scale": 50, "scaled_to_shots": 50}
+    run["scenarios"]["medium"] = {**run["scenarios"]["small"], "scale": 4, "scaled_to_shots": 8}
+    text = render([run])
+    assert text.index("| small |") < text.index("| medium (scaled x4 to 8 shots) |") < text.index("| large (scaled x50")
+
+
+@pytest.mark.parametrize("label", ["ref-0.1.10-pyopencl-2022", "dev-pyopencl-2026"])
+def test_stored_baseline_is_complete_and_stable(label):
+    # Roadmap step 0.7: the baseline of 0.1.10, with a coefficient of variation below 3 % everywhere.
+    import os
+    path = os.path.join(os.path.dirname(__file__), "..", "bench", "baseline", f"{label}.json")
+    with open(path) as f:
+        baseline = json.load(f)
+    assert baseline["machine"]["pyfwi"] == "0.1.10" and baseline["repeats"] == 5
+    assert set(baseline["scenarios"]) == {"small", "medium", "large"}
+    for name, scenario in baseline["scenarios"].items():
+        assert scenario["cv_forward"] < 0.03 and scenario["cv_gradient"] < 0.03, name
+        assert scenario["guard_bands"] is True
