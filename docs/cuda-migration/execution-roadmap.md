@@ -1,0 +1,479 @@
+# PyFWI-CUDA: execution and verification roadmap
+
+Oct 25, 2026 · Gabriel Carvalho · private repository [obb199/pyfwi-cuda](https://github.com/obb199/pyfwi-cuda)
+
+This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into a sequence of executable steps, from a ready environment to version 0.4 and maintenance. Each step says what goes into the code, which tests come with it and which criterion must be met before moving on. The technical decisions (CuPy as the base, a single kernel source for parity, `legacy` and `fixed` numeric modes, frozen API) come from the analysis and are not re-discussed here.
+
+## Sequence at a glance
+
+| # | Step | Version / gate |
+| --- | --- | --- |
+| P | Environments, repository and environment checker | **done** (`babbc0e`) |
+| 0.1 | Fork hygiene: README, GPLv3 notice, CHANGELOG, lint configuration, CPU CI | Phase 0 |
+| 0.2 | Known bugs of 0.1.10 become strict `xfail` tests | |
+| 0.3 | Example scripts that exercise the public API and must never break | |
+| 0.4 | Golden-master generator in the reference environment | |
+| 0.5 | Characterisation tests in dev and reference × dev cross-check | |
+| 0.6 | Mathematical baseline of 0.1.10 (gradient, analytic solution, convergence, adjoint) | |
+| 0.7 | Reference benchmark in the three scenarios | |
+| 0.8 | Profiling bench: Nsight Systems, Nsight Compute, compute-sanitizer | |
+| 0.9 | Self-hosted runner on the RTX and GPU jobs | **G0** |
+| 1.1 | Imports and packaging (current SciPy and NumPy, declared dependencies) | Phase 1 |
+| 1.2 | Fixed OpenCL device selection | |
+| 1.3 | Cached kernels and fixed arguments | |
+| 1.4 | Residual and wavelet on the GPU; non-blocking copies | |
+| 1.5 | Contiguous checkpoints; `W.W` as a view | |
+| 1.6 | Element-wise low-pass filter | |
+| 1.7 | Padded buffers: no more reads outside the allocation | |
+| 1.8 | `PyFWI.info()` and diagnostic log | |
+| 1.9 | Fork release 0.1.11 | **G1** |
+| 2.1 | Engine and backend interface; OpenCL behind the interface | Phase 2 |
+| 2.2 | Backend selector and fallback | |
+| 2.3 | Parity CUDA backend (single source, `legacy` mode) | |
+| 2.4 | `legacy` and `fixed` numeric modes | |
+| 2.5 | API contract on the CUDA backend | |
+| 2.6 | `[cuda13]` and `[cuda12]` extras | |
+| 2.7 | Parity report and release 0.2.0 | **G2** |
+| 3.1–3.10 | CUDA optimisations, one per commit, with a benchmark before and after | Phase 3 |
+| 3.11 | `auto` default and release 0.3.0 | **G3** |
+| 4.1–4.6 | Cost function on the GPU, boundary saving, FP16, multi-GPU, DLPack, geophysical validation | Phase 4 |
+| 4.7 | Release 0.4.0 | **G4** |
+| 5.x | Final documentation, upstream, publication and conditional optimisations | Maintenance |
+
+Estimated duration in the analysis: about 20 weeks for one person (Phase 0 ≈ 3, Phase 1 ≈ 3, Phase 2 ≈ 4, Phase 3 ≈ 6, Phase 4 ≈ 4), or about 14 with two people, because Phase 4 can run in parallel with Phase 3 after G2.
+
+## Working rules
+
+**One step, one or more small commits.** Each commit brings one feature, the tests that prove it and a message that explains what changed and why. Before each commit:
+
+1. `ruff check` on the changed files (inherited code is only cleaned when it is touched).
+2. Fast suite in the dev environment: `../envs/dev/bin/python -m pytest -m "not slow"`.
+3. If the commit touches kernels, backends or the time loop: also `-m opencl`, `-m gpu` and `compute-sanitizer` on the changed kernels.
+4. If the commit is about performance: benchmark before and after, with the numbers in the commit message.
+5. Commit and push to `origin/main`.
+
+**Language and documentation.** Code, comments, docstrings, README, CHANGELOG, design documents and commit messages are written in English. Every function and class documents what each argument and return value means (units, shapes, dtypes), the important variables, and **where it is used** (callers and tests), in NumPy docstring style with a "Used by" section. The goal is that a newcomer can read any file without guessing.
+
+**Examples are part of the contract.** The scripts in `example/scripts/` use only the public API, the way a user would. Every one of them runs in the test suite (in a reduced size) and its outputs are compared with those of PyFWI 0.1.10. A change that breaks an example is a regression, even if every unit test passes.
+
+**Gates.** At the end of each phase, a gate gathers the checks that do not run at every commit (full golden-master matrix, benchmarks, profiling, complete FWI). The result is written to `docs/cuda-migration/gates/G<n>.md`, with numbers, versions and hashes. The next phase only starts once the gate is approved.
+
+**Known bugs.** Each bug inherited from 0.1.10 becomes an `xfail(strict=True)` test. When the fix lands, the test starts passing, `strict` makes it fail as "XPASS", and the test must be updated in the same commit.
+
+**Environments.** Created by `tools/setup_envs.sh` and checked by `tools/check_env.py`, both already in the repository.
+
+| Environment | Content | Use |
+| --- | --- | --- |
+| `envs/ref-0.1.10` | Python 3.10, PyFWI 0.1.10 from PyPI, NumPy 1.21.6, SciPy 1.7.3, PyOpenCL 2022.2.4, POCL 3.0 | Generate golden masters and the baseline; never receives code from the fork |
+| `envs/dev` | Python 3.12, editable fork, CuPy 14.2 (CUDA 13), cuda.core 1.2, PyOpenCL 2026.1, POCL 3.0, pytest-benchmark | Development and tests |
+| `envs/cuda12` (Phase 2) | Same as dev with `cupy-cuda12x` | Test the `[cuda12]` extra |
+| `envs/torch` (Phase 4) | Dev + PyTorch with CUDA | Test DLPack without mixing the `nvidia-*` wheels of CuPy and PyTorch |
+
+## Current state
+
+Target machine: GeForce RTX 3060 12 GB (Ampere, sm_86), driver 580.95.05 (CUDA 13.0), Ryzen 7 5700X, 23 GB of RAM, Debian 12. System CUDA Toolkit 12.4 with `nvcc`, Nsight Systems 2023.4, Nsight Compute 2024.1 and compute-sanitizer 2024.1.
+
+What the preparation step delivered and verified (`babbc0e`, `ad049b8`, `f0ee2d2`):
+
+- Local fork with `upstream` = AmirMardan/PyFWI (push disabled) and `origin` = the private repository. Base: `v0.1.10` = `1434a16`.
+- Both environments, with versions pinned in `requirements/`. Re-created from scratch in a temporary folder, they matched the lock files exactly.
+- `check_env.py` passes in both environments: NVRTC produces cubin, a CUDA Graph captures and replays, cuFFT has a relative error of 3×10⁻⁷ against NumPy, `cupyx` has a maximum error of 1.2×10⁻⁷ against SciPy, and 0.1.10 runs forward + gradient on the RTX bit-for-bit deterministically. With `--no-gpu` it also runs on machines without NVIDIA (CI).
+
+**Findings that the analysis did not record**, all handled in this roadmap:
+
+| Finding | Consequence | Handled in |
+| --- | --- | --- |
+| On POCL, 0.1.10 returns 99% NaN in the seismogram and different results on every run. With zeros after the end of the buffers the seismogram becomes finite and deterministic; the gradient still has NaN, consistent with the reads before the start (`i − 3` with `i = 2`). | POCL cannot be a reference for 0.1.10 as it is. Golden masters come from NVIDIA OpenCL, and the CPU CI only compares outputs after step 1.7. | 0.2, 0.4, 1.7 |
+| `segyio` is imported at the top of `model_dataset.py` and `seismic_io.py`, but it is not in `install_requires` and is commented out in `requirements.txt`. | `pip install PyFWI` is not even enough to build a model. | 1.1 |
+| `from numpy.lib.function_base import kaiser` breaks with NumPy 2. | `model_dataset` and `seismic_io` do not import in the dev environment. | 1.1 |
+| `inpa['device']` fails when the platform has a single device: `create_some_context` reports a "left over" choice. | Today the device must be chosen through `PYOPENCL_CTX`. | 0.2, 1.2 |
+| The same forward takes 1.42 s with PyOpenCL 2022.2.4 and 2.07 s with PyOpenCL 2026.1.4 (probably `RepeatedKernelRetrieval`). | The reference benchmark must record both versions. Step 1.3 should remove the difference. | 0.7, 1.3 |
+| The NVRTC 13.4 installed by pip is newer than the driver (13.0): the PTX it generates cannot be loaded, only cubin can. | The CUDA backend always compiles to cubin for the real architecture; a test enforces it. Driver 580 is kept on purpose because it is the minimum supported. | 2.3, 2.6 |
+| The PTX of the hot kernels has from 43 (`update_velx`) to 138 (`Grad`) FP64 instructions in order 8 (the analysis measured 42 to 131). | Confirms the precision guard; the test already exists and flips in the `fixed` mode. | 2.4 |
+| The crosswell `vz` bug is on lines 27 and 74 of `elastic_crosswell.cl` (`injSrc` and `hessian_seismogram`). | Both lines are covered by the known-bug test. | 0.2, 2.4 |
+| `RmProfilingAdminOnly: 1`: Nsight Compute cannot read GPU counters without root. | Depends on the project owner (see [Pending actions](#pending-actions-for-the-project-owner)). | 0.8 |
+| The inherited workflows (`pr.yml`, `publish.yml`) test Python 3.8 to 3.10 on three operating systems with the old versions and would publish to PyPI as `PyFWI`. | They must be replaced before any PR or release. | 0.1 |
+
+## Catalogue of tests and checks
+
+Each step refers to the codes below. "Every commit" means running locally before the commit and in CI after the push.
+
+| Code | What it checks | How | Where it runs | When | Criterion |
+| --- | --- | --- | --- | --- | --- |
+| LNT | Style and static errors | `ruff` on new code; `ruff --select E9,F63,F7,F82` on the whole repository, as the original CI did with flake8 | CPU CI | Every commit | Zero errors |
+| UNI | Isolated functions: geometry, wavelet, filters, layout, selector, parsing | `pytest`, no device | CPU CI | Every commit | All pass |
+| EXA | Example scripts keep working and give the same results | Each script in `example/scripts/` runs in reduced size; outputs compared with 0.1.10 | CPU CI (smoke, POCL after 1.7) and GPU runner (comparison) | Every commit | Runs without edits; outputs within the phase tolerance |
+| CAR | Outputs equal to those of 0.1.10 (golden master) | `.npz` files generated in the reference environment; compared in dev | Local and GPU runner | Subset at every commit; full matrix at the gate | Per phase (see [Tolerances](#tolerances)) |
+| BIT | Bit-for-bit equality of the raw propagator outputs | `np.array_equal` on seismograms and gradients before host post-processing | Local and GPU runner | Every commit of Phase 1 and every refactoring | Identical |
+| DET | Two runs give the same result | Same case twice on the same device | Local and GPU runner | Every commit that touches kernels | Identical; no floating-point `atomicAdd` |
+| PAR | Parity CUDA backend × OpenCL on the same GPU | Golden case matrix, `legacy` mode | GPU runner | Every commit of Phase 2; full matrix at the gate | Relative L2 error ≤ 1e-6 |
+| OTM | Optimised kernel (`fixed`) × parity CUDA (`fixed`) | Same matrix | GPU runner | Every commit of Phase 3 | Seismograms ≤ 1e-5 and gradients ≤ 1e-4 (relative L2) |
+| MAT | Mathematical correctness | Gradient × centred finite differences; homogeneous medium × analytic solution; convergence order; adjoint dot product; PML reflection | Local and GPU runner | Baseline in 0.6; again at every gate | See step 0.6 |
+| PRE | No unintended FP64 | NVRTC compiles the kernels and the test counts `.f64` in the PTX; no GPU needed | CPU CI | Every commit that touches kernels | `fixed` mode: zero FP64 in the hot kernels |
+| SAN | GPU memory and concurrency | `compute-sanitizer` with `memcheck`, `racecheck`, `initcheck` and `synccheck` on a small model | GPU runner | Every commit that touches CUDA kernels | Zero errors |
+| API | Frozen public contract | Signatures, `inpa` keys, types, `dtype`, shapes, axis order, `W.W`, `W.seismogram`, `show=True`; the original scripts in `example/` run without edits | CPU CI (POCL, after 1.7) and GPU runner | Every commit | Same behaviour as 0.1.10 |
+| SEL | Backend choice and fallback | Precedence `inpa['backend']` → `PYFWI_BACKEND` → default; `auto` without CuPy, without GPU or with an old driver (simulated with monkeypatch); `cuda:strict`; PCI bus ID matching; log message | CPU CI and GPU runner | Every commit of the selector | Every branch covered |
+| PKG | Packaging | Wheel and sdist build; install in a clean venv; `.cl`, `.cu`, `data/` and `torch/` present; extras; import of every module; `PyFWI.info()` | CPU CI | Every packaging commit; always before a release | Installs and imports on Python 3.10 to 3.13 |
+| DES | Performance | `pytest-benchmark` in the three scenarios; median of 5 runs after warm-up; records forward, gradient, FWI iteration, host time per step, launches and copies per step, peak memory | GPU runner | Before and after every performance commit; nightly | No regression above 5%; phase targets |
+| PRF | Where the time goes | Nsight Systems (GPU occupancy, idle gaps, number of launches and copies); Nsight Compute (achieved bandwidth per kernel); OpenCL profiling events | Manual, on the RTX | At every gate and whenever a benchmark surprises | Report attached to the gate |
+| MEM | Memory | Peak on the GPU and on the host; checkpoint policy under a forced budget | GPU runner | Memory commits; gates | Within the estimate; same result with any budget |
+| FWI | End-to-end inversion | Multi-scale FWI and TL-FWI on small models; misfit curve and model error; review by the geophysicist | GPU runner | Gates G1, G2 and G4 | See [Tolerances](#tolerances) |
+| INT | Interoperability with PyTorch | `torchfwi.Fwi` with CPU and GPU tensors; DLPack without copies (same `data_ptr`); gradient × finite differences | GPU runner | `torchfwi` commits; G4 | Same as the NumPy path |
+| EST | Stability and limits | Long runs, models close to the VRAM limit, many shots; clear errors when memory runs out | GPU runner | Gates G3 and G4 | No NaN, no hang, useful message |
+| DOC | Documentation | Valid relative links and anchors; cited commits exist; notebooks executed in reduced size | CPU CI | Every documentation commit; release | Everything resolves and runs |
+
+### Tolerances
+
+| Comparison | Criterion | Origin |
+| --- | --- | --- |
+| Phase 1 × 0.1.10, raw propagator outputs on the same device and environment | Bit-for-bit identical | Analysis |
+| Phase 1 × 0.1.10, host post-processing with different NumPy and SciPy versions | ≤ 4 ulp in float32 | New: depends on the result of step 0.5 |
+| New × old low-pass filter (float64) | Relative difference ≤ 1e-12 | Analysis |
+| CUDA `legacy` × OpenCL `legacy` | Relative L2 ≤ 1e-6 (initial target, confirmed at G2) | Analysis |
+| Optimised CUDA × parity CUDA (`fixed`) | Seismograms ≤ 1e-5; gradients ≤ 1e-4 | Analysis |
+| `fixed` × `legacy` | Measured and published in the CHANGELOG, no fixed limit | Analysis |
+| Adjoint dot product | Relative deviation ≤ 1e-5 for the new kernels; only measured for 0.1.10 | Analysis; step 0.6 |
+| FWI (2 iterations) between backends or environments | Final model with relative L2 ≤ 1e-4; misfit per iteration ≤ 1e-4 | New |
+| FP16 | Own limits validated by a complete FWI: final model error at most 10% above FP32 (target to confirm in 4.3) | Analysis, with a proposed target |
+| Performance between commits | Regression ≤ 5% | Analysis |
+
+## Phase 0: safety net and baseline
+
+No change in the behaviour of the package. This phase builds everything that will prove the following phases broke nothing.
+
+### 0.1 Fork hygiene
+
+- **Goes in:** fork README (what it is, how to set it up, origin and citation of the original authors), the modification notice required by GPLv3, `CHANGELOG.md`, a `[tool.ruff]` configuration in `pyproject.toml` (full rules for new code, only critical errors for inherited code) and `.github/workflows/ci.yml` with a CPU job (LNT, UNI, PKG, DOC and, later, PRE and EXA). `pr.yml` and `publish.yml` are removed, because they test versions the fork does not support and would publish under the name of the original.
+- **Tests:** LNT; DOC (relative links of every `.md` in the repository); repository hygiene (licence text identical to upstream, modification notice present, no workflow able to publish to PyPI); the CI must be green on the first push.
+- **Criterion:** green CI; no workflow able to publish to PyPI.
+
+### 0.2 Known bugs as tests
+
+- **Goes in:** `test/test_known_bugs.py`, with one `xfail(strict=True)` per bug: out-of-buffer reads (run on POCL: finite output), `vz` storing `vx` in `elastic_crosswell.cl`, truncated `dt` in the `#define`, float literals without the `f` suffix, `inpa['device']` with a single device, broken imports with current SciPy and NumPy, undeclared `segyio` and `pyopencl`, and the wheel without `torch/` and `data/`.
+- **Tests:** the tests themselves; each must fail for the right reason (`raises=` or a precise assertion, not just "something failed"). Bugs that depend on the environment (imports) use a `condition`, so they are `xfail` only where they actually happen.
+- **Criterion:** all `xfail`; no `xpass`.
+
+### 0.3 Example scripts
+
+- **Goes in:** `example/scripts/`, a set of small, commented scripts that use only the public API, one per use case: surface forward modelling, crosswell and combined acquisitions, gradient with checkpoints, multi-scale FWI (L-BFGS and CG), time-lapse FWI, gradient through PyTorch (`torchfwi.Fwi`) and the `lam`/`mu`/`rho` parameterisation. Each script has a `main(size="small")` function that returns its numerical results and can also be run from the command line.
+- **Tests:** EXA: each script runs in the suite in its small size, with finite results and, where it applies, a physically meaningful check (the misfit decreases, the gradient points to the anomaly, the time-lapse difference is located where the model changed).
+- **Criterion:** every script runs in both environments (reference and dev) where its imports allow; scripts that need `fwi.py` are `xfail` in dev until step 1.1.
+
+### 0.4 Golden-master generator
+
+- **Goes in:** `test/golden/generate.py`, run only in `envs/ref-0.1.10`, on NVIDIA OpenCL. It writes `.npz` files with:
+  - forward (seismograms of the 5 components) and gradient, including the raw outputs captured before `grad_lmd_to_vd` and the `gaussian_filter`;
+  - 2 FWI iterations (L-BFGS and CG), one round of every `TimeLapse` strategy and one forward/backward of `torchfwi.Fwi`;
+  - the outputs of every example script of step 0.3;
+  - a pairwise combinatorial matrix, not the full product: `acq_type` 0/1/2, `components` 0 to 4, order 4/8, `energy_balancing`, `chpr` 0/20/100, `dv` and λ/μ/ρ parameterisation, on a 60×60 model with about 300 steps;
+  - metadata per file: versions, GPU, driver, commit, `inpa` and SHA-256 of the outputs.
+- **Checks:** the generator runs every case twice and aborts if the results are not bit-for-bit identical (DET). The files stay in the repository if they add up to less than 20 MB compressed; above that, Git LFS.
+- **Tests:** UNI of the case matrix (every pair of factor values is covered) and of the loader (complete metadata, expected keys, hashes match).
+- **Criterion:** full matrix generated, deterministic and with metadata.
+
+### 0.5 Characterisation in dev and cross-check
+
+- **Goes in:** `test/test_characterization.py`, which re-runs every golden case with the fork's code in the dev environment and compares. FWI cases only run in dev after step 1.1 (before that `fwi.py` does not import) and stay `xfail` until then.
+- **Key check:** with the code still identical to 0.1.10, do the raw outputs in dev match those of the reference environment bit for bit? The only difference between the two environments is versions (PyOpenCL 2022 × 2026, NumPy 1.21 × 2.5). If they match, the BIT criterion of Phase 1 applies directly in dev. If not, the test localises the stage that diverges (wavelet generation, model assembly, kernel or post-processing), and the criterion becomes BIT on raw outputs plus the ulp tolerance on post-processing, recorded at G0.
+- **Tests:** CAR, DET.
+- **Criterion:** forward and gradient of every case approved under the chosen criterion; decision recorded.
+
+### 0.6 Mathematical baseline of 0.1.10
+
+- **Goes in:** `test/test_math.py` (marker `slow`), with:
+  - **gradient × finite differences:** ⟨g, δm⟩ against [J(m + εδm) − J(m − εδm)] / 2ε, with ε swept over decades; `g_smooth` is already 0 by default. Records the best relative error;
+  - **analytic solution:** acoustic limit (vs = 0, constant ρ) against the 2D Green's function convolved with the Ricker wavelet, away from the boundaries;
+  - **convergence order:** the error against the analytic solution decreases with dh and dt at the expected rates (4 or 8 in space, 2 in time);
+  - **PML:** energy reflected by the boundary below a threshold;
+  - **stability:** a long run without energy growth;
+  - **adjoint dot product:** ⟨A u, v⟩ × ⟨u, Aᵀ v⟩ for one time step, using the update kernels and their adjoints. For 0.1.10 it is only measured; the ≤ 1e-5 criterion applies to the new kernels.
+- **Criterion:** numbers recorded at G0 as the baseline. From then on no phase may make them worse (except the dot product, which must improve up to the limit).
+
+### 0.7 Reference benchmark
+
+- **Goes in:** `bench/` with `pytest-benchmark` and three scenarios: small (docs example, 100×100 + PML, 4 shots, 1,051 steps), medium (≈400×400, 8 shots, 3,000 steps) and large (≈450 thousand cells, 6,000 steps). Plus a counter of launches and copies per step (instrumentation by monkeypatching the PyOpenCL calls).
+- **Care points:**
+  - Memory: with `chpr = 20`, the medium scenario uses ≈15 GB of RAM in 0.1.10, and the machine has 23 GB. The large scenario with 50 shots does not fit; it is measured with 1 and 2 shots and extrapolated, and the extrapolation is recorded as such.
+  - Variability: GeForce clocks vary with temperature. Warm-up, median of 5, temperature and clock recorded per run (`nvidia-smi --query-gpu`), and runs with throttling discarded.
+  - Versions: 0.1.10 measured with PyOpenCL 2022 (ref) and 2026 (dev), to separate the fork's gain from the PyOpenCL regression.
+- **Tests:** DES; UNI of the launch counter.
+- **Criterion:** coefficient of variation below 3% in every scenario; results in `bench/baseline/` with machine metadata.
+
+### 0.8 Profiling bench
+
+- **Goes in:** `tools/profile.sh`, with recipes for `nsys`, `ncu` and `compute-sanitizer`, and a sanitizer self-test.
+- **Checks:**
+  - Sanitizer self-test: a CuPy kernel with a deliberate out-of-buffer access must be detected by `compute-sanitizer` 2024.1 with the CUDA 13 runtime. If it is not, install CUDA Toolkit 13.x system-wide (see Pending actions).
+  - `ncu` reading counters (after access is granted); `nsys` producing the timeline of a CUDA forward.
+  - NVIDIA OpenCL is measured with profiling events (`CommandQueue` with `PROFILING_ENABLE`), not with Nsight.
+- **Criterion:** the three tools working, with a sample report attached.
+
+### 0.9 Self-hosted runner and GPU jobs
+
+- **Goes in:** a GitHub Actions runner on this machine, restricted to the private repository; `opencl`, `gpu` and `sanitizer` jobs on every push, and a nightly DES job.
+- **Checks:** a test push triggers the jobs; a deliberately failing test makes the job fail; the runner does not run on PRs from forks.
+- **Criterion:** CPU and GPU CI green on `main`.
+
+### Gate G0
+
+- [ ] Complete, deterministic golden masters with metadata (0.4).
+- [ ] Example scripts running and part of the golden master (0.3).
+- [ ] Characterisation criterion decided and approved in dev (0.5).
+- [ ] Mathematical baseline recorded (0.6).
+- [ ] Reference benchmark with CV < 3% in the three scenarios (0.7).
+- [ ] Profiling and sanitizer working (0.8).
+- [ ] CPU and GPU CI green (0.1, 0.9).
+- [ ] Every known bug in strict `xfail` (0.2).
+
+## Phase 1: host fixes on OpenCL (fork version 0.1.11)
+
+No computation of the propagator changes, so the criterion is BIT against the golden master at every step, and EXA at every commit. The analysis estimates that these first two phases already deliver most of the gain on small models.
+
+### 1.1 Imports and packaging
+
+- **Goes in:** our own `MemoizeJac` (a small class, not depending on private SciPy names); `np.kaiser` instead of `numpy.lib.function_base`; `segyio` imported lazily, only in the functions that read SEG-Y; `pyopencl` in `install_requires`; `package_data` with `torch/` and `data/`; metadata in `pyproject.toml`; distribution name `pyfwi-cuda` with the `PyFWI` import; `python_requires >= 3.10`.
+- **Tests:** PKG (wheel in a clean venv, every module imports with NumPy 2.5 and SciPy 1.18, files present); UNI of `MemoizeJac` (same behaviour as the original of SciPy 1.7.3: caches `fun` and `jac`); CAR, now including the FWI cases; EXA, now including the FWI examples in dev; the import and `segyio` `xfail`s start passing.
+- **Criterion:** every module imports in dev; CAR and EXA approved.
+
+### 1.2 Device selection
+
+- **Goes in:** explicit platform and device choice without `create_some_context`, keeping the meaning of `inpa['platform']` and `inpa['device']`.
+- **Tests:** UNI with simulated platforms (one, several and no device); the single-device `xfail` passes; API (the same call as in 0.1.10 picks the same device).
+- **Criterion:** works with one or several devices; the old behaviour is kept where it already worked.
+
+### 1.3 Cached kernels and fixed arguments
+
+- **Goes in:** each kernel created once per `WavePropagator`; constant arguments set with `set_args`.
+- **Tests:** BIT; a test that turns `RepeatedKernelRetrieval` into an error; DES of host time per launch (target measured in the analysis: from 168 µs down to 4–32 µs).
+- **Criterion:** BIT; no warning; difference between PyOpenCL 2022 and 2026 removed.
+
+### 1.4 Residual and wavelet on the GPU; non-blocking copies
+
+- **Goes in:** the `[nt, nr, 5]` residual and the wavelet are uploaded once, and the kernel reads at position `t` (only the indexing changes, not the arithmetic); copies with `is_blocking=False` and explicit events.
+- **Tests:** BIT; DES (blocking-copy counter: −750 per shot in the docs example); DET.
+- **Criterion:** BIT; copy count as targeted.
+
+### 1.5 Contiguous checkpoints
+
+- **Goes in:** `(ns, nchp, nz, nx)` layout; `W.W` becomes a property that returns a view with the same `[:, :, s, c]` axis order.
+- **Tests:** API (shape, `dtype`, values and axis order of `W.W` equal to 0.1.10; the gradient example of the docs runs); BIT; DES (≈50× per copy at 400×400); MEM (peak RAM does not grow).
+- **Criterion:** BIT; API intact.
+
+### 1.6 Element-wise low-pass filter
+
+- **Goes in:** `lowpass` and `adj_lowpass` with `|h|²·X` instead of `np.diag(h) @ X`; observed data filtered once per band.
+- **Tests:** UNI with relative difference ≤ 1e-12 against the old version (kept in the test as a reference), for several `nt`, numbers of traces, orders and axes; DES (65 to 75×); 2-iteration FWI within the tolerances; the adjoint identity ⟨lowpass x, y⟩ = ⟨x, adj_lowpass y⟩ still holds.
+- **Criterion:** tolerances met; gain measured.
+
+### 1.7 Padded buffers
+
+- **Goes in:** allocations with zeroed margin rows before and after each field, aligned to `CL_DEVICE_MEM_BASE_ADDR_ALIGN` and used through sub-buffers, so that the stencil reads fall inside the allocation.
+- **Deciding check:** on NVIDIA, is the result with padding bit-for-bit equal to the golden master? If so, the change stays on the host, in the `legacy` mode. If not, it changes the arithmetic and moves to the `fixed` mode (step 2.4), recorded as such at G1.
+- **Tests:** BIT on NVIDIA; on POCL, finite output and DET (the POCL `xfail` starts passing). A POCL golden master, generated with the padding, comes in, and the CPU CI starts running CAR, API and EXA on POCL.
+- **Criterion:** POCL finite and deterministic; decision about the mode recorded.
+
+### 1.8 Diagnostics
+
+- **Goes in:** `PyFWI.info()`, with the package origin (fork and commit), backend, device, versions and numeric mode; the same summary goes to the log on the first propagation.
+- **Tests:** UNI (fields present; works without a GPU); API (`import PyFWI` still has no side effects).
+
+### 1.9 Fork release 0.1.11
+
+- **Goes in:** CHANGELOG, version and tag.
+- **Tests:** full PKG (Python 3.10 to 3.13); the original scripts in `example/` and every script in `example/scripts/` run without edits; DES against the baseline; FWI.
+- **Criterion:** gate G1.
+
+### Gate G1
+
+- [ ] CAR and BIT on the whole matrix, on NVIDIA (and on POCL after 1.7).
+- [ ] EXA: every example runs and matches 0.1.10.
+- [ ] Gains measured and recorded; no scenario slower than the baseline.
+- [ ] Installs and imports with NumPy 2 and current SciPy.
+- [ ] MAT not worse.
+- [ ] 2-iteration FWI within tolerance.
+- [ ] Fixed bugs moved from `xfail` to normal tests.
+
+## Phase 2: parity CUDA backend (version 0.2.0)
+
+CUDA comes in as an option; the default stays `opencl`.
+
+### 2.1 Engine and backend interface
+
+- **Goes in:** `PyFWI/engine/` (time loop, checkpoint policy, shot batching) and `PyFWI/backends/opencl.py`, with the interface allocate / copy / compile with `#define` / launch / synchronise. `WavePropagator` becomes a facade over `self._engine`.
+- **Tests:** BIT (pure refactoring); API; EXA; UNI of the interface with a fake NumPy backend, which lets the engine be tested without a device.
+- **Criterion:** BIT; engine coverage above 90% with UNI alone.
+
+### 2.2 Backend selector and fallback
+
+- **Goes in:** precedence `inpa['backend']` → `PYFWI_BACKEND` (`opencl`, `cuda`, `auto`, `cuda:strict`) → default `opencl`; fallback with the reason in the log; matching between OpenCL device and CUDA ordinal by PCI bus ID; a non-NVIDIA OpenCL device keeps `auto` on OpenCL.
+- **Tests:** SEL with every branch: no CuPy (import blocked by monkeypatch), no GPU, simulated old driver, `cuda:strict` failing with a clear message, and `inpa` pointing to a CPU or to NVIDIA.
+- **Criterion:** every branch covered and tested in the CPU CI.
+
+### 2.3 Parity CUDA backend
+
+- **Goes in:** `PyFWI/kernels/` with the portability header; `PyFWI/backends/cuda.py` with `RawModule` compiling the same `.cl` files in `legacy` mode, always to cubin for the device architecture; a bounds test (`if (i >= Nz || j >= Nx) return;`) in the kernels without one; the buffer padding of step 1.7.
+- **Tests:**
+  - PAR on the whole matrix;
+  - DET;
+  - SAN with zero errors (the padding of 1.7 keeps the inherited reads inside the allocation);
+  - a test that the module loads with an NVRTC newer than the driver;
+  - a grid that is not a multiple of the block (61×67, 100×100 and 127×129 grids);
+  - EXA with `PYFWI_BACKEND=cuda`.
+- **Criterion:** relative L2 ≤ 1e-6 against OpenCL on the same GPU; final tolerance set at G2.
+
+### 2.4 Numeric modes
+
+- **Goes in:** `PYFWI_NUMERICS=legacy|fixed`. The `fixed` mode brings literals with the `f` suffix, `dt` with 9 digits, correct loop bounds (no reads outside the domain), correct `vz` in the well and the padding, if step 1.7 sent it here. CUDA starts in `fixed`; OpenCL stays in `legacy`.
+- **Tests:**
+  - PRE: zero FP64 in the hot kernels in `fixed`, in the CPU CI through NVRTC; the FP64 characterisation test of `legacy` stays;
+  - the `dt`, `vz` and out-of-buffer `xfail`s pass in `fixed` and keep failing in `legacy`;
+  - `fixed` × `legacy` differences measured on the whole matrix and published in the CHANGELOG;
+  - MAT in `fixed` (the adjoint dot product must improve or stay the same);
+  - SAN.
+- **Criterion:** PRE zero; differences published; MAT not worse.
+
+### 2.5 API contract on CUDA
+
+- **Goes in:** `W.W` and `W.seismogram` copied from the GPU only when accessed; the `show=True` path; `torchfwi.Fwi` with CPU tensors.
+- **Tests:** API with `PYFWI_BACKEND=cuda`, the same tests as OpenCL parametrised by backend; the original example scripts without edits; EXA; INT on the CPU.
+- **Criterion:** the same API suite passes on both backends.
+
+### 2.6 Installation extras
+
+- **Goes in:** extras `[cuda13]` (`cupy-cuda13x`) and `[cuda12]` (`cupy-cuda12x`); `envs/cuda12` in `setup_envs.sh`.
+- **Tests:** PKG for each extra in a clean venv; fast PAR in `envs/cuda12`; `check_env.py` passing in the three environments.
+- **Criterion:** both extras install and pass PAR.
+
+### 2.7 Parity report and release 0.2.0
+
+- **Goes in:** `tools/parity_report.py`, which writes `docs/cuda-migration/reports/parity-0.2.0.md` with the error per case and per field; CHANGELOG; tag.
+- **Tests:** full PAR; 2-iteration FWI CUDA × OpenCL; EXA on both backends; DES (parity CUDA cannot be slower than OpenCL with cached kernels); PKG.
+
+### Gate G2
+
+- [ ] PAR on the whole matrix, with the final tolerance recorded.
+- [ ] SAN zero; PRE zero in `fixed`.
+- [ ] Full SEL; API and EXA parametrised on both backends.
+- [ ] FWI between backends within tolerance.
+- [ ] `cuda13` and `cuda12` extras working.
+
+## Phase 3: optimised CUDA kernels (version 0.3.0)
+
+Each optimisation is a separate commit, with a benchmark before and after, so that a regression points to the guilty change. **Tests in every step:** OTM against the `fixed` parity, DET, SAN, PRE, API, EXA and DES before and after, with the numbers in the commit message.
+
+| Step | Optimisation | Specific tests | Target |
+| --- | --- | --- | --- |
+| 3.1 | Coalesced mapping (`threadIdx.x` on `j`) and block size tunable per GPU (32×8, 64×4…) with an autotune table | OTM with several block shapes; grids that are not multiples of the block | To be measured (analysis) |
+| 3.2 | Order as `template<int ORDER>`, no reads of `c3 = c4 = 0` and correct bounds | PRE; SAN; OTM in orders 4 and 8 | Fewer reads in order 4 |
+| 3.3 | Precomputed λ + 2μ and 1/dx | OTM; UNI of the precomputation | Fewer reads and divisions |
+| 3.4 | 1D injection and recording (`nr` threads, coordinate table) | OTM in `acq_type` 0/1/2; test with receivers at the border | −2 whole-grid kernels per step |
+| 3.5 | Fusion: `update_v` and `update_tau` with injection and recording; adjoint fused with imaging | OTM; MAT (dot product) | 4 → 2 kernels per step in the forward |
+| 3.6 | Time on the device: a counter incremented by a minimal kernel; source and residual read at `t` | OTM bit for bit against the previous step | Prerequisite of 3.7 |
+| 3.7 | CUDA Graphs with K steps per graph; `show=True` outside the graph | OTM bit for bit with and without a graph; API with `show=True`; DES of host time per step; PRF (idle gaps) | A few µs per kernel |
+| 3.8 | Checkpoints on the GPU when they fit; budget GPU → asynchronous pinned host → recomputation | MEM with a small forced budget: result bit-for-bit equal to the unlimited budget; EST close to the 12 GB limit | No VRAM overflow |
+| 3.9 | Batched shots (3D grid x, z, shot); partial gradients summed in a fixed order at the end | DET (critical); OTM with B = 1, 2 and 4 | B times fewer launches |
+| 3.10 | PML only at the borders: interior blocks skip the damping | OTM; MAT (PML reflection) | −2 reads per interior cell |
+
+### 3.11 `auto` default and release 0.3.0
+
+- **Goes in:** the default becomes `auto`. Whether OpenCL also switches to `fixed` by default in this version is decided and recorded at G3.
+- **Tests:** SEL of the new default; PKG; EXA; FWI; full DES; PRF; EST.
+
+### Gate G3
+
+- [ ] Performance targets against the 0.1.10 baseline (estimates of the analysis): 20 to 100× in the small scenario, 10 to 40× in the medium one and 3 to 10× in the large one. Met, or the gap explained.
+- [ ] No regression above 5% between the commits of the phase.
+- [ ] OTM, DET, SAN, PRE and EXA on the whole matrix.
+- [ ] PRF: Nsight Systems timeline without relevant idle gaps in the small scenario; bandwidth per kernel from Nsight Compute recorded, with the hot kernels close to the memory ceiling of the RTX 3060.
+- [ ] EST close to the VRAM limit.
+
+## Phase 4: opt-in features (version 0.4.0)
+
+Everything here is optional and off by default. Each feature has its own tolerance, validated by a complete FWI, not only by a seismogram.
+
+### 4.1 Cost function and smoothing on the GPU
+
+- **Goes in:** `cupy.fft` and `cupyx.scipy.ndimage.gaussian_filter`; no more repeated `deepcopy`.
+- **Tests:** UNI (cost and adjoint residual against the NumPy version, ≤ 1e-6); FWI; EXA; DES (the CPU leaves the critical path, checked with PRF).
+
+### 4.2 Boundary saving
+
+- **Goes in:** at every step, only the `sdo`-cell band next to the PML is stored, and the interior is reconstructed.
+- **Tests:**
+  - gradient against the checkpoint path (≤ 1e-4);
+  - MEM: memory proportional to the perimeter, checked on three grid sizes;
+  - a long run without reconstruction drift (EST);
+  - complete FWI.
+
+### 4.3 FP16 mode
+
+- **Goes in:** half-precision fields with scaling, as in SeisCL.
+- **Tests:**
+  - overflow and underflow with extreme amplitudes;
+  - seismogram SNR against FP32;
+  - complete FWI with a final model error within the target (proposed: at most 10% above FP32);
+  - DES (up to ~2×) and MEM (half).
+
+### 4.4 Multi-GPU by shots
+
+- **Goes in:** one process or stream per GPU; gradients summed on the host in a fixed order.
+- **Tests:** with a single RTX, two processes on the same GPU (`CUDA_VISIBLE_DEVICES`) must give a result bit-for-bit equal to one process (DET); a failing process propagates a clear error.
+- **Criterion:** almost linear scaling on a machine with more GPUs, if one is available; otherwise only correctness is checked, and that is recorded at the gate.
+
+### 4.5 `torchfwi` with GPU tensors
+
+- **Goes in:** DLPack without copies, in `envs/torch`.
+- **Tests:** INT (same `data_ptr`; results equal to the NumPy path; gradient × finite differences; CPU tensors keep working); the PyTorch example of 0.3 with GPU tensors.
+
+### 4.6 Geophysical validation
+
+- **Goes in:** reference cases of multi-scale FWI and of every `TimeLapse` strategy, on both backends.
+- **Tests:** FWI; review by the geophysicist with the figures and misfit curves in `docs/cuda-migration/reports/`.
+
+### 4.7 Release 0.4.0
+
+PKG, EXA, FWI, DES, PRF, EST and a CHANGELOG with the tolerances of every opt-in feature.
+
+### Gate G4
+
+- [ ] Every opt-in feature with a documented tolerance validated by a complete FWI.
+- [ ] Defaults unchanged (API and EXA tests pass without any environment variable).
+- [ ] Memory and time gains measured.
+- [ ] Geophysical review recorded.
+
+## Wrap-up and maintenance
+
+| Step | What is done | Check |
+| --- | --- | --- |
+| 5.1 | Fork documentation: installation, backends, numeric modes, tolerances; notebooks of `example/` updated | DOC: notebooks executed in reduced size in CI |
+| 5.2 | Periodic merge of `upstream` | Full suite after each merge; `check_env.py` passing |
+| 5.3 | Bug fixes sent back to the original PyFWI by PR | Only with the owner's approval; each PR with the test that reproduces the bug |
+| 5.4 | Decide publication: public repository, name on PyPI | Owner's decision; before that, full PKG and licence review (CuPy MIT and cuda.core Apache-2.0, compatible with GPLv3) |
+| 5.5 | Conditional optimisations: tiling, temporal blocking, whole loop in a graph with conditional nodes | Only if Nsight Compute shows kernels bound by memory bandwidth; same protocol as Phase 3 |
+
+## Pending actions for the project owner
+
+1. **Allow Nsight Compute to read GPU counters** (before step 0.8). Needs sudo and a reboot:
+
+   ```bash
+   echo 'options nvidia NVreg_RestrictProfilingToAdminUsers=0' | sudo tee /etc/modprobe.d/nvidia-profiling.conf
+   sudo update-initramfs -u && sudo reboot
+   # afterwards: grep RmProfilingAdminOnly /proc/driver/nvidia/params   → must show 0
+   ```
+
+2. **CUDA Toolkit 13.x system-wide**, only if the self-test of 0.8 shows that `compute-sanitizer` 2024.1 does not work with the CUDA 13 runtime.
+3. **Token for the self-hosted runner** (step 0.9), generated in the repository under *Settings → Actions → Runners*.
+4. **An RTX of another generation**, if possible, so as not to tune the code to a single architecture (Phase 3).
+5. **Support from a geophysicist** to validate FWI and TL-FWI (Phases 0 and 4).
+6. **Future decisions:** final distribution name, when to make the repository public and whether to send fixes back to the original.
+
+## Reference commands
+
+```bash
+cd ~/Desktop/apps/cuda_pyfwi/pyfwi-cuda
+tools/setup_envs.sh all                                  # re-creates ../envs/ref-0.1.10 and ../envs/dev
+../envs/dev/bin/python tools/check_env.py                # full environment check
+../envs/dev/bin/python -m pytest -m "not slow"           # fast suite (before every commit)
+../envs/dev/bin/python -m pytest -m "opencl or gpu"      # tests that need the RTX
+../envs/ref-0.1.10/bin/python -m pytest                  # what runs in the reference environment
+```
