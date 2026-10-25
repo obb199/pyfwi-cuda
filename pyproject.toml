@@ -54,4 +54,4 @@ extend-exclude = [
 
 [tool.ruff.lint.isort]
 # Modules of this repository, imported from the tests (test/ is on sys.path under pytest).
-known-first-party = ["PyFWI", "tools", "helpers", "oob_guard", "conftest"]
+known-first-party = ["PyFWI", "tools", "helpers", "oob_guard", "conftest", "golden_cases", "golden_runner"]
