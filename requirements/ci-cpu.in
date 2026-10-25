@@ -1,0 +1,17 @@
+# Packages for the GitHub-hosted CPU CI job (no NVIDIA GPU, no CuPy, no PyTorch).
+# Compiled into ci-cpu.txt with the versions of dev.txt as constraints, so CI and the
+# development environment run the same versions:
+#   uv pip compile requirements/ci-cpu.in -c requirements/dev.txt --python-version 3.12 -o requirements/ci-cpu.txt
+numpy
+scipy
+matplotlib
+hdf5storage
+requests
+segyio
+pyopencl
+pocl-binary-distribution
+pytest
+pytest-timeout
+ruff
+setuptools
+wheel

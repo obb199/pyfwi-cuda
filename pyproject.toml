@@ -18,3 +18,36 @@ markers = [
     "gpu: precisa de GPU NVIDIA com CuPy e cuda.core",
     "opencl: precisa de uma plataforma OpenCL NVIDIA",
 ]
+
+[tool.ruff]
+# `ruff check .` applies the full default rule set to the code written for the fork.
+# The code inherited from PyFWI 0.1.10 is listed file by file below (a glob such as
+# "src/PyFWI/*.py" would also exclude new subpackages) and is only checked for critical
+# errors (syntax errors, undefined names), as the original CI did with flake8:
+#   ruff check --isolated --select E9,F63,F7,F82 --line-length 127 .
+# When an inherited file is rewritten for the fork, remove it from this list.
+line-length = 127
+target-version = "py310"
+extend-exclude = [
+    "setup.py",
+    "docs/conf.py",
+    "example/fwi_example_surface.py",
+    "example/*.ipynb",
+    "test/test_ricker.py",
+    "src/PyFWI/__init__.py",
+    "src/PyFWI/acquisition.py",
+    "src/PyFWI/fwi.py",
+    "src/PyFWI/fwi_tools.py",
+    "src/PyFWI/grad_switcher.py",
+    "src/PyFWI/model_dataset.py",
+    "src/PyFWI/optimization.py",
+    "src/PyFWI/processing.py",
+    "src/PyFWI/rock_physics.py",
+    "src/PyFWI/seiplot.py",
+    "src/PyFWI/seismic_io.py",
+    "src/PyFWI/tl_fwi.py",
+    "src/PyFWI/torchfwi.py",
+    "src/PyFWI/version.py",
+    "src/PyFWI/wave_propagation.py",
+    "src/PyFWI/torch/wave_propagation.py",
+]

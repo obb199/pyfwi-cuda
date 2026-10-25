@@ -19,6 +19,13 @@ how much and in which numeric mode.
 - Test suite for the tools, the environment files and the documentation.
 - `docs/cuda-migration/`: analysis and migration plan, and the execution and verification roadmap.
 - Fork README with the GPLv3 modification notice, and this changelog.
+- GitHub Actions workflow `ci.yml` (CPU job: two lint passes, GPU-less environment check, test
+  suite) with pinned dependencies in `requirements/ci-cpu.txt`, and a `[tool.ruff]` configuration.
+
+### Removed
+
+- The inherited workflows `pr.yml` (tested Python 3.8–3.10 with the old requirements) and
+  `publish.yml` (uploaded to PyPI under the name of the original package).
 
 ### Changed
 
