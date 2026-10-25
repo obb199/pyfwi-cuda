@@ -146,3 +146,85 @@ def pairwise_rows(factors):
 def propagation_cases():
     """The golden-master propagation cases: one ``PropagationCase`` per pairwise row of ``FACTORS``."""
     return [PropagationCase(**row) for row in pairwise_rows(FACTORS)]
+
+
+#: FWI optimisers of ``FWI.__call__`` and time-lapse strategies of ``TimeLapse.__call__``.
+FWI_METHODS = ("lbfgs", "cg")
+TL_METHODS = ("cc", "pa", "dd", "sim", "wa", "cj", "cd", "cu")
+
+
+@dataclass(frozen=True)
+class InversionCase:
+    """One inversion golden-master case: a short FWI or time-lapse FWI on a small model.
+
+    The models are those of ``helpers.tiny_case`` (30 x 40 grid, 10 m spacing, a faster
+    circular inclusion, smooth starting model); the monitor model of time-lapse cases has
+    vp lowered by 10 % in rows 8-11, columns 15-24. The source wavelet is scaled by 1000,
+    so that the misfit is of order 1 and the absolute tolerances of the optimisers of
+    0.1.10 do not stop them before the first iteration (see ``example/scripts/fwi.py``).
+
+    Attributes
+    ----------
+    kind : str
+        ``"fwi"`` (``PyFWI.fwi.FWI``) or ``"tlfwi"`` (``PyFWI.tl_fwi.TimeLapse``).
+    method : str
+        For ``"fwi"``, the optimiser (``FWI_METHODS``); for ``"tlfwi"``, the strategy (``TL_METHODS``).
+    iterations : int
+        Iterations of the single multi-scale stage (25 Hz).
+    """
+    kind: str
+    method: str
+    iterations: int = 2
+    nz: int = 30
+    nx: int = 40
+    ns: int = 2
+
+    @property
+    def name(self):
+        """Identifier such as ``fwi_lbfgs`` or ``tlfwi_cc``."""
+        return f"{self.kind}_{self.method}"
+
+    def as_dict(self):
+        """All attributes as a plain dict (stored in the golden-master manifest)."""
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ExampleCase:
+    """The numerical outputs of one script of ``example/scripts/``, run with ``main(size="small")``.
+
+    Attributes
+    ----------
+    script : str
+        File name of the example without ``.py``.
+    """
+    script: str
+
+    @property
+    def name(self):
+        """Identifier such as ``example_forward_surface``."""
+        return f"example_{self.script}"
+
+    def as_dict(self):
+        """All attributes as a plain dict (stored in the golden-master manifest)."""
+        return asdict(self)
+
+
+def inversion_cases():
+    """Two FWI cases (one per optimiser, 2 iterations) and eight time-lapse cases (1 iteration each)."""
+    return ([InversionCase("fwi", m) for m in FWI_METHODS]
+            + [InversionCase("tlfwi", m, iterations=1) for m in TL_METHODS])
+
+
+def example_cases():
+    """One case per example script, in alphabetical order."""
+    import glob
+    import os
+    folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "example", "scripts")
+    return [ExampleCase(os.path.splitext(os.path.basename(p))[0])
+            for p in sorted(glob.glob(os.path.join(folder, "*.py"))) if not os.path.basename(p).startswith("_")]
+
+
+def all_cases():
+    """Every golden-master case: propagation, inversion and example cases."""
+    return propagation_cases() + inversion_cases() + example_cases()

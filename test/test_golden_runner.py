@@ -35,3 +35,21 @@ def test_runner_outputs_are_complete_and_deterministic(opencl_platform, case):
         assert first[f"raw_gradient/{p}"].shape == (case.nz, case.nx)
     assert first["misfit"].shape == () and first["misfit"] > 0
     assert all(np.isfinite(v).all() for v in first.values())
+
+
+def test_flatten_keeps_numeric_leaves_and_drops_timings():
+    from golden_runner import flatten
+    out = flatten({"a": {"x": np.ones(2), "n": 3, "s": "text", "pt": 1.5}, "b": [np.float32(2.0), None],
+                   "pt_cc": 0.1, "flag": True})
+    assert set(out) == {"a/x", "a/n", "b/0", "flag"}
+    assert out["a/n"].shape == () and out["b/0"].dtype == np.float32
+
+
+def test_example_case_outputs_are_deterministic(opencl_platform):
+    from golden_cases import ExampleCase
+    from golden_runner import run_case
+    case = ExampleCase("forward_surface")
+    first, second = run_case(case), run_case(case)
+    assert first.keys() == second.keys() and "data/taux" in first
+    for key in first:
+        np.testing.assert_array_equal(first[key], second[key], err_msg=key)

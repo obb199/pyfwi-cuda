@@ -2,12 +2,15 @@
 
 What it does
 ------------
-For every case of ``test/golden_cases.py`` (or the ones named with ``--cases``):
+For every case of ``test/golden_cases.py`` (or the ones selected with ``--cases`` or
+``--kinds``): propagation cases (forward + gradient), inversion cases (short FWI and
+time-lapse FWI) and example cases (the outputs of ``example/scripts/*.py``):
 
 1. runs it twice with ``test/golden_runner.py`` (zero guard bands, race-free
    geometry) and stops with an error if the two runs differ in any bit;
-2. optionally (``--check-plain``) runs it once more *plainly*, without guard
-   bands, in a fresh process, and records whether 0.1.10 itself gives the same bits;
+2. optionally (``--check-plain``, propagation cases only) runs it once more
+   *plainly*, without guard bands, in a fresh process, and records whether 0.1.10
+   itself gives the same bits;
 3. stores the arrays in ``<out>/data/<case>.npz`` and their SHA-256 in
    ``<out>/manifest.json``, together with the versions, the device and the commit
    (see ``test/golden_store.py``).
@@ -50,8 +53,8 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 TEST_DIR = os.path.join(REPO, "test")
 sys.path[:0] = [TEST_DIR, REPO]  # golden_cases, golden_runner, golden_store, helpers, oob_guard, tools
 
-from golden_cases import FACTORS, propagation_cases
-from golden_runner import run_propagation_case
+from golden_cases import FACTORS, ExampleCase, InversionCase, PropagationCase, all_cases
+from golden_runner import run_case
 from golden_store import FORMAT, GOLDEN_DIR, save_case, write_manifest
 
 #: Program run in a fresh process for --check-plain: one plain run of a case, saved to a .npz.
@@ -63,9 +66,13 @@ sys.path[:0] = [sys.argv[1], sys.argv[2]]
 import numpy as np
 from golden_cases import propagation_cases
 from golden_runner import run_propagation_case
-case = {c.name: c for c in propagation_cases()}[sys.argv[3]]
+case = {c.name: c for c in propagation_cases()}[sys.argv[3]]  # plain runs: propagation cases only
 np.savez(sys.argv[4], **run_propagation_case(case, guard=False))
 """
+
+
+#: Kind recorded in the manifest for each type of case.
+KINDS = {PropagationCase: "propagation", InversionCase: "inversion", ExampleCase: "example"}
 
 
 def pyfwi_origin():
@@ -126,6 +133,8 @@ def plain_run_matches(case, arrays):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--cases", nargs="*", help="names of the cases to generate (default: all)")
+    parser.add_argument("--kinds", nargs="*", choices=sorted(KINDS.values()),
+                        help="kinds of cases to generate (default: all)")
     parser.add_argument("--check-plain", action="store_true", help="also compare with a plain run of each case")
     parser.add_argument("--out", help=f"output folder (default: {os.path.relpath(GOLDEN_DIR, REPO)})")
     parser.add_argument("--allow-fork", action="store_true", help="allow a PyFWI other than the published 0.1.10")
@@ -141,7 +150,9 @@ def main(argv=None):
     out = os.path.abspath(args.out or GOLDEN_DIR)
     default_opencl_context()
 
-    cases = propagation_cases()
+    cases = all_cases()
+    if args.kinds:
+        cases = [c for c in cases if KINDS[type(c)] in args.kinds]
     if args.cases:
         by_name = {c.name: c for c in cases}
         unknown = [n for n in args.cases if n not in by_name]
@@ -155,15 +166,15 @@ def main(argv=None):
                 "factors": {k: list(v) for k, v in FACTORS.items()}, "cases": {}}
     for case in cases:
         start = time.perf_counter()
-        first = run_propagation_case(case)
+        first = run_case(case)
         seconds = time.perf_counter() - start
-        second = run_propagation_case(case)
+        second = run_case(case)
         different = [k for k in first if not np.array_equal(first[k], second[k])]
         if different:
             sys.exit(f"{case.name}: two runs differ in {different}; refusing to store a non-deterministic golden master")
-        plain = plain_run_matches(case, first) if args.check_plain else None
+        plain = plain_run_matches(case, first) if args.check_plain and isinstance(case, PropagationCase) else None
         relative, hashes = save_case(case.name, first, out)
-        manifest["cases"][case.name] = {"kind": "propagation", "params": case.as_dict(), "file": relative,
+        manifest["cases"][case.name] = {"kind": KINDS[type(case)], "params": case.as_dict(), "file": relative,
                                         "sha256": hashes, "deterministic": True, "plain_run_matches": plain,
                                         "seconds": round(seconds, 3)}
         print(f"{case.name}: {len(first)} arrays, {seconds:.2f} s, plain run matches: {plain}", flush=True)

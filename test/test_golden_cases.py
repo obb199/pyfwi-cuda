@@ -3,7 +3,18 @@ import itertools
 
 import pytest
 
-from golden_cases import FACTORS, PropagationCase, pairwise_rows, propagation_cases
+from golden_cases import (
+    FACTORS,
+    TL_METHODS,
+    ExampleCase,
+    InversionCase,
+    PropagationCase,
+    all_cases,
+    example_cases,
+    inversion_cases,
+    pairwise_rows,
+    propagation_cases,
+)
 
 
 def _pairs(rows, factors):
@@ -50,3 +61,21 @@ def test_propagation_cases_have_unique_names():
 def test_case_as_dict_round_trips():
     case = propagation_cases()[0]
     assert PropagationCase(**case.as_dict()) == case
+
+
+def test_inversion_cases_cover_both_optimisers_and_every_time_lapse_strategy():
+    cases = inversion_cases()
+    assert {c.method for c in cases if c.kind == "fwi"} == {"lbfgs", "cg"}
+    assert {c.method for c in cases if c.kind == "tlfwi"} == set(TL_METHODS) and len(TL_METHODS) == 8
+    assert InversionCase(**cases[0].as_dict()) == cases[0]
+
+
+def test_example_cases_follow_the_example_folder():
+    names = [c.script for c in example_cases()]
+    assert names == sorted(names) and {"forward_surface", "fwi", "models"} <= set(names)
+    assert ExampleCase(**example_cases()[0].as_dict()) == example_cases()[0]
+
+
+def test_all_case_names_are_unique():
+    names = [c.name for c in all_cases()]
+    assert len(names) == len(set(names))

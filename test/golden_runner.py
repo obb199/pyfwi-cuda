@@ -123,3 +123,110 @@ def run_propagation_case(case: PropagationCase, guard=True):
         out.update({f"raw_gradient/{p}": v for p, v in raw.items()})
         out.update({f"gradient/{p}": np.array(v) for p, v in gradient.items()})
     return out
+
+
+#: Leaf names that hold run times; they change at every run and are never stored.
+TIMING_KEYS = ("pt", "seconds")
+
+
+def flatten(obj, prefix=""):
+    """Turn nested results into ``{"a/b/c": numpy.ndarray}`` with only the numeric leaves.
+
+    Dicts and lists/tuples are walked (list items get their index as key); arrays,
+    NumPy scalars and Python numbers become arrays; strings, None and other objects are
+    skipped, and so are run times (leaves named ``pt``, ``pt_<x>`` or ``seconds``).
+
+    Parameters
+    ----------
+    obj : object
+        What an example or an inversion returned.
+    prefix : str, optional
+        Key prefix of ``obj`` (used by the recursion).
+
+    Returns
+    -------
+    dict[str, numpy.ndarray]
+    """
+    out = {}
+    if isinstance(obj, dict):
+        items = obj.items()
+    elif isinstance(obj, (list, tuple)):
+        items = enumerate(obj)
+    else:
+        items = None
+    if items is not None:
+        for key, value in items:
+            name = str(key)
+            if name in TIMING_KEYS or name.startswith("pt_"):
+                continue
+            out.update(flatten(value, f"{prefix}{name}/"))
+        return out
+    if isinstance(obj, (np.ndarray, np.generic, bool, int, float)) and np.asarray(obj).dtype.kind in "biuf":
+        out[prefix.rstrip("/")] = np.array(obj)
+    return out
+
+
+def run_inversion_case(case):
+    """Run a short FWI or time-lapse FWI (``InversionCase``) and return its flattened outputs.
+
+    Returns
+    -------
+    dict[str, numpy.ndarray]
+        For ``"fwi"``: ``model/<p>`` (the estimated model) and ``misfit/...`` (as returned
+        by ``FWI``). For ``"tlfwi"``: every array the strategy returns (``b1/vp``, ``dm/vp``,
+        ...) and ``misfit/...``.
+    """
+    import io
+    from contextlib import redirect_stdout
+
+    import PyFWI.processing as process
+    from helpers import tiny_case
+
+    with zero_guard_bands(), redirect_stdout(io.StringIO()):  # PyFWI prints every misfit evaluation
+        c = tiny_case(ns=case.ns, nz=case.nz, nx=case.nx, inpa_extra={"energy_balancing": True})
+        c.src.w = c.src.w * np.float32(1000)  # misfit of order 1 (see InversionCase)
+        observed = process.prepare_residual(c.W.forward_modeling(c.model, show=False), 1)
+        if case.kind == "fwi":
+            from PyFWI.fwi import FWI
+            inversion = FWI(observed, c.inpa, c.src, c.rec_loc, (case.nz, case.nx), components=0, chpr=20,
+                            n_well_rec=c.n_well_rec)
+            model, misfit = inversion(c.m0, method=case.method, freqs=[25], iter=[case.iterations], n_params=1,
+                                      k_0=1, k_end=2)
+            return {**flatten(model, "model/"), **flatten(misfit, "misfit/")}
+        from PyFWI.tl_fwi import TimeLapse
+        monitor = {k: v.copy() for k, v in c.model.items()}
+        monitor["vp"][8:12, 15:25] *= np.float32(0.9)
+        observed_monitor = process.prepare_residual(c.W.forward_modeling(monitor, show=False), 1)
+        tl = TimeLapse(observed, observed_monitor, c.inpa, c.src, c.rec_loc, (case.nz, case.nx), components=0,
+                       chpr=20, n_well_rec=c.n_well_rec)
+        models, misfit = tl(c.m0, tl_method=case.method, freqs=[25], iter=[case.iterations], n_params=1,
+                            k_0=1, k_end=2)
+        return {**flatten(models), **flatten(misfit, "misfit/")}
+
+
+def run_example_case(case):
+    """Run ``main(size="small")`` of an example script (``ExampleCase``) and return its flattened outputs."""
+    import importlib.util
+    import io
+    import os
+    from contextlib import redirect_stdout
+
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "example", "scripts", f"{case.script}.py")
+    spec = importlib.util.spec_from_file_location(f"golden_example_{case.script}", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with zero_guard_bands(), redirect_stdout(io.StringIO()):
+        return flatten(module.main(size="small", show=False))
+
+
+def run_case(case, guard=True):
+    """Run any golden-master case and return its outputs (dispatch on the case type).
+
+    ``guard`` only applies to propagation cases (see ``run_propagation_case``).
+    """
+    from golden_cases import ExampleCase, InversionCase
+    if isinstance(case, InversionCase):
+        return run_inversion_case(case)
+    if isinstance(case, ExampleCase):
+        return run_example_case(case)
+    return run_propagation_case(case, guard=guard)
