@@ -11,7 +11,7 @@ Roda nos dois ambientes (envs/ref-0.1.10 e envs/dev) e reporta:
      compilados como CUDA pelo NVRTC.
 
 Uso:
-  ../envs/dev/bin/python tools/check_env.py [--skip-pyfwi] [--repeats 2]
+  ../envs/dev/bin/python tools/check_env.py [--skip-pyfwi] [--repeats 2] [--no-gpu]
 
 Sai com código 1 se alguma checagem falhar. Problemas conhecidos da 0.1.10
 aparecem como AVISO e não contam como falha.
@@ -81,7 +81,7 @@ def versions():
         print("  scipy.optimize.optimize.MemoizeJac: AUSENTE (fwi.py/tl_fwi.py/optimization.py da 0.1.10 não importam)")
 
 
-def opencl_devices():
+def opencl_devices(require_gpu=True):
     section("Dispositivos OpenCL")
     import pyopencl as cl
     found = []
@@ -91,18 +91,32 @@ def opencl_devices():
             print(f"  {i}:{j}  {p.name} | {d.name} | {d.version} | {fp64}")
             found.append((i, j, p.name, d.name))
     check("ao menos um dispositivo OpenCL", bool(found))
-    check("OpenCL NVIDIA presente", any("NVIDIA" in f[2] for f in found))
+    has_nvidia = any("NVIDIA" in f[2] for f in found)
+    if require_gpu or has_nvidia:
+        check("OpenCL NVIDIA presente", has_nvidia)
+    else:
+        print("  [INFO ] OpenCL NVIDIA ausente (--no-gpu)")
     check("POCL (CPU) presente", any("Portable" in f[2] for f in found))
     return found
 
 
-def cuda_checks():
+def cuda_checks(require_gpu=True):
     section("CUDA (CuPy)")
     try:
         import cupy as cp
         from cupy.cuda import nvrtc, runtime
     except ImportError:
         print("  CuPy ausente: pulando (esperado no ambiente de referência)")
+        return False
+    try:
+        n_gpus = runtime.getDeviceCount()
+    except runtime.CUDARuntimeError:
+        n_gpus = 0
+    if not n_gpus:
+        if require_gpu:
+            check("GPU NVIDIA visível para o CUDA", False)
+        else:
+            print("  [INFO ] nenhuma GPU NVIDIA visível (--no-gpu)")
         return False
     p = runtime.getDeviceProperties(0)
     drv, rt = runtime.driverGetVersion(), runtime.runtimeGetVersion()
@@ -272,11 +286,13 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--skip-pyfwi", action="store_true", help="não roda o smoke test da PyFWI")
     ap.add_argument("--repeats", type=int, default=2, help="execuções por caso para checar determinismo")
+    ap.add_argument("--no-gpu", action="store_true",
+                    help="máquina sem NVIDIA (ex.: CI): a ausência de GPU não conta como falha")
     args = ap.parse_args()
 
     versions()
-    devices = opencl_devices()
-    has_cuda = cuda_checks()
+    devices = opencl_devices(require_gpu=not args.no_gpu)
+    has_cuda = cuda_checks(require_gpu=not args.no_gpu)
     sources = None
     if not args.skip_pyfwi:
         sources = pyfwi_smoke(devices, args.repeats)

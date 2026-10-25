@@ -114,11 +114,27 @@ def test_setup_envs_script_is_valid_bash():
     assert r.returncode == 2 and "uso:" in r.stderr
 
 
+def _run_check_env(*args, env=None):
+    return subprocess.run([sys.executable, "-W", "ignore", os.path.join(REPO, "tools", "check_env.py"), *args],
+                          check=False, capture_output=True, text=True, timeout=300, env=env)
+
+
 def test_check_env_cli_runs():
-    r = subprocess.run([sys.executable, "-W", "ignore", os.path.join(REPO, "tools", "check_env.py"),
-                        "--skip-pyfwi"], check=False, capture_output=True, text=True, timeout=300)
+    from conftest import _nvidia_opencl_platform
+    gpu_flag = [] if _nvidia_opencl_platform() is not None else ["--no-gpu"]
+    r = _run_check_env("--skip-pyfwi", *gpu_flag)
     assert "== Versões ==" in r.stdout and "== Resultado ==" in r.stdout
     assert r.returncode == 0, r.stdout[-2000:]
+
+
+def test_check_env_no_gpu_mode_turns_missing_gpu_into_info():
+    # Esconde a GPU (vale para o CUDA e para o OpenCL da NVIDIA), como numa máquina de CI.
+    env = {**os.environ, "CUDA_VISIBLE_DEVICES": ""}
+    strict = _run_check_env("--skip-pyfwi", env=env)
+    assert strict.returncode == 1 and "[FALHA] OpenCL NVIDIA presente" in strict.stdout
+    relaxed = _run_check_env("--skip-pyfwi", "--no-gpu", env=env)
+    assert relaxed.returncode == 0, relaxed.stdout[-2000:]
+    assert "[INFO ] OpenCL NVIDIA ausente (--no-gpu)" in relaxed.stdout
 
 
 def _kernel_sources(order):
