@@ -19,22 +19,6 @@ import numpy as np
 
 from tools.check_env import inclusion_model
 
-
-def has_memoizejac():
-    """True if this SciPy still exports ``scipy.optimize.optimize.MemoizeJac`` (SciPy 1.7.3 does).
-
-    PyFWI 0.1.10 imports it in ``fwi.py``, ``tl_fwi.py`` and ``optimization.py``; without it
-    those modules (and the FWI and time-lapse examples) cannot be imported until step 1.1.
-
-    Used by ``test_known_bugs.py`` and ``test_examples.py``.
-    """
-    try:
-        from scipy.optimize.optimize import MemoizeJac  # noqa: F401
-    except ImportError:
-        return False
-    return True
-
-
 #: Bits (float32 viewed as uint32) of ``fwi_tools.pml_delta_calculation(np.float32(10.0), 10, 1e-5)``
 #: in PyFWI 0.1.10 with NumPy 1.21: the damping profile of a 10-point PML with a 10 m grid.
 #: NumPy 2 changed the type promotion of ``n_pml * dh`` and ``3 / (2 * delta1)`` (NEP 50) and

@@ -37,7 +37,7 @@ and must pass everywhere else.
 | ``test_dt_define_is_not_truncated`` | ``#define dt`` keeps only 6 decimals | 2.4 |
 | ``test_float_constants_have_the_f_suffix`` | literals without ``f`` make the kernels compute in FP64 | 2.4 |
 | ``test_device_choice_works_with_a_single_device_platform`` | ``inpa['device']`` fails on single-device platforms (PyOpenCL 2022 only) | 1.2 |
-| ``test_optimizer_modules_import`` | ``MemoizeJac`` no longer exported by SciPy | 1.1 |
+| ``test_optimizer_modules_import`` | ``MemoizeJac`` no longer exported by SciPy | 1.1 (done) |
 | ``test_numpy2_modules_import`` | ``numpy.lib.function_base`` removed in NumPy 2 | 1.1 (done) |
 | ``test_model_dataset_imports_without_segyio`` | ``segyio`` imported at module level, never declared | 1.1 |
 | ``test_pyopencl_is_a_declared_dependency`` | ``pyopencl`` missing from ``install_requires`` | 1.1 |
@@ -56,13 +56,12 @@ import zipfile
 import numpy as np
 import pytest
 
-from helpers import forward_and_gradient, has_memoizejac, kernel_sources, pml_matches_0_1_10, tiny_case
+from helpers import forward_and_gradient, kernel_sources, pml_matches_0_1_10, tiny_case
 
 #: Absolute path of the repository root.
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
-HAS_MEMOIZEJAC = has_memoizejac()
 
 
 def _pyopencl_rejects_single_device_answer():
@@ -196,8 +195,6 @@ def test_chpr_zero_gives_the_checkpointed_gradient(opencl_platform):
                    reason="FWI.lbfgs passes an absolute pgtol=1e-8 to L-BFGS-B; with a unit-amplitude "
                           "source the gradients are smaller than that, so it 'converges' at iteration 0")
 def test_lbfgs_iterates_with_physically_scaled_data(opencl_platform, monkeypatch):
-    if not HAS_MEMOIZEJAC:
-        pytest.skip("PyFWI.fwi does not import with this SciPy (MemoizeJac, see test_optimizer_modules_import)")
     import io
     from contextlib import redirect_stdout
 
@@ -296,10 +293,10 @@ def _platform_name(index):
 # Imports and packaging
 # ---------------------------------------------------------------------------------------------
 
-@pytest.mark.xfail(condition=not HAS_MEMOIZEJAC, strict=True, raises=ImportError,
-                   reason="scipy.optimize.optimize.MemoizeJac is not exported by current SciPy")
 @pytest.mark.parametrize("module", ["PyFWI.fwi", "PyFWI.tl_fwi", "PyFWI.optimization"])
 def test_optimizer_modules_import(module):
+    # Fixed in step 1.1: PyFWI._scipy_compat provides MemoizeJac and an fmin_l_bfgs_b that
+    # tolerates the removal of its iprint and disp arguments.
     importlib.import_module(module)
 
 

@@ -33,8 +33,6 @@ import sys
 import numpy as np
 import pytest
 
-from helpers import has_memoizejac
-
 #: Absolute path of the repository root, and the folder of the example scripts.
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 EXAMPLES_DIR = os.path.join(REPO, "example", "scripts")
@@ -42,14 +40,6 @@ EXAMPLES_DIR = os.path.join(REPO, "example", "scripts")
 #: Examples that have a physical check in this file. ``test_every_example_has_a_check``
 #: fails if a script is added to example/scripts/ without one.
 CHECKED = {"forward_surface", "forward_acquisitions", "gradient", "fwi", "tlfwi", "torch_gradient", "models"}
-
-#: Examples that import ``PyFWI.fwi`` or ``PyFWI.tl_fwi``. In PyFWI 0.1.10 those modules need
-#: ``scipy.optimize.optimize.MemoizeJac``, missing from current SciPy, so with current SciPy
-#: these examples cannot run until step 1.1; with SciPy 1.7.3 (reference environment) they must.
-NEEDS_FWI = {"fwi", "tlfwi"}
-FWI_IMPORT_XFAIL = pytest.mark.xfail(condition=not has_memoizejac(), strict=True,
-                                     raises=(ImportError, AssertionError),
-                                     reason="PyFWI.fwi needs MemoizeJac, missing from current SciPy (step 1.1)")
 
 
 def example_names():
@@ -64,10 +54,8 @@ TORCH_SKIP = pytest.mark.skipif(importlib.util.find_spec("torch") is None, reaso
 
 
 def example_params():
-    """``example_names()`` as pytest parameters, with the marks of ``NEEDS_FWI`` and ``NEEDS_TORCH``."""
-    def marks(name):
-        return [FWI_IMPORT_XFAIL] * (name in NEEDS_FWI) + [TORCH_SKIP] * (name in NEEDS_TORCH)
-    return [pytest.param(n, marks=marks(n)) for n in example_names()]
+    """``example_names()`` as pytest parameters, with ``TORCH_SKIP`` on the ``NEEDS_TORCH`` examples."""
+    return [pytest.param(n, marks=[TORCH_SKIP] * (n in NEEDS_TORCH)) for n in example_names()]
 
 
 def load_example(name):
@@ -217,7 +205,6 @@ def test_gradient(run_example):
     assert set(r["gradient_lmd"]) == {"lam", "mu", "rho"}
 
 
-@FWI_IMPORT_XFAIL
 def test_fwi(run_example):
     r = run_example("fwi")
     true, start, estimate = r["true"], r["start"], r["estimate"]
@@ -234,7 +221,6 @@ def test_fwi(run_example):
     assert np.isfinite(r["misfit"]).all()
 
 
-@FWI_IMPORT_XFAIL
 def test_tlfwi(run_example):
     r = run_example("tlfwi")
     dm, changed, true_dm = r["dm"]["vp"], r["changed"], r["true_dm"]

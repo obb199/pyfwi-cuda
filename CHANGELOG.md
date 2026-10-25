@@ -59,6 +59,10 @@ how much and in which numeric mode.
   are now bit-for-bit those of PyFWI 0.1.10 with any NumPy version.
 - `fwi_tools.CostFunction` (L2) accumulates the misfit in float64 explicitly, as NumPy 1.x did
   implicitly; under NumPy 2 it was a float32 value (same value, different type).
+- `PyFWI.fwi`, `PyFWI.tl_fwi` and `PyFWI.optimization` import and run with current SciPy: the new
+  module `PyFWI._scipy_compat` provides `MemoizeJac` (removed from SciPy's public names in 1.8)
+  and an `fmin_l_bfgs_b` that drops `iprint` and `disp` when the installed SciPy no longer accepts
+  them (they only control printing). With such a SciPy the optimiser no longer prints its progress.
 
 ### Numerical changes
 

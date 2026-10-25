@@ -17,6 +17,8 @@ How strict the comparison is
 * The **misfit** is a single float64 sum whose summation order depends on the NumPy
   version: relative difference up to 5e-8 even with the PML pinned; compared with
   ``MISFIT_RTOL``.
+* **Optimiser outputs in float64** (inversion and example models) may differ in the last bit
+  when SciPy is not the version of the golden masters (``FLOAT64_ACROSS_SCIPY``).
 
 A failure prints the worst arrays, so a regression can be traced to the first layer
 that changes (raw seismogram -> data -> raw gradient -> gradient).
@@ -29,11 +31,12 @@ import importlib.util
 
 import numpy as np
 import pytest
+import scipy
 
 from golden_cases import example_cases, inversion_cases, propagation_cases
 from golden_runner import run_case, run_propagation_case
 from golden_store import load_case, load_manifest
-from helpers import has_memoizejac, pml_matches_0_1_10
+from helpers import pml_matches_0_1_10
 
 #: True where the comparison must be bit for bit (see the module docstring).
 BITWISE = pml_matches_0_1_10()
@@ -83,10 +86,18 @@ def test_propagation_matches_golden(opencl_platform, name):
 OUTPUT_TOLERANCE = 1e-4
 
 #: Why some cases cannot run in some environments (marks applied below).
-NEEDS_FWI = pytest.mark.xfail(condition=not has_memoizejac(), strict=True, raises=ImportError,
-                              reason="PyFWI.fwi needs MemoizeJac, missing from current SciPy (step 1.1)")
 NEEDS_TORCH = pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="PyTorch is not installed")
-EXAMPLE_MARKS = {"fwi": [NEEDS_FWI], "tlfwi": [NEEDS_FWI], "torch_gradient": [NEEDS_TORCH]}
+EXAMPLE_MARKS = {"torch_gradient": [NEEDS_TORCH]}
+
+
+#: True when the installed SciPy is the one the golden masters were made with (1.7.3).
+SAME_SCIPY = MANIFEST is not None and scipy.__version__ == MANIFEST["environment"]["scipy"]
+
+#: Relative L2 allowed on float64 outputs of the optimisers when SciPy differs from the golden
+#: masters' one. L-BFGS-B of SciPy >= 1.15 is a C translation of the Fortran code of SciPy 1.7: the
+#: iterates agree, but some float64 operations round differently in the last bit (measured 4e-17 on
+#: the FWI example, 1.5e-15 on a time-lapse difference). float32 outputs must still match bit for bit.
+FLOAT64_ACROSS_SCIPY = 1e-12
 
 
 def _compare_outputs(name, actual):
@@ -94,18 +105,22 @@ def _compare_outputs(name, actual):
     golden = load_case(name)
     failures = [f"missing or unexpected keys: {sorted(set(golden) ^ set(actual))}"] if golden.keys() != actual.keys() else []
     for key in sorted(set(golden) & set(actual)):
-        expected = golden[key]
+        expected, error = golden[key], relative_l2(golden[key], actual[key])
         if BITWISE:
-            if not (actual[key].dtype == expected.dtype and np.array_equal(actual[key], expected)):
-                failures.append(f"{key}: relative L2 {relative_l2(expected, actual[key]):.1e} (bit-for-bit required)")
-        elif (error := relative_l2(expected, actual[key])) > OUTPUT_TOLERANCE:
+            identical = actual[key].dtype == expected.dtype and np.array_equal(actual[key], expected)
+            ulp_level = (not SAME_SCIPY and actual[key].dtype == expected.dtype == np.float64
+                         and error <= FLOAT64_ACROSS_SCIPY)
+            if not (identical or ulp_level):
+                failures.append(f"{key}: relative L2 {error:.1e} (bit-for-bit required"
+                                f"{'' if SAME_SCIPY else ', or 1e-12 for float64 across SciPy versions'})")
+        elif error > OUTPUT_TOLERANCE:
             failures.append(f"{key}: relative L2 {error:.1e} > {OUTPUT_TOLERANCE:.0e}")
     return failures
 
 
 @pytest.mark.slow
 @pytest.mark.skipif(MANIFEST is None, reason="no golden masters")
-@pytest.mark.parametrize("case", [pytest.param(c, marks=[NEEDS_FWI], id=c.name) for c in inversion_cases()])
+@pytest.mark.parametrize("case", inversion_cases(), ids=lambda c: c.name)
 def test_inversion_matches_golden(opencl_platform, case):
     failures = _compare_outputs(case.name, run_case(case))
     assert not failures, "\n".join(failures)

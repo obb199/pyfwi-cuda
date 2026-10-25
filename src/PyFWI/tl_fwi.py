@@ -1,5 +1,5 @@
-from scipy.optimize.optimize import MemoizeJac
-from scipy.optimize.lbfgsb import fmin_l_bfgs_b
+from PyFWI._scipy_compat import MemoizeJac
+from PyFWI._scipy_compat import fmin_l_bfgs_b
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import line_search

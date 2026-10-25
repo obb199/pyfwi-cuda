@@ -1,7 +1,7 @@
-from scipy.optimize.optimize import MemoizeJac
+from PyFWI._scipy_compat import MemoizeJac
 import numpy as np
 from scipy.optimize import fmin_cg
-from scipy.optimize.lbfgsb import fmin_l_bfgs_b
+from PyFWI._scipy_compat import fmin_l_bfgs_b
 from typing import List
 
 from PyFWI.wave_propagation import WavePropagator as Wave

@@ -1,7 +1,7 @@
 import copy
 import logging
 import numpy as np
-from scipy.optimize.optimize import MemoizeJac
+from PyFWI._scipy_compat import MemoizeJac
 import matplotlib.pyplot as plt
 
 from PyFWI.wave_propagation import WavePropagator as Wave
