@@ -46,3 +46,23 @@ Times are medians of the measured runs, scaled to the number of shots of the sce
   forward, because with fewer checkpoints more of the forward field is rebuilt.
 - With the 0.1.10 design, the full large scenario (50 shots) takes about 13 minutes per forward and
   26 minutes per gradient on this RTX 3060.
+
+## Where the time goes (step 0.8)
+
+Measured with `tools/opencl_profile.py` (OpenCL profiling events: the time each kernel spends on the
+device) in the reference environment, for one forward plus one gradient. Raw results:
+`bench/baseline/profile-*-ref-0.1.10.json`. Profiling adds a little overhead per launch, so the wall
+times are slightly above those of the benchmark.
+
+| Scenario | Wall (s) | GPU busy (s) | GPU busy | Kernel launches | Mean kernel (µs) | Longest kernels (mean per launch) |
+| --- | --- | --- | --- | --- | --- | --- |
+| small | 3.61 | 1.01 | 27.9 % | 44037 | 23 | `update_tauz` 23 µs, `Adj_update_v` 36 µs, `Grad` 36 µs, `update_velx` 18 µs |
+| medium | 25.36 | 12.89 | 50.8 % | 62879 | 205 | `Grad` 418 µs, `update_tauz` 230 µs, `Adj_update_v` 312 µs, `Adj_update_tau` 268 µs |
+
+- In the small scenario the GPU works **28 %** of the time: about 72 % is host overhead (Python,
+  kernel re-creation, blocking copies). The analysis estimated more than 90 %; the measured share is
+  lower but host overhead still dominates, and the launch count matches its estimate (≈44 thousand).
+- In the medium scenario the GPU works about half of the time, and the kernels themselves are slow:
+  `update_tauz` moves roughly 8 MB (eight arrays of 440 × 440 floats) in 230 µs, about 35 GB/s, near
+  10 % of the 360 GB/s of the RTX 3060. This is consistent with the unintended FP64 arithmetic and the
+  poorly coalesced access found in the analysis (Phases 2 and 3).

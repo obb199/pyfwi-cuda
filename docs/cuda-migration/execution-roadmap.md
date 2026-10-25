@@ -227,6 +227,7 @@ No change in the behaviour of the package. This phase builds everything that wil
   - `ncu` reading counters (after access is granted); `nsys` producing the timeline of a CUDA forward.
   - NVIDIA OpenCL is measured with profiling events (`CommandQueue` with `PROFILING_ENABLE`), not with Nsight.
 - **Criterion:** the three tools working, with a sample report attached.
+- **Result:** `compute-sanitizer` 2024.1 (system CUDA 12.4) works with the CUDA 13 runtime of CuPy: it reports a deliberate out-of-bounds write and nothing for a correct kernel, so installing CUDA Toolkit 13 is **not** needed. Nsight Systems records CuPy kernels. Nsight Compute stays blocked until the GPU counters are opened (pending action 1). `tools/opencl_profile.py` measured that the GPU is busy 28 % of the time in the small scenario and 51 % in the medium one ([report](reports/benchmark-baseline-0.1.10.md)).
 
 ### 0.9 Self-hosted runner and GPU jobs
 
@@ -481,7 +482,7 @@ PKG, EXA, FWI, DES, PRF, EST and a CHANGELOG with the tolerances of every opt-in
    # afterwards: grep RmProfilingAdminOnly /proc/driver/nvidia/params   → must show 0
    ```
 
-2. **CUDA Toolkit 13.x system-wide**, only if the self-test of 0.8 shows that `compute-sanitizer` 2024.1 does not work with the CUDA 13 runtime.
+2. ~~**CUDA Toolkit 13.x system-wide**~~: not needed; the self-test of step 0.8 showed that `compute-sanitizer` 2024.1 works with the CUDA 13 runtime.
 3. **Token for the self-hosted runner** (step 0.9), generated in the repository under *Settings → Actions → Runners*.
 4. **An RTX of another generation**, if possible, so as not to tune the code to a single architecture (Phase 3).
 5. **Support from a geophysicist** to validate FWI and TL-FWI (Phases 0 and 4).
