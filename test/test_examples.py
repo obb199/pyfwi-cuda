@@ -41,7 +41,7 @@ EXAMPLES_DIR = os.path.join(REPO, "example", "scripts")
 
 #: Examples that have a physical check in this file. ``test_every_example_has_a_check``
 #: fails if a script is added to example/scripts/ without one.
-CHECKED = {"forward_surface", "forward_acquisitions", "gradient", "fwi", "tlfwi", "torch_gradient"}
+CHECKED = {"forward_surface", "forward_acquisitions", "gradient", "fwi", "tlfwi", "torch_gradient", "models"}
 
 #: Examples that import ``PyFWI.fwi`` or ``PyFWI.tl_fwi``. In PyFWI 0.1.10 those modules need
 #: ``scipy.optimize.optimize.MemoizeJac``, missing from current SciPy, so with current SciPy
@@ -58,15 +58,24 @@ def example_names():
                   for p in glob.glob(os.path.join(EXAMPLES_DIR, "*.py")) if not os.path.basename(p).startswith("_"))
 
 
+#: Examples that import ``PyFWI.model_dataset``, which imports ``numpy.lib.function_base``
+#: (removed in NumPy 2) in PyFWI 0.1.10: they cannot run with NumPy 2 until step 1.1.
+NEEDS_MODEL_DATASET = {"models"}
+MODEL_DATASET_XFAIL = pytest.mark.xfail(condition=int(np.__version__.split(".")[0]) >= 2, strict=True,
+                                        raises=(ImportError, AssertionError),
+                                        reason="PyFWI.model_dataset does not import with NumPy 2 (step 1.1)")
+
 #: Examples that need PyTorch. The CPU CI does not install it (it is large), so they are skipped there.
 NEEDS_TORCH = {"torch_gradient"}
 TORCH_SKIP = pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="PyTorch is not installed")
 
 
 def example_params():
-    """``example_names()`` as pytest parameters, with the marks of ``NEEDS_FWI`` and ``NEEDS_TORCH``."""
+    """``example_names()`` as pytest parameters, with the marks of ``NEEDS_FWI``, ``NEEDS_TORCH`` and
+    ``NEEDS_MODEL_DATASET``."""
     def marks(name):
-        return [FWI_IMPORT_XFAIL] * (name in NEEDS_FWI) + [TORCH_SKIP] * (name in NEEDS_TORCH)
+        return ([FWI_IMPORT_XFAIL] * (name in NEEDS_FWI) + [TORCH_SKIP] * (name in NEEDS_TORCH)
+                + [MODEL_DATASET_XFAIL] * (name in NEEDS_MODEL_DATASET))
     return [pytest.param(n, marks=marks(n)) for n in example_names()]
 
 
@@ -258,3 +267,30 @@ def test_torch_gradient(run_example):
         np.testing.assert_allclose(torch_g, pyfwi_g, rtol=1e-5, atol=1e-6 * np.abs(pyfwi_g).max(), err_msg=name)
     update, inside = -r["torch_gradient"]["vp"], r["true"]["vp"] == 3000.0
     assert update[inside].mean() > 0 and update[inside].mean() > update[~inside].mean()
+
+
+def _total_variation(image):
+    """Sum of the absolute differences between neighbouring grid points (how rough an image is)."""
+    return float(np.abs(np.diff(image, axis=0)).sum() + np.abs(np.diff(image, axis=1)).sum())
+
+
+@MODEL_DATASET_XFAIL
+def test_models(run_example):
+    results = run_example("models")
+    elastic, rock_physics = {"vp", "vs", "rho"}, {"phi", "cc", "sw"}
+    for name, versions in results.items():
+        base, monitor, smooth = versions["baseline"], versions["monitor"], versions["smooth"]
+        assert set(base) in (elastic, rock_physics), name
+        assert all(v.shape == (100, 100) and v.dtype == np.float32 and np.isfinite(v).all() for v in base.values())
+        # For these models smoothing=1 returns the homogeneous background, without the anomalies.
+        for prop in base:
+            assert _total_variation(smooth[prop]) == 0 < _total_variation(base[prop]), (name, prop)
+        # A monitor changes a small part of the model only.
+        if monitor is not None:
+            changed = np.zeros((100, 100), bool)
+            for prop in base:
+                changed |= monitor[prop] != base[prop]
+            assert 0 < changed.mean() < 0.1, (name, changed.mean())
+    assert results["perturbation_dv"]["monitor"] is None  # this model has no monitor version
+    # Units differ: louboutin's density is in g/cm3, yang's in kg/m3.
+    assert results["louboutin"]["baseline"]["rho"].max() < 10 < results["yang"]["baseline"]["rho"].min()
