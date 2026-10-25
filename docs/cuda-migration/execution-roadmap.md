@@ -91,6 +91,8 @@ What the preparation step delivered and verified (`babbc0e`, `ad049b8`, `f0ee2d2
 | The NVRTC 13.4 installed by pip is newer than the driver (13.0): the PTX it generates cannot be loaded, only cubin can. | The CUDA backend always compiles to cubin for the real architecture; a test enforces it. Driver 580 is kept on purpose because it is the minimum supported. | 2.3, 2.6 |
 | The PTX of the hot kernels has from 43 (`update_velx`) to 138 (`Grad`) FP64 instructions in order 8 (the analysis measured 42 to 131). | Confirms the precision guard; the test already exists and flips in the `fixed` mode. | 2.4 |
 | The crosswell `vz` bug is on lines 27 and 74 of `elastic_crosswell.cl` (`injSrc` and `hessian_seismogram`). | Both lines are covered by the known-bug test. | 0.2, 2.4 |
+| The out-of-bounds stencil reads can **crash** the NVIDIA kernel (`CL_OUT_OF_RESOURCES`): in one process, the 4th forward + gradient of a 50×50 case fails every time, also with the published 0.1.10. With zero-filled guard bands around the buffers the same sequence runs. | A user running several propagations in one process (a notebook, TL-FWI) can hit it. Step 1.7 removes the cause; until then the test suite runs PyFWI cases inside zero guard bands. | 0.2, 0.4, 1.7 |
+| Five receiver loops have no bound on the receiver index (`elastic.cl` lines 89 and 352, right well; `elastic_crosswell.cl` lines 24, 48 and 71). Rows beyond the last receiver are recorded into the next time sample, and `Adj_injSrc` reads past the end of the residual and accumulates past the end of the five adjoint fields. | With `acq_type` 0 and 2 the results of 0.1.10 depend on what lies next to the buffers: with `acq_type` 2 they even differ between two processes with a different allocation history. Only the surface acquisition is reproducible as is. | 0.2, 0.4, 2.4 |
 | `RmProfilingAdminOnly: 1`: Nsight Compute cannot read GPU counters without root. | Depends on the project owner (see [Pending actions](#pending-actions-for-the-project-owner)). | 0.8 |
 | The inherited workflows (`pr.yml`, `publish.yml`) test Python 3.8 to 3.10 on three operating systems with the old versions and would publish to PyPI as `PyFWI`. | They must be replaced before any PR or release. | 0.1 |
 
@@ -168,6 +170,7 @@ No change in the behaviour of the package. This phase builds everything that wil
   - the outputs of every example script of step 0.3;
   - a pairwise combinatorial matrix, not the full product: `acq_type` 0/1/2, `components` 0 to 4, order 4/8, `energy_balancing`, `chpr` 0/20/100, `dv` and λ/μ/ρ parameterisation, on a 60×60 model with about 300 steps;
   - metadata per file: versions, GPU, driver, commit, `inpa` and SHA-256 of the outputs.
+- **Defined behaviour of 0.1.10:** because the out-of-bounds accesses of 0.1.10 make some results depend on the memory layout (and can crash the GPU), every case is run inside **zero-filled guard bands** (`test/oob_guard.py`): reads outside a buffer return 0 and writes land in the band. For the surface acquisition this is bit-for-bit identical to a plain run of 0.1.10; for `acq_type` 0 and 2 it is the only reproducible definition. The generator also records, per case, whether the plain run matches, so the gap is documented. Step 1.7 pads the buffers in the same way, so its results can be compared bit for bit.
 - **Checks:** the generator runs every case twice and aborts if the results are not bit-for-bit identical (DET). The files stay in the repository if they add up to less than 20 MB compressed; above that, Git LFS.
 - **Tests:** UNI of the case matrix (every pair of factor values is covered) and of the loader (complete metadata, expected keys, hashes match).
 - **Criterion:** full matrix generated, deterministic and with metadata.
@@ -268,7 +271,7 @@ No computation of the propagator changes, so the criterion is BIT against the go
 
 ### 1.7 Padded buffers
 
-- **Goes in:** allocations with zeroed margin rows before and after each field, aligned to `CL_DEVICE_MEM_BASE_ADDR_ALIGN` and used through sub-buffers, so that the stencil reads fall inside the allocation.
+- **Goes in:** allocations with zeroed margins before and after every buffer (fields, seismograms and residuals), aligned to `CL_DEVICE_MEM_BASE_ADDR_ALIGN` and used through sub-buffers, so that the out-of-bounds reads and writes of the stencils and of the unbounded receiver loops fall inside the allocation. This also removes the `CL_OUT_OF_RESOURCES` crashes, which raises the priority of this step.
 - **Deciding check:** on NVIDIA, is the result with padding bit-for-bit equal to the golden master? If so, the change stays on the host, in the `legacy` mode. If not, it changes the arithmetic and moves to the `fixed` mode (step 2.4), recorded as such at G1.
 - **Tests:** BIT on NVIDIA; on POCL, finite output and DET (the POCL `xfail` starts passing). A POCL golden master, generated with the padding, comes in, and the CPU CI starts running CAR, API and EXA on POCL.
 - **Criterion:** POCL finite and deterministic; decision about the mode recorded.

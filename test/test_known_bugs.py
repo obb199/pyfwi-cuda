@@ -16,6 +16,8 @@ and must pass everywhere else.
 | Test | Bug | Fixed in roadmap step |
 | --- | --- | --- |
 | ``test_stencils_do_not_read_outside_buffers`` | stencils read past the end / before the start of the field buffers | 1.7 / 2.4 |
+| ``test_kernels_do_not_write_outside_buffers`` | crosswell and right-well ``Adj_injSrc`` accumulate past the end of the adjoint fields | 2.4 |
+| ``test_receiver_loops_bound_the_receiver_index`` | 5 receiver loops have no bound on the receiver index | 2.4 |
 | ``test_crosswell_vz_seismogram_records_vz`` | the crosswell ``vz`` seismogram stores ``vx`` | 2.4 |
 | ``test_crosswell_kernels_assign_vz_to_vz_seismograms`` | same bug, lines 27 and 74 of ``elastic_crosswell.cl`` | 2.4 |
 | ``test_dt_define_is_not_truncated`` | ``#define dt`` keeps only 6 decimals | 2.4 |
@@ -115,6 +117,43 @@ def test_stencils_do_not_read_outside_buffers(opencl_platform):
         d_obs, grad = forward_and_gradient(case)
     assert all(np.isfinite(v).all() for v in d_obs.values()), "seismogram has NaN: read past a buffer"
     assert all(np.isfinite(v).all() for v in grad.values()), "gradient has NaN: read past a buffer"
+
+
+@pytest.mark.parametrize("acq_type", [
+    pytest.param(0, marks=pytest.mark.xfail(strict=True, reason="Adj_injSrc of elastic_crosswell.cl has no receiver "
+                                                                "bound: it reads past the residual and accumulates "
+                                                                "past the end of the adjoint fields")),
+    1,  # the surface branches are bounded: no out-of-bounds write
+    pytest.param(2, marks=pytest.mark.xfail(strict=True, reason="the right-well branch of Adj_injSrc in elastic.cl "
+                                                                "has no receiver bound")),
+])
+def test_kernels_do_not_write_outside_buffers(opencl_platform, acq_type):
+    from oob_guard import guard_bands
+
+    # Bands of 1.0: a write, or an accumulation of a value read out of bounds, changes them.
+    with guard_bands(fill=1.0) as report:
+        forward_and_gradient(tiny_case(acq_type=acq_type, components=4))
+    touched = report.touched()
+    assert not touched, f"written outside {len(touched)} buffer(s) of shapes {[b.shape for b in touched]}"
+
+
+@pytest.mark.xfail(strict=True, reason="elastic.cl lines 89 and 352 and elastic_crosswell.cl lines 24, 48 and 71 "
+                                       "loop over every grid row without bounding the receiver index")
+def test_receiver_loops_bound_the_receiver_index():
+    # A receiver loop is a kernel branch 'if (i % dxr == 0 && ...)' or 'if (j % dxr == 0 && ...)'.
+    # Its receiver index i/dxr (or ir) must be compared with the number of receivers, either in
+    # the condition or in the next two lines; otherwise grid rows beyond the last receiver are
+    # recorded into the following time sample and injected from past the end of the residual.
+    unbounded = []
+    for name in ("elastic.cl", "elastic_crosswell.cl", "elastic_surface.cl"):
+        with open(os.path.join(REPO, "src", "PyFWI", name)) as f:
+            lines = f.read().splitlines()
+        for k, line in enumerate(lines):
+            if re.search(r"if\s*\(.*dxr\s*==\s*0", line):
+                window = "\n".join(lines[k:k + 3])
+                if not re.search(r"(ir|[ij]\s*/\s*dxr)\s*<", window):
+                    unbounded.append(f"{name}:{k + 1}")
+    assert not unbounded, f"receiver loops without an index bound: {unbounded}"
 
 
 @pytest.mark.xfail(strict=True, reason="elastic_crosswell.cl stores vx in the vz seismogram")

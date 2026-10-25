@@ -25,8 +25,10 @@ with both bands filled with a chosen value, and the caller receives a
   gives PyFWI 0.1.10 a defined, reproducible behaviour;
 * **writes** outside it land in a band instead of in another buffer, and
   ``GuardReport.touched()`` reports every buffer whose bands no longer hold the
-  fill value. Use ``fill=0`` for this: an accumulating write (``+=``) into a NaN
-  band would leave it NaN and go unnoticed.
+  fill value. Use a finite, non-zero fill such as ``1.0`` for this: an
+  accumulating write (``+=``) into a NaN band leaves it NaN, and a kernel that
+  accumulates a value it read out of bounds from a *zero* band adds 0; both
+  would go unnoticed. (PyFWI 0.1.10 does exactly the latter in ``Adj_injSrc``.)
 
 It works because PyFWI 0.1.10 creates every buffer as
 ``cl.Buffer(ctx, flags, hostbuf=array)`` through the ``pyopencl`` module
@@ -118,8 +120,9 @@ def guard_bands(fill=np.nan, pad_bytes=1 << 16):
     ----------
     fill : float, optional
         Value written into the bands. ``nan`` (default) to detect out-of-bounds
-        reads through NaN in the outputs; ``0.0`` to detect out-of-bounds writes
-        with ``GuardReport.touched()``, or to give out-of-bounds reads a defined value.
+        reads through NaN in the outputs; ``1.0`` to detect out-of-bounds writes
+        with ``GuardReport.touched()``; ``0.0`` to give out-of-bounds reads a
+        defined, harmless value (reproducible runs of PyFWI 0.1.10).
     pad_bytes : int, optional
         Size of each band in bytes (the band before the data is rounded up to
         the device alignment). The default, 64 KiB, covers more than 100 rows of
@@ -170,5 +173,5 @@ def nan_guard_bands(pad_bytes=1 << 16):
 
 
 def zero_guard_bands(pad_bytes=1 << 16):
-    """Shortcut for ``guard_bands(fill=0)``: out-of-bounds reads return 0; writes are detectable."""
+    """Shortcut for ``guard_bands(fill=0)``: out-of-bounds reads return 0 (defined, reproducible behaviour)."""
     return guard_bands(0.0, pad_bytes)
