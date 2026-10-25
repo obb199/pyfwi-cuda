@@ -33,19 +33,34 @@ import sys
 import numpy as np
 import pytest
 
+from helpers import has_memoizejac
+
 #: Absolute path of the repository root, and the folder of the example scripts.
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 EXAMPLES_DIR = os.path.join(REPO, "example", "scripts")
 
 #: Examples that have a physical check in this file. ``test_every_example_has_a_check``
 #: fails if a script is added to example/scripts/ without one.
-CHECKED = {"forward_surface", "forward_acquisitions", "gradient"}
+CHECKED = {"forward_surface", "forward_acquisitions", "gradient", "fwi"}
+
+#: Examples that import ``PyFWI.fwi`` or ``PyFWI.tl_fwi``. In PyFWI 0.1.10 those modules need
+#: ``scipy.optimize.optimize.MemoizeJac``, missing from current SciPy, so with current SciPy
+#: these examples cannot run until step 1.1; with SciPy 1.7.3 (reference environment) they must.
+NEEDS_FWI = {"fwi", "tlfwi"}
+FWI_IMPORT_XFAIL = pytest.mark.xfail(condition=not has_memoizejac(), strict=True,
+                                     raises=(ImportError, AssertionError),
+                                     reason="PyFWI.fwi needs MemoizeJac, missing from current SciPy (step 1.1)")
 
 
 def example_names():
     """Names (file names without ``.py``) of the example scripts, in alphabetical order."""
     return sorted(os.path.splitext(os.path.basename(p))[0]
                   for p in glob.glob(os.path.join(EXAMPLES_DIR, "*.py")) if not os.path.basename(p).startswith("_"))
+
+
+def example_params():
+    """``example_names()`` as pytest parameters, with ``FWI_IMPORT_XFAIL`` on the ``NEEDS_FWI`` examples."""
+    return [pytest.param(n, marks=FWI_IMPORT_XFAIL) if n in NEEDS_FWI else n for n in example_names()]
 
 
 def load_example(name):
@@ -91,7 +106,7 @@ def test_every_example_has_a_check():
     assert set(example_names()) == CHECKED
 
 
-@pytest.mark.parametrize("name", example_names())
+@pytest.mark.parametrize("name", example_params())
 def test_example_has_docstring_and_main(name):
     module = load_example(name)
     assert module.__doc__ and "How to run it" in module.__doc__
@@ -113,7 +128,7 @@ with zero_guard_bands():
 """
 
 
-@pytest.mark.parametrize("name", example_names())
+@pytest.mark.parametrize("name", example_params())
 def test_example_runs_as_a_program(opencl_platform, name):
     env = {**os.environ, "MPLBACKEND": "Agg"}  # never open a window
     script = os.path.join(EXAMPLES_DIR, f"{name}.py")
@@ -193,3 +208,20 @@ def test_gradient(run_example):
         np.testing.assert_allclose(r["gradient_lmd_as_dv"][name], gradients[20][name], rtol=1e-5,
                                    atol=1e-6 * np.abs(gradients[20][name]).max(), err_msg=name)
     assert set(r["gradient_lmd"]) == {"lam", "mu", "rho"}
+
+
+@FWI_IMPORT_XFAIL
+def test_fwi(run_example):
+    r = run_example("fwi")
+    true, start, estimate = r["true"], r["start"], r["estimate"]
+    assert set(estimate) == {"vp", "vs", "rho"}
+    assert all(np.isfinite(v).all() and v.shape == true["vp"].shape for v in estimate.values())
+    # The inversion brings vp closer to the true model (by about 20 % in the small size) ...
+    assert r["error_end"] < 0.9 * r["error_start"]
+    # ... by raising it inside the faster inclusion more than anywhere else ...
+    update, inside = estimate["vp"] - start["vp"], true["vp"] == 3000.0
+    assert update[inside].mean() > 0 and update[inside].mean() > update[~inside].mean()
+    # ... and only vp is inverted (k_0=1, k_end=2).
+    np.testing.assert_array_equal(estimate["vs"], start["vs"])
+    np.testing.assert_array_equal(estimate["rho"], start["rho"])
+    assert np.isfinite(r["misfit"]).all()

@@ -24,6 +24,7 @@ and must pass everywhere else.
 | ``test_receiver_loops_bound_the_receiver_index`` | 5 receiver loops have no bound on the receiver index | 2.4 |
 | ``test_default_geometry_is_deterministic`` | race conditions at source/receiver coincidences (non-strict: probabilistic) | 3.4 |
 | ``test_chpr_zero_gives_the_checkpointed_gradient`` | ``chpr=0`` (the default) rebuilds the field backwards through the PML: wrong gradient | 4.2 |
+| ``test_lbfgs_iterates_with_physically_scaled_data`` | absolute ``pgtol = 1e-8``: L-BFGS stops at iteration 0 on realistic data | 2.4 |
 | ``test_crosswell_vz_seismogram_records_vz`` | the crosswell ``vz`` seismogram stores ``vx`` | 2.4 |
 | ``test_crosswell_kernels_assign_vz_to_vz_seismograms`` | same bug, lines 27 and 74 of ``elastic_crosswell.cl`` | 2.4 |
 | ``test_dt_define_is_not_truncated`` | ``#define dt`` keeps only 6 decimals | 2.4 |
@@ -48,24 +49,15 @@ import zipfile
 import numpy as np
 import pytest
 
-from helpers import forward_and_gradient, kernel_sources, tiny_case
+from helpers import forward_and_gradient, has_memoizejac, kernel_sources, tiny_case
 
 #: Absolute path of the repository root.
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
-def _has_memoizejac():
-    """True if this SciPy still exports ``scipy.optimize.optimize.MemoizeJac`` (SciPy 1.7.3 does)."""
-    try:
-        from scipy.optimize.optimize import MemoizeJac  # noqa: F401
-    except ImportError:
-        return False
-    return True
-
-
 #: The import bugs only exist with current NumPy/SciPy; the reference environment is not affected.
 NUMPY2 = int(np.__version__.split(".")[0]) >= 2
-HAS_MEMOIZEJAC = _has_memoizejac()
+HAS_MEMOIZEJAC = has_memoizejac()
 
 
 def _pyopencl_rejects_single_device_answer():
@@ -193,6 +185,37 @@ def test_chpr_zero_gives_the_checkpointed_gradient(opencl_platform):
     a, b = gradients[0].ravel(), gradients[20].ravel()
     cosine = np.dot(a, b) / np.linalg.norm(a) / np.linalg.norm(b)
     assert cosine > 0.999, f"cosine similarity with the checkpointed gradient: {cosine:.3f}"
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="FWI.lbfgs passes an absolute pgtol=1e-8 to L-BFGS-B; with a unit-amplitude "
+                          "source the gradients are smaller than that, so it 'converges' at iteration 0")
+def test_lbfgs_iterates_with_physically_scaled_data(opencl_platform, monkeypatch):
+    if not HAS_MEMOIZEJAC:
+        pytest.skip("PyFWI.fwi does not import with this SciPy (MemoizeJac, see test_optimizer_modules_import)")
+    import io
+    from contextlib import redirect_stdout
+
+    import PyFWI.fwi as fwi_module
+    from oob_guard import zero_guard_bands
+
+    iterations = []
+    original = fwi_module.fmin_l_bfgs_b
+
+    def traced(*args, **kwargs):
+        x, f, info = original(*args, **kwargs)
+        iterations.append(info["nit"])  # number of L-BFGS iterations of this stage
+        return x, f, info
+
+    monkeypatch.setattr(fwi_module, "fmin_l_bfgs_b", traced)
+    with zero_guard_bands():
+        case = tiny_case(ns=2, inpa_extra={"energy_balancing": True})
+        d_obs = case.W.forward_modeling(case.model, False)
+        fwi = fwi_module.FWI(d_obs, case.inpa, case.src, case.rec_loc, case.model["vp"].shape,
+                             components=0, chpr=20, n_well_rec=case.n_well_rec)
+        with redirect_stdout(io.StringIO()):  # PyFWI prints the misfit of every evaluation
+            fwi(case.m0, method="lbfgs", freqs=[25], iter=[2], n_params=1, k_0=1, k_end=2)
+    assert iterations and iterations[0] >= 1, f"L-BFGS iterations per stage: {iterations}"
 
 
 @pytest.mark.xfail(strict=True, reason="elastic_crosswell.cl stores vx in the vz seismogram")
