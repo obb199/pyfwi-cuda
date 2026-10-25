@@ -77,8 +77,11 @@ def count_opencl_calls():
 
     Kernel launches are counted by wrapping ``pyopencl.Kernel.__call__`` on the class,
     so every kernel object is seen, including those PyFWI retrieves once and keeps as
-    attributes (``prg.injSrc = prg_surf.injSrc``). Copies are counted by wrapping
-    ``pyopencl.enqueue_copy``, which PyFWI calls through the module. Yields a
+    attributes (``prg.injSrc = prg_surf.injSrc``), and ``pyopencl.enqueue_nd_range_kernel``,
+    which the fork calls for kernels whose arguments are set beforehand (step 1.3; calling a
+    kernel object does not go through that module function, so nothing is counted twice).
+    Copies are counted by wrapping ``pyopencl.enqueue_copy``, which PyFWI calls through the
+    module. Yields a
     ``collections.Counter`` with the keys ``launches``, ``launch:<kernel name>``,
     ``copies`` and ``blocking_copies`` (``enqueue_copy`` blocks unless ``is_blocking=False``).
     """
@@ -86,22 +89,28 @@ def count_opencl_calls():
 
     counts = collections.Counter()
     original_call, original_copy = cl.Kernel.__call__, cl.enqueue_copy
+    original_enqueue = cl.enqueue_nd_range_kernel
 
     def counting_call(kernel, *args, **kwargs):
         counts["launches"] += 1
         counts[f"launch:{kernel.function_name}"] += 1
         return original_call(kernel, *args, **kwargs)
 
+    def counting_enqueue(queue, kernel, *args, **kwargs):
+        counts["launches"] += 1
+        counts[f"launch:{kernel.function_name}"] += 1
+        return original_enqueue(queue, kernel, *args, **kwargs)
+
     def counting_copy(queue, dest, src, **kwargs):
         counts["copies"] += 1
         counts["blocking_copies"] += bool(kwargs.get("is_blocking", True))
         return original_copy(queue, dest, src, **kwargs)
 
-    cl.Kernel.__call__, cl.enqueue_copy = counting_call, counting_copy
+    cl.Kernel.__call__, cl.enqueue_copy, cl.enqueue_nd_range_kernel = counting_call, counting_copy, counting_enqueue
     try:
         yield counts
     finally:
-        cl.Kernel.__call__, cl.enqueue_copy = original_call, original_copy
+        cl.Kernel.__call__, cl.enqueue_copy, cl.enqueue_nd_range_kernel = original_call, original_copy, original_enqueue
 
 
 def gpu_state():

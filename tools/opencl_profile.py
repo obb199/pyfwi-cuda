@@ -37,7 +37,8 @@ sys.path[:0] = [os.path.join(REPO, "test"), REPO]
 def opencl_profiling():
     """Enable OpenCL profiling on every queue created inside the block and record kernel events.
 
-    Yields a list that receives ``(kernel name, pyopencl.Event)`` for every launch.
+    Yields a list that receives ``(kernel name, pyopencl.Event)`` for every launch, whether the
+    kernel object is called or enqueued with ``pyopencl.enqueue_nd_range_kernel`` (step 1.3).
     Profiling adds a little overhead per launch; use it to see *where* the time goes,
     and ``tools/benchmark.py`` to measure *how much* time.
     """
@@ -45,6 +46,7 @@ def opencl_profiling():
 
     events = []
     original_queue, original_call = cl.CommandQueue, cl.Kernel.__call__
+    original_enqueue = cl.enqueue_nd_range_kernel
 
     def profiling_queue(context, device=None, properties=None):
         flags = (properties or 0) | cl.command_queue_properties.PROFILING_ENABLE
@@ -55,11 +57,18 @@ def opencl_profiling():
         events.append((kernel.function_name, event))
         return event
 
+    def recording_enqueue(queue, kernel, *args, **kwargs):
+        event = original_enqueue(queue, kernel, *args, **kwargs)
+        events.append((kernel.function_name, event))
+        return event
+
     cl.CommandQueue, cl.Kernel.__call__ = profiling_queue, recording_call
+    cl.enqueue_nd_range_kernel = recording_enqueue
     try:
         yield events
     finally:
         cl.CommandQueue, cl.Kernel.__call__ = original_queue, original_call
+        cl.enqueue_nd_range_kernel = original_enqueue
 
 
 def profile_scenario(scenario):

@@ -20,7 +20,7 @@ This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into 
 | 0.9 | Self-hosted runner on the RTX and GPU jobs | prepared (runner waits for the owner) · **[G0](gates/G0.md) approved with 2 exceptions** |
 | 1.1 | Imports and packaging (current SciPy and NumPy, declared dependencies) | Phase 1 · **done** |
 | 1.2 | Fixed OpenCL device selection | **done** |
-| 1.3 | Cached kernels and fixed arguments | |
+| 1.3 | Cached kernels and fixed arguments | **done** |
 | 1.4 | Residual and wavelet on the GPU; non-blocking copies | |
 | 1.5 | Contiguous checkpoints; `W.W` as a view | |
 | 1.6 | Element-wise low-pass filter | |
@@ -87,7 +87,7 @@ What the preparation step delivered and verified (`babbc0e`, `ad049b8`, `f0ee2d2
 | `segyio` is imported at the top of `model_dataset.py` and `seismic_io.py`, but it is not in `install_requires` and is commented out in `requirements.txt`. | `pip install PyFWI` is not even enough to build a model. | 1.1 |
 | `from numpy.lib.function_base import kaiser` breaks with NumPy 2. | `model_dataset` and `seismic_io` do not import in the dev environment. | 1.1 |
 | `inpa['device']` fails when the platform has a single device: `create_some_context` reports a "left over" choice. It happens with PyOpenCL 2022.2.4 (reference environment), not with PyOpenCL 2026.1.4. | With old PyOpenCL the device must be chosen through `PYOPENCL_CTX`. Step 1.2 removed the dependency on `create_some_context` (the backend selector needs explicit device choice anyway). | 0.2, 1.2 (done) |
-| The same forward takes 1.42 s with PyOpenCL 2022.2.4 and 2.07 s with PyOpenCL 2026.1.4 (probably `RepeatedKernelRetrieval`). | The reference benchmark must record both versions. Step 1.3 should remove the difference. | 0.7, 1.3 |
+| The same forward takes 1.42 s with PyOpenCL 2022.2.4 and 2.07 s with PyOpenCL 2026.1.4 (probably `RepeatedKernelRetrieval`). | The reference benchmark must record both versions. Step 1.3 removed the difference (0.52 s and 0.49 s). | 0.7, 1.3 (done) |
 | The NVRTC 13.4 installed by pip is newer than the driver (13.0): the PTX it generates cannot be loaded, only cubin can. | The CUDA backend always compiles to cubin for the real architecture; a test enforces it. Driver 580 is kept on purpose because it is the minimum supported. | 2.3, 2.6 |
 | The PTX of the hot kernels has from 43 (`update_velx`) to 138 (`Grad`) FP64 instructions in order 8 (the analysis measured 42 to 131). | Confirms the precision guard; the test already exists and flips in the `fixed` mode. | 2.4 |
 | The crosswell `vz` bug is on lines 27 and 74 of `elastic_crosswell.cl` (`injSrc` and `hessian_seismogram`). | Both lines are covered by the known-bug test. | 0.2, 2.4 |
@@ -290,6 +290,15 @@ No computation of the propagator changes, so the criterion is BIT against the go
 - **Goes in:** each kernel created once per `WavePropagator`; constant arguments set with `set_args`.
 - **Tests:** BIT; a test that turns `RepeatedKernelRetrieval` into an error; DES of host time per launch (target measured in the analysis: from 168 µs down to 4–32 µs).
 - **Criterion:** BIT; no warning; difference between PyOpenCL 2022 and 2026 removed.
+- **Result:** BIT holds (characterisation in dev, bit for bit); `test/test_kernel_launches.py` checks
+  that no kernel is retrieved and no `RepeatedKernelRetrieval` warning is emitted during forward and
+  gradient, that the time loops only enqueue (all three fail against the code before the step), and
+  that a propagator reused for several runs gives the results of a fresh one. DES
+  ([report](reports/step-1.3-kernel-launches.md)): small scenario 3.0x faster forward and 2.4x faster
+  gradient than 0.1.10; wall time per launch from 118 µs to 28 µs, of which 21 µs are GPU work (GPU
+  busy 65 % against 28 %); PyOpenCL 2022 and 2026 within 6 %. Medium scenario: gradient 10 % faster,
+  forward unchanged, as its kernels take about 200 µs each and the blocking copies (steps 1.4 and
+  1.5) dominate the remaining host time.
 
 ### 1.4 Residual and wavelet on the GPU; non-blocking copies
 

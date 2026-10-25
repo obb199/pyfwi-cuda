@@ -42,10 +42,11 @@ def test_counter_counts_every_launch_and_copy(opencl_platform):
 
 def test_counter_restores_pyopencl():
     import pyopencl as cl
-    call, copy = cl.Kernel.__call__, cl.enqueue_copy
+    call, copy, enqueue = cl.Kernel.__call__, cl.enqueue_copy, cl.enqueue_nd_range_kernel
     with count_opencl_calls():
         assert cl.Kernel.__call__ is not call and cl.enqueue_copy is not copy
-    assert cl.Kernel.__call__ is call and cl.enqueue_copy is copy
+        assert cl.enqueue_nd_range_kernel is not enqueue
+    assert cl.Kernel.__call__ is call and cl.enqueue_copy is copy and cl.enqueue_nd_range_kernel is enqueue
 
 
 def test_cli_writes_a_complete_result_file(opencl_platform, tmp_path):
@@ -97,3 +98,25 @@ def test_stored_baseline_is_complete_and_stable(label):
     for name, scenario in baseline["scenarios"].items():
         assert scenario["cv_forward"] < 0.03 and scenario["cv_gradient"] < 0.03, name
         assert scenario["guard_bands"] is True
+
+
+def _stored(folder, label):
+    """A result file stored in ``bench/<folder>/<label>.json``."""
+    import os
+    with open(os.path.join(os.path.dirname(__file__), "..", "bench", folder, f"{label}.json")) as f:
+        return json.load(f)
+
+
+def test_step_1_3_made_each_launch_cheaper():
+    # Roadmap step 1.3 (docs/cuda-migration/reports/step-1.3-kernel-launches.md): kernels retrieved
+    # once and arguments set once. Checks the recorded results, not this machine.
+    baseline = _stored("baseline", "ref-0.1.10-pyopencl-2022")["scenarios"]["small"]
+    new = {v: _stored("step-1.3", f"fork-1.3-pyopencl-{v}")["scenarios"]["small"] for v in ("2022", "2026")}
+    for run in new.values():
+        assert baseline["forward_s"]["median"] / run["forward_s"]["median"] > 2.5
+        assert baseline["gradient_s"]["median"] / run["gradient_s"]["median"] > 2
+        assert run["per_step"] == pytest.approx(baseline["per_step"])  # same launches and copies per step
+        assert run["cv_forward"] < 0.03 and run["cv_gradient"] < 0.03
+    # The slowdown of PyOpenCL 2026 (+44 % forward in the baseline) is gone: within 10 %.
+    for kind in ("forward_s", "gradient_s"):
+        assert abs(new["2026"][kind]["median"] / new["2022"][kind]["median"] - 1) < 0.1

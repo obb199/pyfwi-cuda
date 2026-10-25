@@ -1,0 +1,88 @@
+{
+ "date": "2026-10-25T19:39:38+00:00",
+ "label": "fork-1.3-pyopencl-2022",
+ "machine": {
+  "cpu": "x86_64",
+  "driver": "580.95.05",
+  "numpy": "1.21.6",
+  "opencl_device": "NVIDIA GeForce RTX 3060",
+  "pyfwi": "0.1.11.dev0",
+  "pyfwi_path": "/tmp/claude-1000/-home-user-Desktop-apps-cuda-pyfwi/afadac1c-3ab5-4d01-8227-769ceb6687e1/scratchpad/wt13/src/PyFWI",
+  "pyopencl": "2022.2.4",
+  "python": "3.10.22"
+ },
+ "repeats": 5,
+ "scenarios": {
+  "small": {
+   "cv_forward": 0.008475057741539073,
+   "cv_gradient": 0.003962244470479256,
+   "definition": {
+    "chpr": 20,
+    "dh": 7.0,
+    "ns_run": 4,
+    "ns_target": 4,
+    "nx": 100,
+    "nz": 100,
+    "t": 0.6
+   },
+   "forward_s": {
+    "median": 0.5151114179971046,
+    "runs": [
+     0.5151114179971046,
+     0.5162220829952275,
+     0.5122773480034084,
+     0.5205108599984669,
+     0.5073737269995036
+    ]
+   },
+   "gpu_after": {
+    "power_w": 88.33,
+    "sm_clock_mhz": 1935.0,
+    "temperature_c": 58.0
+   },
+   "gpu_before": {
+    "power_w": 89.19,
+    "sm_clock_mhz": 1935.0,
+    "temperature_c": 58.0
+   },
+   "gradient_s": {
+    "median": 0.821098730993981,
+    "runs": [
+     0.821098730993981,
+     0.8208845449989894,
+     0.8233824889975949,
+     0.828495847999875,
+     0.8190579849979258
+    ]
+   },
+   "guard_bands": true,
+   "host_ms_per_step": {
+    "forward": 0.12264557571359633,
+    "gradient": 0.19549969785570975
+   },
+   "internal_steps_per_shot": 1050,
+   "launches_by_kernel": {
+    "Adj_injSrc": 596,
+    "Adj_update_tau": 4196,
+    "Adj_update_v": 4196,
+    "Grad": 4196,
+    "MakeAllZero": 12,
+    "MakeGradZero": 1,
+    "injSrc": 600,
+    "update_tauxz": 7560,
+    "update_tauz": 7560,
+    "update_velx": 7560,
+    "update_velz": 7560
+   },
+   "per_step": {
+    "blocking_copies": 2.710238095238095,
+    "forward_copies": 1.0047619047619047,
+    "forward_launches": 4.143809523809524,
+    "gradient_copies": 1.7054761904761904,
+    "gradient_launches": 6.3411904761904765
+   },
+   "scale": 1.0,
+   "scaled_to_shots": 4
+  }
+ }
+}

@@ -1,0 +1,88 @@
+{
+ "date": "2026-10-25T19:39:08+00:00",
+ "label": "fork-1.2-pyopencl-2022",
+ "machine": {
+  "cpu": "x86_64",
+  "driver": "580.95.05",
+  "numpy": "1.21.6",
+  "opencl_device": "NVIDIA GeForce RTX 3060",
+  "pyfwi": "0.1.11.dev0",
+  "pyfwi_path": "/home/user/Desktop/apps/cuda_pyfwi/pyfwi-cuda/src/PyFWI",
+  "pyopencl": "2022.2.4",
+  "python": "3.10.22"
+ },
+ "repeats": 5,
+ "scenarios": {
+  "small": {
+   "cv_forward": 0.004689776954323073,
+   "cv_gradient": 0.0017768434825439585,
+   "definition": {
+    "chpr": 20,
+    "dh": 7.0,
+    "ns_run": 4,
+    "ns_target": 4,
+    "nx": 100,
+    "nz": 100,
+    "t": 0.6
+   },
+   "forward_s": {
+    "median": 1.4315291809980408,
+    "runs": [
+     1.43467423900438,
+     1.426637231001223,
+     1.430689849999908,
+     1.4315291809980408,
+     1.4464261089960928
+    ]
+   },
+   "gpu_after": {
+    "power_w": 65.9,
+    "sm_clock_mhz": 1890.0,
+    "temperature_c": 55.0
+   },
+   "gpu_before": {
+    "power_w": 66.62,
+    "sm_clock_mhz": 1897.0,
+    "temperature_c": 59.0
+   },
+   "gradient_s": {
+    "median": 1.7915531289982027,
+    "runs": [
+     1.7923715989963966,
+     1.7875086950007244,
+     1.7915531289982027,
+     1.7891279140021652,
+     1.7968240779955522
+    ]
+   },
+   "guard_bands": true,
+   "host_ms_per_step": {
+    "forward": 0.3408402811900097,
+    "gradient": 0.42656026880909587
+   },
+   "internal_steps_per_shot": 1050,
+   "launches_by_kernel": {
+    "Adj_injSrc": 596,
+    "Adj_update_tau": 4196,
+    "Adj_update_v": 4196,
+    "Grad": 4196,
+    "MakeAllZero": 12,
+    "MakeGradZero": 1,
+    "injSrc": 600,
+    "update_tauxz": 7560,
+    "update_tauz": 7560,
+    "update_velx": 7560,
+    "update_velz": 7560
+   },
+   "per_step": {
+    "blocking_copies": 2.710238095238095,
+    "forward_copies": 1.0047619047619047,
+    "forward_launches": 4.143809523809524,
+    "gradient_copies": 1.7054761904761904,
+    "gradient_launches": 6.3411904761904765
+   },
+   "scale": 1.0,
+   "scaled_to_shots": 4
+  }
+ }
+}

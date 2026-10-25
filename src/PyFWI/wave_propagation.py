@@ -1,4 +1,5 @@
 import os
+from types import SimpleNamespace
 import numpy as np
 # from numpy.core.shape_base import block
 import pyopencl as cl
@@ -11,6 +12,13 @@ from PyFWI.fwi_tools import expand_model
 import PyFWI.acquisition as acq
 from PyFWI.processing import prepare_residual
 from PyFWI.grad_switcher import grad_lmd_to_vd
+
+
+#: Names of the OpenCL kernels that PyFWI launches (in elastic.cl, and injSrc and Adj_injSrc
+#: also in elastic_crosswell.cl and elastic_surface.cl). WavePreparation retrieves each of them
+#: once, in ``self.knl``.
+KERNELS = ("MakeAllZero", "MakeGradZero", "injSrc", "Adj_injSrc", "update_velx", "update_velz",
+           "update_tauz", "update_tauxz", "Adj_update_tau", "Adj_update_v", "Grad")
 
 
 class WavePreparation:
@@ -188,6 +196,15 @@ class WavePreparation:
         elif self.acq_type == 1:
             self.prg.injSrc = self.prg_surf.injSrc
             self.prg.Adj_injSrc = self.prg_surf.Adj_injSrc
+
+        # The kernel objects, retrieved once and reused at every launch (step 1.3 of the fork).
+        # 0.1.10 wrote ``self.prg.update_velx(...)`` at every launch, and each ``self.prg.<name>``
+        # created a new kernel object (clCreateKernel), several times per time step; PyOpenCL
+        # 2026 also warns about it (RepeatedKernelRetrieval). injSrc and Adj_injSrc come from the
+        # program of the acquisition (assigned to self.prg just above for acq_type 0 and 1).
+        self.knl = SimpleNamespace(**{name: getattr(self.prg, name) for name in KERNELS})
+        # Global size of every launch: one work item per grid point, absorbing boundary included.
+        self.global_size = (int(self.tnz), int(self.tnx))
 
         self.mf = cl.mem_flags
 
@@ -634,11 +651,14 @@ class WavePropagator(WavePreparation):
         if self.forward_show:
             self.initial_wavefield_plot(model)
 
+        # The arguments that do not change during the time loop are set once (step 1.3).
+        self._set_update_args(coeff)
         for s in range(self.ns):
-            self.prg.MakeAllZero(self.queue, (self.tnz, self.tnx), None,
+            self.knl.MakeAllZero(self.queue, self.global_size, None,
                                  self.vx_b, self.vz_b,
                                  self.taux_b, self.tauz_b, self.tauxz_b
                                  )
+            self._set_injection_args(s)
 
             self.__kernel(s, coeff)
 
@@ -647,52 +667,67 @@ class WavePropagator(WavePreparation):
                 self.seismogram[par][:, :self.n_well_rec] = np.flip(self.seismogram[par][:, :self.n_well_rec], axis=1)
         return self.seismogram
     
+    def _launch(self, kernel):
+        """Launch ``kernel`` on the whole grid with the arguments set before (``set_args``/``set_arg``).
+
+        ``pyopencl.enqueue_nd_range_kernel`` only enqueues, whereas calling the kernel object
+        (``kernel(queue, size, None, *args)``) also sets every argument again. Used for the
+        launches of the time loops (step 1.3 of the fork).
+        """
+        cl.enqueue_nd_range_kernel(self.queue, kernel, self.global_size, None)
+
+    def _set_update_args(self, coeff):
+        """Set the arguments of the four update kernels of the elastic fields.
+
+        Parameters
+        ----------
+        coeff : numpy.int32
+            +1 to propagate forward in time (forward modelling), -1 to go backward (the forward
+            field rebuilt during the gradient).
+
+        Called at the start of each forward modelling and of each gradient, after the model and
+        PML buffers of that call exist (``elastic_buffers`` and ``pml_preparation`` create new
+        ones at every forward modelling).
+        """
+        self.knl.update_velx.set_args(coeff, self.vx_b, self.taux_b, self.tauxz_b, self.rho_b,
+                                      self.vdx_pml_b, self.vdz_pml_b)
+        self.knl.update_velz.set_args(coeff, self.vz_b, self.tauz_b, self.tauxz_b, self.rho_b,
+                                      self.vdx_pml_b, self.vdz_pml_b)
+        self.knl.update_tauz.set_args(coeff, self.vx_b, self.vz_b, self.taux_b, self.tauz_b,
+                                      self.lam_b, self.mu_b, self.vdx_pml_b, self.vdz_pml_b)
+        self.knl.update_tauxz.set_args(coeff, self.vx_b, self.vz_b, self.tauxz_b, self.mu_b,
+                                       self.vdx_pml_b, self.vdz_pml_b)
+
+    def _set_injection_args(self, s):
+        """Set the arguments of injSrc that stay the same for every time step of source ``s``.
+
+        The last five arguments (the four source samples and the time index) change at each
+        injection and are set by ``__injSrc``; zeros are placeholders until then.
+        """
+        zero = np.float32(0)
+        self.knl.injSrc.set_args(self.vx_b, self.vz_b,
+                                 self.taux_b, self.tauz_b, self.tauxz_b,
+                                 self.seismogramid_vx_b, self.seismogramid_vz_b,
+                                 self.seismogramid_taux_b, self.seismogramid_tauz_b, self.seismogramid_tauxz_b,
+                                 self.dxr,
+                                 self.srcx[s], self.srcz[s],
+                                 zero, zero, zero, zero, np.int32(0))
+
     def __injSrc(self, t, s):
         src_kv_x, src_kv_z, src_kt_x, src_kt_z, src_kt_xz = np.float32(self.src(t))
 
-        self.prg.injSrc(self.queue, (self.tnz, self.tnx), None,
-                        self.vx_b, self.vz_b,
-                            self.taux_b, self.tauz_b, self.tauxz_b,
-                        self.seismogramid_vx_b, self.seismogramid_vz_b,
-                        self.seismogramid_taux_b, self.seismogramid_tauz_b, self.seismogramid_tauxz_b,
-                        self.dxr,
-                        self.srcx[s], self.srcz[s],
-                        src_kv_x, src_kv_z,
-                        src_kt_x, src_kt_z, 
-                        t)
-        
+        # Arguments 13 to 17: the source samples and the time index t (the others are set once
+        # per source by _set_injection_args). src_kt_xz is not used by the kernel, as in 0.1.10.
+        for index, value in enumerate((src_kv_x, src_kv_z, src_kt_x, src_kt_z, t), start=13):
+            self.knl.injSrc.set_arg(index, value)
+        self._launch(self.knl.injSrc)
+
     def __update_fwd(self, coeff):
-        self.prg.update_velx(self.queue, (self.tnz, self.tnx), None,
-                                coeff,
-                                self.vx_b,
-                                self.taux_b, self.tauxz_b,
-                                self.rho_b,
-                                self.vdx_pml_b, self.vdz_pml_b
-                                )
-
-        self.prg.update_velz(self.queue, (self.tnz, self.tnx), None,
-                                coeff,
-                                self.vz_b,
-                                self.tauz_b, self.tauxz_b,
-                                self.rho_b,
-                                self.vdx_pml_b, self.vdz_pml_b
-                                 )
-
-        self.prg.update_tauz(self.queue, (self.tnz, self.tnx), None,
-                                coeff,
-                                self.vx_b, self.vz_b,
-                                self.taux_b, self.tauz_b,
-                                self.lam_b, self.mu_b,
-                                self.vdx_pml_b, self.vdz_pml_b
-                                 )
-
-        self.prg.update_tauxz(self.queue, (self.tnz, self.tnx), None,
-                                coeff,
-                                self.vx_b, self.vz_b,
-                                self.tauxz_b,
-                                self.mu_b,
-                                self.vdx_pml_b, self.vdz_pml_b
-                                  )
+        # Arguments set by _set_update_args at the start of the forward modelling.
+        self._launch(self.knl.update_velx)
+        self._launch(self.knl.update_velz)
+        self._launch(self.knl.update_tauz)
+        self._launch(self.knl.update_tauxz)
             
     def __kernel(self, s, coeff=+1):
         showpurose = np.zeros((self.tnz, self.tnx), dtype=np.float32)
@@ -731,20 +766,54 @@ class WavePropagator(WavePreparation):
         self.make_seismogram(s, t)
         
     def __adjoint_modelling_per_source(self, res):
-        self.prg.MakeGradZero(self.queue, (self.tnz, self.tnx), None,
+        self.knl.MakeGradZero(self.queue, self.global_size, None,
                               self.Gmu_b, self.Glam_b, self.Grho_b,
                               self.g_mu_precond_b, self.g_lam_precond_b, self.g_rho_precond_b)
 
+        # The arguments of the time loop do not change during the gradient: set them once
+        # (step 1.3). The update kernels rebuild the forward field backwards (coeff = -1).
+        self._set_update_args(np.int32(-1))
+        self._set_adjoint_args()
+
         for s in range(self.ns):
-            self.prg.MakeAllZero(self.queue, (self.tnz, self.tnx), None,
+            self.knl.MakeAllZero(self.queue, self.global_size, None,
                                  self.vx_b, self.vz_b,
                                  self.taux_b, self.tauz_b, self.tauxz_b)
 
-            self.prg.MakeAllZero(self.queue, (self.tnz, self.tnx), None,
+            self.knl.MakeAllZero(self.queue, self.global_size, None,
                                  self.avx_b, self.avz_b,
                                  self.ataux_b, self.atauz_b, self.atauxz_b)
 
             self.__kernel_gradient(res, s)
+
+    def _set_adjoint_args(self):
+        """Set the arguments of the adjoint kernels (Adj_injSrc, Adj_update_tau, Adj_update_v, Grad).
+
+        Called at the start of each gradient, after ``adjoint_buffer_preparing`` has created the
+        adjoint and gradient buffers. The residual buffers keep their identity; only their content
+        changes (``make_residual``).
+        """
+        self.knl.Adj_injSrc.set_args(self.avx_b, self.avz_b,
+                                     self.ataux_b, self.atauz_b, self.atauxz_b,
+                                     self.res_vx_b, self.res_vz_b,
+                                     self.res_taux_b, self.res_tauz_b, self.res_tauxz_b,
+                                     self.dxr)
+        self.knl.Adj_update_tau.set_args(self.avx_b, self.avz_b,
+                                         self.ataux_b, self.atauz_b, self.atauxz_b,
+                                         self.rho_b,
+                                         self.vdx_pml_b, self.vdz_pml_b)
+        self.knl.Adj_update_v.set_args(self.avx_b, self.avz_b,
+                                       self.ataux_b, self.atauz_b, self.atauxz_b,
+                                       self.lam_b, self.mu_b,
+                                       self.vdx_pml_b, self.vdz_pml_b)
+        self.knl.Grad.set_args(self.vx_b, self.vz_b,
+                               self.taux_b, self.tauz_b, self.tauxz_b,
+                               self.avx_b, self.avz_b,
+                               self.ataux_b, self.atauz_b, self.atauxz_b,
+                               self.lam_b, self.mu_b, self.rho_b,
+                               self.Gmu_b, self.g_mu_precond_b,
+                               self.Glam_b, self.g_lam_precond_b,
+                               self.Grho_b, self.g_rho_precond_b)
 
     def __kernel_gradient(self, res, s, coeff=-1):
         chpc = self.nchp - 1
@@ -777,73 +846,23 @@ class WavePropagator(WavePreparation):
 
             else:
                 """ Backward propagation  """
-                self.prg.update_tauxz(self.queue, (self.tnz, self.tnx), None,
-                                      coeff,
-                                      self.vx_b, self.vz_b,
-                                      self.tauxz_b,
-                                      self.mu_b,
-                                      self.vdx_pml_b, self.vdz_pml_b
-                                      )
-
-                self.prg.update_tauz(self.queue, (self.tnz, self.tnx), None,
-                                     coeff,
-                                     self.vx_b, self.vz_b,
-                                     self.taux_b, self.tauz_b,
-                                     self.lam_b, self.mu_b,
-                                     self.vdx_pml_b, self.vdz_pml_b
-                                     )
-
-                self.prg.update_velz(self.queue, (self.tnz, self.tnx), None,
-                                     coeff,
-                                     self.vz_b,
-                                     self.tauz_b, self.tauxz_b,
-                                     self.rho_b,
-                                     self.vdx_pml_b, self.vdz_pml_b
-                                     )
-
-                self.prg.update_velx(self.queue, (self.tnz, self.tnx), None,
-                                     coeff,
-                                     self.vx_b,
-                                     self.taux_b, self.tauxz_b,
-                                     self.rho_b,
-                                     self.vdx_pml_b, self.vdz_pml_b
-                                     )
+                # Arguments (coeff = -1) set by _set_update_args at the start of the gradient.
+                self._launch(self.knl.update_tauxz)
+                self._launch(self.knl.update_tauz)
+                self._launch(self.knl.update_velz)
+                self._launch(self.knl.update_velx)
 
             """ Adjoint modeling """
+            # Arguments set by _set_adjoint_args at the start of the gradient.
             if t % self.dt_scale == 0:
                 self.make_residual(res, s, t_src)
-                    
-                self.prg.Adj_injSrc(self.queue, (self.tnz, self.tnx), None,
-                                    self.avx_b, self.avz_b,
-                                    self.ataux_b, self.atauz_b, self.atauxz_b,
-                                    self.res_vx_b, self.res_vz_b,
-                                    self.res_taux_b, self.res_tauz_b, self.res_tauxz_b,
-                                    self.dxr)
+
+                self._launch(self.knl.Adj_injSrc)
                 t_src -= 1
 
-            self.prg.Adj_update_tau(self.queue, (self.tnz, self.tnx), None,
-                                    self.avx_b, self.avz_b,
-                                    self.ataux_b, self.atauz_b, self.atauxz_b,
-                                    self.rho_b,
-                                    self.vdx_pml_b, self.vdz_pml_b)
-
-            self.prg.Adj_update_v(self.queue, (self.tnz, self.tnx), None,
-                                  self.avx_b, self.avz_b,
-                                  self.ataux_b, self.atauz_b, self.atauxz_b,
-                                  self.lam_b, self.mu_b,
-                                  self.vdx_pml_b, self.vdz_pml_b
-                                  )
-
-            self.prg.Grad(self.queue, (self.tnz, self.tnx), None,
-                             self.vx_b, self.vz_b,
-                             self.taux_b, self.tauz_b, self.tauxz_b,
-                             self.avx_b, self.avz_b,
-                             self.ataux_b, self.atauz_b, self.atauxz_b,
-                             self.lam_b, self.mu_b, self.rho_b,
-                             self.Gmu_b, self.g_mu_precond_b,
-                             self.Glam_b, self.g_lam_precond_b,
-                             self.Grho_b, self.g_rho_precond_b
-                             )
+            self._launch(self.knl.Adj_update_tau)
+            self._launch(self.knl.Adj_update_v)
+            self._launch(self.knl.Grad)
 
             # Plotting wave propagation
             if self.backward_show and (np.remainder(t, 20) == 0 or t == self.nt_ext - 2):

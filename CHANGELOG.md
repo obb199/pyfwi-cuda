@@ -95,6 +95,14 @@ how much and in which numeric mode.
   configured: it takes the default answer of that question (first platform, first device). A
   device that does not exist raises a `ValueError` that lists the available ones. As before, a
   choice made with `inpa['device']` is also written to `PYOPENCL_CTX`.
+- Kernel launches (step 1.3): `WavePropagator` retrieves each OpenCL kernel once (`W.knl`), sets
+  the arguments that stay the same during a time loop once per forward modelling or gradient, and
+  launches the time-loop kernels with `pyopencl.enqueue_nd_range_kernel`. Same kernels, order and
+  arguments, so the same results bit for bit; no more `RepeatedKernelRetrieval` warnings. Small
+  scenario: forward 3.0x and gradient 2.4x faster than 0.1.10; PyOpenCL 2022 and 2026 now run at the
+  same speed ([report](docs/cuda-migration/reports/step-1.3-kernel-launches.md)).
+- `tools/benchmark.py` and `tools/opencl_profile.py` also count the launches made with
+  `pyopencl.enqueue_nd_range_kernel`.
 
 ### Numerical changes
 
