@@ -36,7 +36,7 @@ EXAMPLES_DIR = os.path.join(REPO, "example", "scripts")
 
 #: Examples that have a physical check in this file. ``test_every_example_has_a_check``
 #: fails if a script is added to example/scripts/ without one.
-CHECKED = {"forward_surface"}
+CHECKED = {"forward_surface", "forward_acquisitions"}
 
 
 def example_names():
@@ -118,3 +118,39 @@ def test_forward_surface(run_example):
         picks = first_breaks(data["taux"][:, s * nr:(s + 1) * nr])
         offsets = np.abs(rec_loc[:, 0] - src_loc[s, 0])
         assert np.corrcoef(picks, offsets)[0, 1] > 0.95, f"shot {s}"
+
+
+def test_forward_acquisitions(run_example):
+    from helpers import coincidences
+
+    results = run_example("forward_acquisitions")
+    assert set(results) == {"crosswell", "surface", "both"}
+    for acq_type, name in enumerate(("crosswell", "surface", "both")):
+        r = results[name]
+        rec, src, n_well, inpa = r["rec_loc"], r["src_loc"], r["n_well_rec"], r["inpa"]
+        nr, ns, nt = rec.shape[0], src.shape[0], int(1 + inpa["t"] // inpa["dt"])
+        # Receiver bookkeeping: crosswell = one well; surface = no well; both = left well + surface + right well.
+        if acq_type == 0:
+            assert n_well == nr and len(set(rec[:, 0])) == 1
+        elif acq_type == 1:
+            assert n_well == 0 and len(set(rec[:, 1])) == 1
+        else:
+            assert 0 < 2 * n_well < nr
+            assert len(set(rec[:n_well, 0])) == 1 and len(set(rec[-n_well:, 0])) == 1  # two vertical wells
+            assert len(set(rec[n_well:-n_well, 1])) == 1                                # one horizontal line
+        assert set(r["data"]) == {"taux", "tauz"}  # components=0: pressure
+        assert r["data"]["taux"].shape == (nt, nr * ns) and np.isfinite(r["data"]["taux"]).all()
+        # The example's geometry has none of the race points of 0.1.10 (cross-check with the test helper).
+        nz = load_example("forward_acquisitions").SIZES["small"]["nz"]
+        assert coincidences(src, rec, n_well, inpa["dh"], inpa["rec_dis"], nz) == \
+            {"source_on_receiver": [], "shared_receiver_cell": []}, name
+        # Physics + trace order: matched with trace_positions(), arrivals get later with distance.
+        for s in range(ns):
+            picks = first_breaks(r["data"]["taux"][:, s * nr:(s + 1) * nr])
+            distance = np.hypot(*(r["traces"] - src[s]).T)
+            assert np.corrcoef(picks, distance)[0, 1] > 0.95, (name, s)
+    # The left-well traces of acq_type 2 really are reversed: in rec_loc order they correlate badly.
+    r = results["both"]
+    nr, n_well = r["rec_loc"].shape[0], r["n_well_rec"]
+    picks = first_breaks(r["data"]["taux"][:, :nr])[:n_well]
+    assert np.corrcoef(picks, np.hypot(*(r["rec_loc"][:n_well] - r["src_loc"][0]).T))[0, 1] < 0
