@@ -53,6 +53,12 @@ how much and in which numeric mode.
   `PyFWI.fwi_tools` import with NumPy 2: unused imports of `numpy.lib.function_base` and
   `numpy.core` were removed, and `gaussian_filter` is imported from `scipy.ndimage` (public module)
   instead of the deprecated `scipy.ndimage.filters`.
+- `fwi_tools.pml_delta_calculation` computes the PML damping profile in float64 explicitly. Under
+  NumPy 2 (NEP 50 type promotion) part of it was computed in float32, which changed the last bit of
+  the profile and moved seismograms by up to 6e-7 and gradients by up to 3e-5 (relative L2). Results
+  are now bit-for-bit those of PyFWI 0.1.10 with any NumPy version.
+- `fwi_tools.CostFunction` (L2) accumulates the misfit in float64 explicitly, as NumPy 1.x did
+  implicitly; under NumPy 2 it was a float32 value (same value, different type).
 
 ### Numerical changes
 

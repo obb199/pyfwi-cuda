@@ -1053,6 +1053,11 @@ def pml_delta_calculation(dh, n_pml=10, pml_r=1e-5):
             for the second-order acoustic wave equation solved by the rapid
             expansion method, Geophysical Prospecting, 2020, 68, 572–590.
         """
+    # Computed in float64 whatever the type of dh. PyFWI passes dh as numpy.float32: NumPy 1.x
+    # promoted n_pml * dh and 3 / (2 * delta1) to float64, NumPy 2 keeps them in float32 (NEP 50)
+    # and changes the last bit of the profile. Explicit float64 gives the values of PyFWI 0.1.10
+    # with any NumPy version.
+    dh = np.float64(dh)
     delta1 = n_pml * dh
     r = (np.arange(n_pml) * dh)
     if delta1 != 0:
@@ -1411,7 +1416,9 @@ class CostFunction:
         res = {}
         for param in dest:
             res[param] = np.float32(dest[param] - dobs[param])
-            rms += 0.5 * (res[param].reshape(-1).T @ res[param].reshape(-1))
+            # float64 explicitly: with NumPy 1.x, 0.5 * (float32 dot product) was promoted to float64;
+            # NumPy 2 (NEP 50) would keep the misfit in float32. This keeps the value and type of 0.1.10.
+            rms += 0.5 * np.float64(res[param].reshape(-1).T @ res[param].reshape(-1))
 
         if type(dest0).__name__ == 'ndarray':
             adj_src = np.array(list(res.values()))
