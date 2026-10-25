@@ -134,7 +134,8 @@ Each step refers to the codes below. "Every commit" means running locally before
 | Comparison | Criterion | Origin |
 | --- | --- | --- |
 | Phase 1 × 0.1.10, raw propagator outputs on the same device and environment | Bit-for-bit identical | Analysis |
-| Phase 1 × 0.1.10, host post-processing with different NumPy and SciPy versions | ≤ 4 ulp in float32 | New: depends on the result of step 0.5 |
+| Fork in dev × golden masters, before step 1.1 (PML profile differs under NumPy 2) | Seismograms ≤ 1e-6, gradients ≤ 1e-4 (relative L2) | Measured in step 0.5 (5.7e-7 and 2.8e-5) |
+| Misfit across NumPy versions | Relative ≤ 1e-6 | Measured in step 0.5 (5e-8: summation order) |
 | New × old low-pass filter (float64) | Relative difference ≤ 1e-12 | Analysis |
 | CUDA `legacy` × OpenCL `legacy` | Relative L2 ≤ 1e-6 (initial target, confirmed at G2) | Analysis |
 | Optimised CUDA × parity CUDA (`fixed`) | Seismograms ≤ 1e-5; gradients ≤ 1e-4 | Analysis |
@@ -187,6 +188,7 @@ No change in the behaviour of the package. This phase builds everything that wil
 - **Key check:** with the code still identical to 0.1.10, do the raw outputs in dev match those of the reference environment bit for bit? The only difference between the two environments is versions (PyOpenCL 2022 × 2026, NumPy 1.21 × 2.5). If they match, the BIT criterion of Phase 1 applies directly in dev. If not, the test localises the stage that diverges (wavelet generation, model assembly, kernel or post-processing), and the criterion becomes BIT on raw outputs plus the ulp tolerance on post-processing, recorded at G0.
 - **Tests:** CAR, DET.
 - **Criterion:** forward and gradient of every case approved under the chosen criterion; decision recorded.
+- **Result (measured):** the dev environment does **not** reproduce the golden masters bit for bit: seismograms differ by up to 5.7e-7 and gradients by up to 2.8e-5 (relative L2), identically on NVIDIA and POCL. The only kernel input that differs is the PML damping profile: `pml_delta_calculation` mixes a `numpy.float32` grid spacing with Python numbers, and NumPy 2 (NEP 50) computes `n_pml * dh` and `3 / (2 * delta1)` in float32 where NumPy 1.21 used float64, changing the last bit of 3 of 10 values. With an explicit float64 formula every seismogram and gradient matched bit for bit; only the misfit (a float64 sum) still differs by up to 5e-8. **Decision:** `test/test_characterization.py` compares bit for bit wherever the installed PyFWI computes the PML of 0.1.10 (the reference environment, and dev after step 1.1), and with interim tolerances otherwise (1e-6 for seismograms, 1e-4 for gradients); the misfit is compared with a relative tolerance of 1e-6. A mutation test showed that the interim tolerances miss a 1e-7 change, so **the PML fix is the first change of step 1.1**.
 
 ### 0.6 Mathematical baseline of 0.1.10
 
@@ -241,7 +243,7 @@ No computation of the propagator changes, so the criterion is BIT against the go
 
 ### 1.1 Imports and packaging
 
-- **Goes in:** our own `MemoizeJac` (a small class, not depending on private SciPy names); `np.kaiser` instead of `numpy.lib.function_base`; `segyio` imported lazily, only in the functions that read SEG-Y; `pyopencl` in `install_requires`; `package_data` with `torch/` and `data/`; metadata in `pyproject.toml`; distribution name `pyfwi-cuda` with the `PyFWI` import; `python_requires >= 3.10`.
+- **Goes in:** first of all, `pml_delta_calculation` computed explicitly in float64, which restores the PML profile of 0.1.10 under NumPy 2 and with it the bit-for-bit characterisation in dev (step 0.5); then our own `MemoizeJac` (a small class, not depending on private SciPy names); `np.kaiser` instead of `numpy.lib.function_base`; `segyio` imported lazily, only in the functions that read SEG-Y; `pyopencl` in `install_requires`; `package_data` with `torch/` and `data/`; metadata in `pyproject.toml`; distribution name `pyfwi-cuda` with the `PyFWI` import; `python_requires >= 3.10`.
 - **Tests:** PKG (wheel in a clean venv, every module imports with NumPy 2.5 and SciPy 1.18, files present); UNI of `MemoizeJac` (same behaviour as the original of SciPy 1.7.3: caches `fun` and `jac`); CAR, now including the FWI cases; EXA, now including the FWI examples in dev; the import and `segyio` `xfail`s start passing.
 - **Criterion:** every module imports in dev; CAR and EXA approved.
 

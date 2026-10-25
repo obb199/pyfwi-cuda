@@ -25,6 +25,7 @@ and must pass everywhere else.
 | ``test_default_geometry_is_deterministic`` | race conditions at source/receiver coincidences (non-strict: probabilistic) | 3.4 |
 | ``test_chpr_zero_gives_the_checkpointed_gradient`` | ``chpr=0`` (the default) rebuilds the field backwards through the PML: wrong gradient | 4.2 |
 | ``test_lbfgs_iterates_with_physically_scaled_data`` | absolute ``pgtol = 1e-8``: L-BFGS stops at iteration 0 on realistic data | 2.4 |
+| ``test_pml_profile_does_not_depend_on_numpy`` | NumPy 2 type promotion changes the PML profile in the last bit | 1.1 |
 | ``test_crosswell_vz_seismogram_records_vz`` | the crosswell ``vz`` seismogram stores ``vx`` | 2.4 |
 | ``test_crosswell_kernels_assign_vz_to_vz_seismograms`` | same bug, lines 27 and 74 of ``elastic_crosswell.cl`` | 2.4 |
 | ``test_dt_define_is_not_truncated`` | ``#define dt`` keeps only 6 decimals | 2.4 |
@@ -49,7 +50,7 @@ import zipfile
 import numpy as np
 import pytest
 
-from helpers import forward_and_gradient, has_memoizejac, kernel_sources, tiny_case
+from helpers import forward_and_gradient, has_memoizejac, kernel_sources, pml_matches_0_1_10, tiny_case
 
 #: Absolute path of the repository root.
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -216,6 +217,13 @@ def test_lbfgs_iterates_with_physically_scaled_data(opencl_platform, monkeypatch
         with redirect_stdout(io.StringIO()):  # PyFWI prints the misfit of every evaluation
             fwi(case.m0, method="lbfgs", freqs=[25], iter=[2], n_params=1, k_0=1, k_end=2)
     assert iterations and iterations[0] >= 1, f"L-BFGS iterations per stage: {iterations}"
+
+
+@pytest.mark.xfail(condition=NUMPY2, strict=True,
+                   reason="pml_delta_calculation mixes a numpy.float32 dh with Python numbers; NumPy 2 (NEP 50) "
+                          "computes part of it in float32 instead of float64 and changes the last bit")
+def test_pml_profile_does_not_depend_on_numpy():
+    assert pml_matches_0_1_10()
 
 
 @pytest.mark.xfail(strict=True, reason="elastic_crosswell.cl stores vx in the vz seismogram")
