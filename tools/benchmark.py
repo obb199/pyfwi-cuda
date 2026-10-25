@@ -83,7 +83,8 @@ def count_opencl_calls():
     Copies are counted by wrapping ``pyopencl.enqueue_copy``, which PyFWI calls through the
     module. Yields a
     ``collections.Counter`` with the keys ``launches``, ``launch:<kernel name>``,
-    ``copies`` and ``blocking_copies`` (``enqueue_copy`` blocks unless ``is_blocking=False``).
+    ``copies`` and ``blocking_copies`` (a copy to or from host memory blocks unless
+    ``is_blocking=False``; a copy between two device buffers never blocks).
     """
     import pyopencl as cl
 
@@ -103,7 +104,9 @@ def count_opencl_calls():
 
     def counting_copy(queue, dest, src, **kwargs):
         counts["copies"] += 1
-        counts["blocking_copies"] += bool(kwargs.get("is_blocking", True))
+        # A copy between two device buffers never makes the host wait, whatever is_blocking says.
+        on_device = isinstance(dest, cl.MemoryObjectHolder) and isinstance(src, cl.MemoryObjectHolder)
+        counts["blocking_copies"] += bool(kwargs.get("is_blocking", True)) and not on_device
         return original_copy(queue, dest, src, **kwargs)
 
     cl.Kernel.__call__, cl.enqueue_copy, cl.enqueue_nd_range_kernel = counting_call, counting_copy, counting_enqueue

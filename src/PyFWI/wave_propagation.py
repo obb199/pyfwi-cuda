@@ -14,6 +14,9 @@ from PyFWI.processing import prepare_residual
 from PyFWI.grad_switcher import grad_lmd_to_vd
 
 
+#: The five recorded components, in the order of the seismogram and residual buffers.
+COMPONENTS = ("vx", "vz", "taux", "tauz", "tauxz")
+
 #: Names of the OpenCL kernels that PyFWI launches (in elastic.cl, and injSrc and Adj_injSrc
 #: also in elastic_crosswell.cl and elastic_surface.cl). WavePreparation retrieves each of them
 #: once, in ``self.knl``.
@@ -221,6 +224,9 @@ class WavePreparation:
                                     self.mf.COPY_HOST_PTR, hostbuf=res)
         self.res_tauxz_b = cl.Buffer(self.ctx, self.mf.READ_WRITE |
                                      self.mf.COPY_HOST_PTR, hostbuf=res)
+        # The residual of one shot, every time sample, per component (residual_to_device);
+        # created at the first gradient and reused while its size does not change.
+        self.res_shot_b = {}
 
 
         v = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
@@ -360,25 +366,16 @@ class WavePreparation:
             t : float
                 Current time step.
         """
-        def get_from_opencl(buffer):
-            seismogram_id = np.zeros((self.nt_ext, self.nr)).astype(np.float32, order='C')
-            cl.enqueue_copy(self.queue, seismogram_id, buffer)
-            return np.copy(seismogram_id)
-
-        self.seismogram['vx'][:, :, s] = \
-            get_from_opencl(self.seismogramid_vx_b)
-
-        self.seismogram['vz'][:, :, s] = \
-            get_from_opencl(self.seismogramid_vz_b)
-
-        self.seismogram['taux'][:, :, s] = \
-            get_from_opencl(self.seismogramid_taux_b)
-
-        self.seismogram['tauz'][:, :, s] = \
-            get_from_opencl(self.seismogramid_tauz_b)
-
-        self.seismogram['tauxz'][:, :, s] = \
-            get_from_opencl(self.seismogramid_tauxz_b)
+        # The five reads are enqueued without blocking and waited for once (step 1.4 of the
+        # fork); 0.1.10 waited after each of them.
+        buffers = (self.seismogramid_vx_b, self.seismogramid_vz_b, self.seismogramid_taux_b,
+                   self.seismogramid_tauz_b, self.seismogramid_tauxz_b)
+        host = {par: np.empty((self.nt_ext, self.nr), np.float32) for par in COMPONENTS}
+        events = [cl.enqueue_copy(self.queue, host[par], buffer, is_blocking=False)
+                  for par, buffer in zip(COMPONENTS, buffers)]
+        cl.wait_for_events(events)
+        for par in COMPONENTS:
+            self.seismogram[par][:, :, s] = host[par]
 
     def make_residual(self, res, s, t):
         """
@@ -411,6 +408,50 @@ class WavePreparation:
 
         res_src_tauxz = (res['tauxz'][np.int32(t - 1), s * self.nr:(s + 1) * self.nr]).astype(np.float32, order='C')
         cl.enqueue_copy(self.queue, self.res_tauxz_b, res_src_tauxz)
+
+    def residual_to_device(self, res, s):
+        """Copy the residual of shot ``s``, all time samples, to the device (step 1.4 of the fork).
+
+        0.1.10 copied one time sample of the residual from the host before each injection
+        (``make_residual``): five blocking copies every ``dt_scale`` steps, 750 per shot in the
+        example of the documentation. Now the five components of the shot are copied once, and
+        ``residual_sample`` copies each time sample on the device.
+
+        Parameters
+        ----------
+        res : dict
+            Residual of every shot, ``{component: array (time samples, nr * ns)}``, as prepared
+            by ``gradient`` (``prepare_residual``).
+        s : int
+            Index of the shot.
+        """
+        for par in COMPONENTS:
+            # Columns s*nr to (s+1)*nr, as float32 and contiguous: the same values make_residual sent.
+            shot = np.ascontiguousarray(res[par][:, s * self.nr:(s + 1) * self.nr], dtype=np.float32)
+            if self.res_shot_b.get(par) is None or self.res_shot_b[par].size != shot.nbytes:
+                self.res_shot_b[par] = cl.Buffer(self.ctx, self.mf.READ_ONLY, shot.nbytes)
+            cl.enqueue_copy(self.queue, self.res_shot_b[par], shot)
+
+    def residual_sample(self, t):
+        """Copy time sample ``t - 1`` of the shot's residual into the buffers that Adj_injSrc reads.
+
+        The copies stay on the device and do not make the host wait. Adj_injSrc keeps reading
+        ``res_vx_b``... of ``nr`` values, as in 0.1.10, so that what its unbounded receiver loops
+        read past the end of them is unchanged (``test_known_bugs.py``).
+
+        Parameters
+        ----------
+        t : int
+            Time index used by 0.1.10 in ``make_residual(res, s, t)``: the sample ``t - 1`` is copied.
+        """
+        row = int(self.nr) * 4  # bytes of one time sample of one component
+        sample = int(t) - 1
+        if sample < 0:  # as NumPy indexing in make_residual: -1 is the last sample
+            sample += self.res_shot_b["vx"].size // row
+        targets = (self.res_vx_b, self.res_vz_b, self.res_taux_b, self.res_tauz_b, self.res_tauxz_b)
+        for par, target in zip(COMPONENTS, targets):
+            cl.enqueue_copy(self.queue, target, self.res_shot_b[par], byte_count=row,
+                            src_offset=sample * row)
 
     def pml_preparation(self, v_max):
 
@@ -783,6 +824,7 @@ class WavePropagator(WavePreparation):
             self.knl.MakeAllZero(self.queue, self.global_size, None,
                                  self.avx_b, self.avz_b,
                                  self.ataux_b, self.atauz_b, self.atauxz_b)
+            self.residual_to_device(res, s)
 
             self.__kernel_gradient(res, s)
 
@@ -855,7 +897,7 @@ class WavePropagator(WavePreparation):
             """ Adjoint modeling """
             # Arguments set by _set_adjoint_args at the start of the gradient.
             if t % self.dt_scale == 0:
-                self.make_residual(res, s, t_src)
+                self.residual_sample(t_src)  # 0.1.10: self.make_residual(res, s, t_src)
 
                 self._launch(self.knl.Adj_injSrc)
                 t_src -= 1

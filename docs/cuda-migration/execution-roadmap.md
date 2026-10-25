@@ -21,7 +21,7 @@ This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into 
 | 1.1 | Imports and packaging (current SciPy and NumPy, declared dependencies) | Phase 1 · **done** |
 | 1.2 | Fixed OpenCL device selection | **done** |
 | 1.3 | Cached kernels and fixed arguments | **done** |
-| 1.4 | Residual and wavelet on the GPU; non-blocking copies | |
+| 1.4 | Residual and wavelet on the GPU; non-blocking copies | **done** (wavelet: Phase 3) |
 | 1.5 | Contiguous checkpoints; `W.W` as a view | |
 | 1.6 | Element-wise low-pass filter | |
 | 1.7 | Padded buffers: no more reads outside the allocation | |
@@ -305,6 +305,20 @@ No computation of the propagator changes, so the criterion is BIT against the go
 - **Goes in:** the `[nt, nr, 5]` residual and the wavelet are uploaded once, and the kernel reads at position `t` (only the indexing changes, not the arithmetic); copies with `is_blocking=False` and explicit events.
 - **Tests:** BIT; DES (blocking-copy counter: −750 per shot in the docs example); DET.
 - **Criterion:** BIT; copy count as targeted.
+- **Result:** the residual of each shot goes to the device once (5 copies per shot), and each time
+  sample is copied on the device into the small buffers `Adj_injSrc` has always read. Reading the
+  big buffer directly in the kernel, as first planned, would change results: the unbounded receiver
+  loops of `Adj_injSrc` read past the end of the residual (known bug, step 2.4), and would then read
+  the next time sample instead of what lies after the small buffer. The seismograms of a shot are
+  read with non-blocking copies and one wait. The wavelet stays a kernel argument: since step 1.3
+  its samples are set with `set_arg` and involve no copy, so moving it to the device only pays off
+  with CUDA Graphs (Phase 3), where the time index must come from device memory. BIT holds; blocking
+  copies per shot in the gradient: from `5 × restored checkpoints + 5 × injections` to
+  `5 × restored checkpoints + 5` (`test_benchmark.py` checks both counts, for 0.1.10 and the fork).
+  DES, small scenario (`bench/step-1.4/`): blocking copies per step from 2.71 to 2.00; gradient
+  0.81 s to 0.79 s, forward unchanged (0.49 s). The gain is small because after step 1.3 the GPU
+  work dominates and the residual was the smallest share of the copies; the checkpoint copies (one
+  per step in each direction) are next, in step 1.5.
 
 ### 1.5 Contiguous checkpoints
 

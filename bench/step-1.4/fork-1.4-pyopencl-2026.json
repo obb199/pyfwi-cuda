@@ -1,0 +1,88 @@
+{
+ "date": "2026-10-25T19:55:25+00:00",
+ "label": "fork-1.4-pyopencl-2026",
+ "machine": {
+  "cpu": "x86_64",
+  "driver": "580.95.05",
+  "numpy": "2.5.4",
+  "opencl_device": "NVIDIA GeForce RTX 3060",
+  "pyfwi": "0.1.11.dev0",
+  "pyfwi_path": "/home/user/Desktop/apps/cuda_pyfwi/pyfwi-cuda/src/PyFWI",
+  "pyopencl": "2026.1.4",
+  "python": "3.12.15"
+ },
+ "repeats": 5,
+ "scenarios": {
+  "small": {
+   "cv_forward": 0.004647136324140497,
+   "cv_gradient": 0.005453632498791695,
+   "definition": {
+    "chpr": 20,
+    "dh": 7.0,
+    "ns_run": 4,
+    "ns_target": 4,
+    "nx": 100,
+    "nz": 100,
+    "t": 0.6
+   },
+   "forward_s": {
+    "median": 0.48839084200153593,
+    "runs": [
+     0.4923962510001729,
+     0.4893299119939911,
+     0.48839084200153593,
+     0.4859470110022812,
+     0.4866607039948576
+    ]
+   },
+   "gpu_after": {
+    "power_w": 89.04,
+    "sm_clock_mhz": 1942.0,
+    "temperature_c": 56.0
+   },
+   "gpu_before": {
+    "power_w": 86.48,
+    "sm_clock_mhz": 1920.0,
+    "temperature_c": 52.0
+   },
+   "gradient_s": {
+    "median": 0.7931102880029357,
+    "runs": [
+     0.7936571850004839,
+     0.7931102880029357,
+     0.7887001220005914,
+     0.7991515860048821,
+     0.786737002999871
+    ]
+   },
+   "guard_bands": true,
+   "host_ms_per_step": {
+    "forward": 0.11628353380988951,
+    "gradient": 0.18883578285784183
+   },
+   "internal_steps_per_shot": 1050,
+   "launches_by_kernel": {
+    "Adj_injSrc": 596,
+    "Adj_update_tau": 4196,
+    "Adj_update_v": 4196,
+    "Grad": 4196,
+    "MakeAllZero": 12,
+    "MakeGradZero": 1,
+    "injSrc": 600,
+    "update_tauxz": 7560,
+    "update_tauz": 7560,
+    "update_velx": 7560,
+    "update_velz": 7560
+   },
+   "per_step": {
+    "blocking_copies": 2.000714285714286,
+    "forward_copies": 1.0047619047619047,
+    "forward_launches": 4.143809523809524,
+    "gradient_copies": 1.7102380952380953,
+    "gradient_launches": 6.3411904761904765
+   },
+   "scale": 1.0,
+   "scaled_to_shots": 4
+  }
+ }
+}

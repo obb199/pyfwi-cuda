@@ -6,14 +6,16 @@ time loops of PyFWI 0.1.10:
 
 * forward, per shot: one ``MakeAllZero``, 4 field updates per internal step, one
   ``injSrc`` every ``dt_scale`` steps; 5 blocking copies per checkpoint and 5 for the
-  seismograms;
+  seismograms (read without blocking since step 1.4);
 * gradient, per shot: ``Grad`` (and both adjoint updates) at every step of the
-  backward loop, i.e. ``nt - 1`` times.
+  backward loop, i.e. ``nt - 1`` times; 5 blocking copies per restored checkpoint, and
+  the residual: 5 blocking copies per injection in 0.1.10, 5 per shot since step 1.4.
 """
 import json
 
 import pytest
 
+from helpers import running_reference
 from tools.benchmark import SCENARIOS, count_opencl_calls, main, run_once
 
 #: Internal time step of PyFWI for a recording step of 4 ms (split into 7 sub-steps of at most 0.6 ms).
@@ -36,8 +38,23 @@ def test_counter_counts_every_launch_and_copy(opencl_platform):
     injections = len(range(0, nt, scale))  # the source is injected when t % dt_scale == 0
     assert forward["launch:injSrc"] == ns * injections
     assert forward["launches"] == ns * (1 + 4 * nt + injections)
-    assert forward["copies"] == forward["blocking_copies"] == ns * (5 * nchp + 5)
     assert gradient["launch:Grad"] == gradient["launch:Adj_update_v"] == ns * (nt - 1)
+    # Copies: 5 per checkpoint in the forward loop and 5 seismograms per shot; in the gradient,
+    # 5 per checkpoint restored (the backward loop stops at t = 1), the residual, and 3 reads of
+    # the gradient at the end.
+    restores = int((W.chp >= 1).sum())
+    adjoint_injections = len([t for t in range(nt - 1, 0, -1) if t % scale == 0])
+    if running_reference():
+        # 0.1.10: every copy blocks, and one residual sample is sent before each injection.
+        seismograms_blocking, residual_blocking, on_device = 5, 5 * adjoint_injections, 0
+    else:
+        # Step 1.4: seismograms read without blocking; the residual of a shot is sent once, then
+        # each sample is copied on the device.
+        seismograms_blocking, residual_blocking, on_device = 0, 5, 5 * adjoint_injections
+    assert forward["copies"] == ns * (5 * nchp + 5)
+    assert forward["blocking_copies"] == ns * (5 * nchp + seismograms_blocking)
+    assert gradient["blocking_copies"] == ns * (5 * restores + residual_blocking) + 3
+    assert gradient["copies"] == gradient["blocking_copies"] + ns * on_device
 
 
 def test_counter_restores_pyopencl():
@@ -120,3 +137,14 @@ def test_step_1_3_made_each_launch_cheaper():
     # The slowdown of PyOpenCL 2026 (+44 % forward in the baseline) is gone: within 10 %.
     for kind in ("forward_s", "gradient_s"):
         assert abs(new["2026"][kind]["median"] / new["2022"][kind]["median"] - 1) < 0.1
+
+
+def test_step_1_4_removed_the_blocking_residual_copies():
+    # Roadmap step 1.4: the residual of a shot goes to the device once. In the small scenario
+    # (1,050 steps, an injection every 7) that removes 5 x 149 blocking copies per shot from the
+    # gradient: 0.71 per step, from 2.71 to 2.00.
+    before = _stored("step-1.3", "fork-1.3-pyopencl-2026")["scenarios"]["small"]
+    after = _stored("step-1.4", "fork-1.4-pyopencl-2026")["scenarios"]["small"]
+    assert before["per_step"]["blocking_copies"] == pytest.approx(2.71, abs=0.01)
+    assert after["per_step"]["blocking_copies"] == pytest.approx(2.00, abs=0.01)
+    assert after["gradient_s"]["median"] <= before["gradient_s"]["median"]

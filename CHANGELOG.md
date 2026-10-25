@@ -103,6 +103,13 @@ how much and in which numeric mode.
   same speed ([report](docs/cuda-migration/reports/step-1.3-kernel-launches.md)).
 - `tools/benchmark.py` and `tools/opencl_profile.py` also count the launches made with
   `pyopencl.enqueue_nd_range_kernel`.
+- Residual on the device (step 1.4): the gradient copies the residual of each shot to the device
+  once (`WavePropagator.residual_to_device`) and copies each time sample on the device before the
+  adjoint injection (`residual_sample`), instead of five blocking host-to-device copies before each
+  injection (750 per shot in the example of the documentation; now 5). The seismograms of a shot are
+  read with non-blocking copies and one wait. Same values, same results bit for bit.
+  `make_residual` is kept, unused. The copy counter of `tools/benchmark.py` no longer counts copies
+  between two device buffers as blocking.
 
 ### Numerical changes
 
