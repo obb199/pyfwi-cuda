@@ -86,9 +86,12 @@ class GuardReport:
         The value the bands were filled with.
     buffers : list of GuardedBuffer
         One entry per buffer created inside the ``with`` block, in creation order.
+    copy : callable
+        The ``pyopencl.enqueue_copy`` used to read the bands back.
     """
     fill: float
     buffers: list = field(default_factory=list)
+    copy: object = None
 
     def touched(self):
         """Return the guarded buffers whose bands no longer hold the fill value.
@@ -103,7 +106,7 @@ class GuardReport:
         touched = []
         for b in self.buffers:
             whole = np.empty(b.total // 4, np.float32)
-            cl.enqueue_copy(b.queue, whole, b.parent)
+            (self.copy or cl.enqueue_copy)(b.queue, whole, b.parent)
             b.queue.finish()
             bands = np.concatenate([whole[: b.head // 4], whole[(b.head + b.nbytes) // 4:]])
             intact = np.isnan(bands).all() if np.isnan(self.fill) else (bands == np.float32(self.fill)).all()
@@ -138,7 +141,10 @@ def guard_bands(fill=np.nan, pad_bytes=1 << 16):
     Only buffers created with ``hostbuf`` are guarded; others are created normally.
     """
     original = cl.Buffer
-    report = GuardReport(fill=float(fill))
+    # The guard's own copies use the enqueue_copy present when the guard starts, so that
+    # instrumentation installed later (e.g. the copy counter of tools/benchmark.py) never sees them.
+    copy = cl.enqueue_copy
+    report = GuardReport(fill=float(fill), copy=copy)
     queues = {}  # one command queue per context, used to fill and read the parent buffers
 
     def guarded_buffer(ctx, flags, size=0, hostbuf=None):
@@ -154,8 +160,8 @@ def guard_bands(fill=np.nan, pad_bytes=1 << 16):
         total += -total % 4                            # whole number of float32 values
         parent = original(ctx, cl.mem_flags.READ_WRITE, total)
         queue = queues.setdefault(ctx.int_ptr, cl.CommandQueue(ctx))
-        cl.enqueue_copy(queue, parent, np.full(total // 4, fill, np.float32))   # bands (and data area)
-        cl.enqueue_copy(queue, parent, host, dst_offset=head)                   # then the data
+        copy(queue, parent, np.full(total // 4, fill, np.float32))   # bands (and data area)
+        copy(queue, parent, host, dst_offset=head)                   # then the data
         queue.finish()
         report.buffers.append(GuardedBuffer(parent, queue, head, nbytes, total, host.shape))
         return parent.get_sub_region(head, nbytes)
