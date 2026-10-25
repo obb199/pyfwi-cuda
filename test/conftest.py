@@ -38,6 +38,24 @@ def _nvidia_opencl_platform():
     return None
 
 
+def _opencl_platforms():
+    """Return ``[(index, name, number_of_devices), ...]`` for every OpenCL platform (empty on error)."""
+    try:
+        import pyopencl as cl
+        return [(i, p.name, len(p.get_devices())) for i, p in enumerate(cl.get_platforms())]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _pyopencl_ctx(index, n_devices):
+    """Value of ``PYOPENCL_CTX`` that selects the first device of platform ``index``.
+
+    With a single device, PyOpenCL does not consume a device answer, so only the
+    platform index may be given ("left over" error otherwise, the 0.1.10 bug).
+    """
+    return f"{index}" if n_devices == 1 else f"{index}:0"
+
+
 def _has_cuda():
     """Return True if CuPy is installed and sees at least one GPU. Used by ``cuda_device``."""
     try:
@@ -54,6 +72,38 @@ def nvidia_opencl_platform():
     if idx is None:
         pytest.skip("no NVIDIA OpenCL platform")
     return idx
+
+
+@pytest.fixture
+def opencl_platform(monkeypatch):
+    """Select an OpenCL device for PyFWI and return its platform index; skip if there is none.
+
+    The NVIDIA platform is preferred (fast); otherwise the first platform, which
+    on a CI machine is POCL (OpenCL on the CPU). The choice is passed to PyFWI
+    through ``PYOPENCL_CTX``, set with ``monkeypatch`` so it is restored after the test.
+
+    Used by the device tests of ``test_known_bugs.py`` and ``test_oob_guard.py``.
+    """
+    platforms = _opencl_platforms()
+    if not platforms:
+        pytest.skip("no OpenCL platform")
+    chosen = next((p for p in platforms if "NVIDIA" in p[1]), platforms[0])
+    monkeypatch.setenv("PYOPENCL_CTX", _pyopencl_ctx(chosen[0], chosen[2]))
+    return chosen[0]
+
+
+@pytest.fixture
+def single_device_platform(monkeypatch):
+    """Index of an OpenCL platform with exactly one device; skip if there is none.
+
+    ``PYOPENCL_CTX`` is removed for the test (and restored afterwards), so that
+    PyFWI's own device selection is what gets tested.
+    """
+    platform = next((p for p in _opencl_platforms() if p[2] == 1), None)
+    if platform is None:
+        pytest.skip("no OpenCL platform with a single device")
+    monkeypatch.delenv("PYOPENCL_CTX", raising=False)
+    return platform[0]
 
 
 @pytest.fixture(scope="session")
