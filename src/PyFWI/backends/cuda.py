@@ -372,13 +372,19 @@ class CUDABackend:
 
     @staticmethod
     def grid(global_size, block=BLOCK):
-        """Blocks of shape ``block`` covering an OpenCL global size ``(rows, columns)``, rounded up."""
-        rows, columns = global_size
-        return (-(-columns // block[0]), -(-rows // block[1]), 1)
+        """Blocks of shape ``block`` covering an OpenCL global size ``(rows, columns)``, rounded up.
+
+        A third size, ``(rows, columns, slots)``, is the number of shots of a batch (step 3.9): the
+        grid then repeats the blocks of one shot ``slots`` times along z, and the native kernels take
+        the slot from ``blockIdx.z``.
+        """
+        rows, columns, *slots = global_size
+        return (-(-columns // block[0]), -(-rows // block[1]), slots[0] if slots else 1)
 
     def block(self, global_size):
         """The block for an OpenCL global size: 32 columns, and the most rows of ``BLOCK_ROWS`` that still
-        give at least ``BLOCKS_PER_SM`` blocks per streaming multiprocessor (else the fewest rows).
+        give at least ``BLOCKS_PER_SM`` blocks per streaming multiprocessor (else the fewest rows), the
+        blocks of every slot of a batch of shots counted (step 3.9).
 
         ``PYFWI_CUDA_BLOCK``, ``"<columns>x<rows>"`` (``"64x4"``), sets the block of every launch
         instead, to tune it for a GPU (step 3.1); the results do not depend on it.
@@ -388,8 +394,8 @@ class CUDABackend:
         if global_size not in self._blocks:
             choice = (BLOCK[0], BLOCK_ROWS[-1], 1)
             for rows in BLOCK_ROWS:
-                columns, lines, _ = self.grid(global_size, (BLOCK[0], rows, 1))
-                if columns * lines >= BLOCKS_PER_SM * self.multiprocessors:
+                columns, lines, slots = self.grid(global_size, (BLOCK[0], rows, 1))
+                if columns * lines * slots >= BLOCKS_PER_SM * self.multiprocessors:
                     choice = (BLOCK[0], rows, 1)
                     break
             self._blocks[global_size] = choice

@@ -28,7 +28,14 @@ advance            (native) ``step += delta``
 update_v           (native, fused, step 3.5) update_velx and update_velz
 update_tau         (native, fused) update_tauz and update_tauxz
 grad_adjoint_v     (native, fused) Grad, then Adj_update_v (nothing)
+sum_slots          (native, step 3.9) add the gradients of slots 1 to ``slots - 1`` to slot 0
+copy_checkpoint    (native, step 3.9) copy the field of every slot into its checkpoint, or back
 =================  ==============================================================================
+
+A launch over ``(rows, columns, slots)`` runs a batch of shots (step 3.9): the kernels act on the
+field of every slot, slot b starting ``b * (tnz + 1) * tnx`` values into the buffers of the fields
+and gradients (``slot_values`` of elastic.cu) and ``b * rows * nr`` into the seismograms and
+residuals; the source cell of slot b is ``source_cell[b]``.
 
 Used by ``test/test_engine.py``.
 """
@@ -70,8 +77,9 @@ class FakeGraph:
 
     def launch(self):
         self.backend.log.append(("graph", len(self.launches)))
-        for name, function, args in self.launches:
+        for name, function, args, slots in self.launches:
             self.backend.log.append(("launch", name))
+            self.backend.slots = slots
             function(self.backend, *args)
 
 
@@ -82,17 +90,23 @@ class FakeBackend:
     ----------
     nr : int
         Number of receivers, which the toy injSrc needs to record a row of seismogram.
-    tnx : int
-        Grid width, to find the source cell from its coordinates.
+    tnz, tnx : int
+        Grid size: ``tnx`` finds the source cell from its coordinates, both the field of each slot of a
+        batch (step 3.9).
+    budget : int, optional
+        Bytes of checkpoints the engine may keep on the "device" (``checkpoint_budget``, step 3.8).
     """
 
     name = "fake"
     alignment = 16
 
-    def __init__(self, nr, tnx, budget=0):
-        self.nr, self.tnx = nr, tnx
+    def __init__(self, nr, tnz, tnx, budget=0):
+        self.nr, self.tnz, self.tnx = nr, tnz, tnx
+        #: Slots of the launch running (its third global size, step 3.9).
+        self.slots = 1
         self.log = []
-        #: Bytes of checkpoints the engine may keep on the "device" (``checkpoint_budget``, step 3.8).
+        #: ``(kernel name, global size)`` of every launch outside a graph.
+        self.sizes = []
         self.budget = budget
         #: While ``capture`` records: the launches, which then do not run.
         self._recording = None
@@ -168,10 +182,13 @@ class FakeBackend:
         kernel.args[index] = value
 
     def launch(self, kernel, global_size):
+        self.sizes.append((kernel.name, tuple(global_size)))
+        slots = global_size[2] if len(global_size) > 2 else 1  # a batch of shots (step 3.9)
         if self._recording is not None:  # a graph is being recorded: nothing runs
-            self._recording.append((kernel.name, kernel.function, list(kernel.args)))
+            self._recording.append((kernel.name, kernel.function, list(kernel.args), slots))
             return
         self.log.append(("launch", kernel.name))
+        self.slots = slots
         kernel.function(self, *kernel.args)
 
     def capture(self, record):
@@ -202,9 +219,17 @@ def _write(buffer, start, values):
     whole[offset + start:offset + start + len(values)] = values
 
 
+def _slots(backend, buffer):
+    """The field of every slot launched in ``buffer`` (step 3.9): slot b starts ``b * (tnz + 1) * tnx``
+    values in; without batches, the buffer is the field of slot 0."""
+    plane, stride = backend.tnz * backend.tnx, (backend.tnz + 1) * backend.tnx
+    return [buffer[b * stride:b * stride + plane] for b in range(backend.slots)]
+
+
 def _zero(backend, *buffers):
     for buffer in buffers:
-        buffer[:] = 0
+        for field in _slots(backend, buffer):
+            field[:] = 0
 
 
 def _inject(backend, vx, vz, taux, tauz, tauxz, s_vx, s_vz, s_taux, s_tauz, s_tauxz, dxr, srcx, srcz,
@@ -226,15 +251,17 @@ def _recorded_sample(t, dt_scale, rows):
 
 def _inject_and_record(backend, vx, vz, taux, tauz, tauxz, s_vx, s_vz, s_taux, s_tauz, s_tauxz, cells,
                        source_cell, source_steps, step, dt_scale, rows):
-    t, cell = int(step.view(np.int32)[0]), int(source_cell.view(np.int32)[0])
-    for c, field in enumerate((vx, vz, taux, tauz)):
-        field[cell] += source_steps[4 * t + c]
+    t = int(step.view(np.int32)[0])
     row = _recorded_sample(t, int(dt_scale), int(rows))
-    if row < 0:
-        return
     table = cells.view(np.int32)
-    for field, record in ((vx, s_vx), (vz, s_vz), (taux, s_taux), (tauz, s_tauz), (tauxz, s_tauxz)):
-        _write(record, row * backend.nr, field[table])
+    for slot, fields in enumerate(zip(*(_slots(backend, f) for f in (vx, vz, taux, tauz, tauxz)))):
+        cell = int(source_cell.view(np.int32)[slot])
+        for c, field in enumerate(fields[:4]):
+            field[cell] += source_steps[4 * t + c]
+        if row < 0:
+            continue
+        for field, record in zip(fields, (s_vx, s_vz, s_taux, s_tauz, s_tauxz)):
+            _write(record, (slot * int(rows) + row) * backend.nr, field[table])
 
 
 def _inject_residual(backend, avx, avz, ataux, atauz, atauxz, res_vx, res_vz, res_taux, res_tauz, res_tauxz,
@@ -243,19 +270,41 @@ def _inject_residual(backend, avx, avz, ataux, atauz, atauxz, res_vx, res_vz, re
     if sample < 0:
         return
     table, owner, nxt = cells.view(np.int32), first.view(np.int32), following.view(np.int32)
-    base = sample * backend.nr
-    for field, res in ((avx, res_vx), (avz, res_vz), (ataux, res_taux), (atauz, res_tauz), (atauxz, res_tauxz)):
-        for r in range(backend.nr):
-            if table[r] < 0 or not owner[r]:
-                continue
-            total, q = res[base + r], nxt[r]
-            while q >= 0:
-                total, q = total + res[base + q], nxt[q]
-            field[table[r]] += total
+    residuals = (res_vx, res_vz, res_taux, res_tauz, res_tauxz)
+    for slot, fields in enumerate(zip(*(_slots(backend, f) for f in (avx, avz, ataux, atauz, atauxz)))):
+        base = (slot * int(rows) + sample) * backend.nr
+        for field, res in zip(fields, residuals):
+            for r in range(backend.nr):
+                if table[r] < 0 or not owner[r]:
+                    continue
+                total, q = res[base + r], nxt[r]
+                while q >= 0:
+                    total, q = total + res[base + q], nxt[q]
+                field[table[r]] += total
 
 
 def _advance(backend, step, delta):
     step.view(np.int32)[0] += int(delta)
+
+
+def _copy_checkpoint(backend, vx, vz, taux, tauz, tauxz, checkpoints, offset, shot_pitch, component_pitch, restore):
+    plane = backend.tnz * backend.tnx
+    for slot, fields in enumerate(zip(*(_slots(backend, f) for f in (vx, vz, taux, tauz, tauxz)))):
+        for c, field in enumerate(fields):
+            start = int(c * component_pitch + offset + slot * shot_pitch)
+            if restore:
+                field[:] = checkpoints[start:start + plane]
+            else:
+                checkpoints[start:start + plane] = field
+
+
+def _sum_slots(backend, *buffers_and_slots):
+    *buffers, slots = buffers_and_slots
+    backend.slots = int(slots)
+    for buffer in buffers:
+        first, *others = _slots(backend, buffer)
+        for field in others:
+            first += field
 
 
 def _update_v(backend, coeff, vx, vz, taux, tauz, tauxz, rho, vdx, vdz, *undamped):
@@ -275,16 +324,18 @@ def _grad_adjoint_v(backend, vx, vz, taux, tauz, tauxz, avx, avz, ataux, atauz, 
 
 
 def _update_vel(backend, coeff, own, stress1, stress2, rho, vdx, vdz):
-    own += coeff * rho[0]
+    for field in _slots(backend, own):
+        field += coeff * rho[0]
 
 
 def _update_tauz(backend, coeff, vx, vz, taux, tauz, lam, mu, vdx, vdz):
-    taux += coeff * lam[0]
-    tauz += coeff * lam[0]
+    for field in _slots(backend, taux) + _slots(backend, tauz):
+        field += coeff * lam[0]
 
 
 def _update_tauxz(backend, coeff, vx, vz, tauxz, mu, vdx, vdz):
-    tauxz += coeff * mu[0]
+    for field in _slots(backend, tauxz):
+        field += coeff * mu[0]
 
 
 def _adjoint_inject(backend, avx, avz, ataux, atauz, atauxz, res_vx, res_vz, res_taux, res_tauz, res_tauxz, dxr):
@@ -298,10 +349,11 @@ def _nothing(backend, *args):
 
 def _grad(backend, vx, vz, taux, tauz, tauxz, avx, avz, ataux, atauz, atauxz, lam, mu, rho,
           g_mu, mu_precond, g_lam, lam_precond, g_rho, rho_precond):
-    g_mu += vx
-    g_lam += avx
-    g_rho += 1
-    mu_precond += 1
+    for v, a, gm, gl, gr, mp in zip(*(_slots(backend, b) for b in (vx, avx, g_mu, g_lam, g_rho, mu_precond))):
+        gm += v
+        gl += a
+        gr += 1
+        mp += 1
 
 
 #: The toy kernels by name (see the module docstring).
@@ -311,4 +363,4 @@ TOY_KERNELS = {"MakeAllZero": _zero, "MakeGradZero": _zero, "injSrc": _inject,
                "Adj_update_tau": _nothing, "Adj_update_v": _nothing, "Grad": _grad,
                "inject_and_record": _inject_and_record, "inject_residual": _inject_residual,
                "update_v": _update_v, "update_tau": _update_tau, "grad_adjoint_v": _grad_adjoint_v,
-               "advance": _advance}
+               "advance": _advance, "sum_slots": _sum_slots, "copy_checkpoint": _copy_checkpoint}

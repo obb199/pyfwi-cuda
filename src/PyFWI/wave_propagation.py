@@ -279,8 +279,12 @@ class WavePreparation:
 
 
     def make_seismogram(self, s, t):
-        """Read the seismograms of shot ``s`` into ``self.seismogram`` (``PropagationEngine.make_seismogram``)."""
-        self._engine.make_seismogram(s)
+        """Read the seismograms of shot ``s`` into ``self.seismogram`` (``PropagationEngine.make_seismogram``).
+
+        As in 0.1.10, the seismogram buffers of the last shot run: with batches of shots (step 3.9),
+        those of its slot.
+        """
+        self._engine.make_seismogram(s, self._engine._last_slot)
 
     def make_residual(self, res, s, t):
         """Copy sample ``t - 1`` of the residual of shot ``s`` from the host, as 0.1.10 did (kept, unused)."""

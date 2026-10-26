@@ -13,7 +13,9 @@ owns everything that lives on the device or follows the time loop:
   and the seismograms read at the end of each shot (step 1.4);
 * the gradient loop: the forward field rebuilt backwards from the checkpoints, the residual
   injected from a copy on the device (step 1.4), the adjoint updates and the gradient kernel (in
-  the ``fixed`` mode in the order of the exact adjoint of the forward step, see ``_adjoint_step``).
+  the ``fixed`` mode in the order of the exact adjoint of the forward step, see ``_adjoint_step``);
+* with the native CUDA kernels (Phase 3), the shots in batches: several shots run by the same
+  launches, one per slot of the buffers (step 3.9, ``shot_batch``).
 
 ``PyFWI.wave_propagation.WavePropagator`` is the public face: it prepares the inputs (time steps,
 geometry, absorbing boundary, model), turns the results into seismic sections and gradients, and
@@ -50,6 +52,18 @@ FUSED_KERNELS = ("update_v", "update_tau", "grad_adjoint_v")
 #: Longest CUDA graph of the native time loops, in steps (step 3.7): a run between two checkpoints is
 #: replayed in graphs of at most this many steps (a graph per length, recorded once per run).
 MAX_GRAPH_STEPS = 50
+
+#: Step 3.9: the native loops run the shots in batches of at most this many grid cells (``shot_batch``),
+#: each shot in a slot along the z dimension of the launches: fewer launches, and fewer blocks left over
+#: at the end of each. Measured on the RTX 3060 (fixed mode, forward / gradient against one shot at a
+#: time): 4 shots of 140 x 140 cells in one batch -42 % / -4 %, of 440 x 440 -11 % / -7 %, 2 shots of
+#: 640 x 790 -3 % / -2 %. Above 2^20 cells the gain is small and the memory of the fields grows.
+BATCH_CELLS = 1 << 20
+
+#: The buffers with one field per slot of a batch (step 3.9): the forward and adjoint fields, and the
+#: gradients and their preconditioners, which ``gradient`` sums into slot 0 at its end.
+FIELD_BUFFERS = tuple(f"{par}_b" for par in COMPONENTS) + tuple(f"a{par}_b" for par in COMPONENTS)
+GRADIENT_BUFFERS = ("Gmu_b", "Glam_b", "Grho_b", "g_mu_precond_b", "g_lam_precond_b", "g_rho_precond_b")
 
 #: Value of the margins around every device buffer (step 1.7): what the out-of-bounds reads of the
 #: kernels of 0.1.10 return. 0 reproduces the golden masters, which 0.1.10 computed inside zero
@@ -223,6 +237,45 @@ def undamped_rectangle(vdx_pml, vdz_pml):
     return tuple(np.int32(v) for v in (z0, z1, x0, x1))
 
 
+def shot_batch(ns, tnz, tnx, environ=None):
+    """Number of shots that the native loops run at once (step 3.9).
+
+    ``PYFWI_CUDA_BATCH`` when set (a positive integer), never more than ``ns``. Else as many shots as
+    fit in ``BATCH_CELLS`` cells (at least one), balanced: the fewest batches of that size, with as few
+    shots each as they need (8 shots of at most 5: 2 batches of 4, not 5 and 3, whose last batch would
+    leave the GPU emptier). The results do not depend on it but for the order in which the gradients of
+    the shots are added (``sum_slots`` of elastic.cu): the seismograms are the same bits, the gradients
+    agree to float32 rounding.
+
+    Parameters
+    ----------
+    ns : int
+        Number of shots.
+    tnz, tnx : int
+        Grid size, absorbing layer included.
+    environ : mapping, optional
+        The environment variables (``os.environ`` when None; the tests pass their own).
+
+    Returns
+    -------
+    int
+        The batch size, from 1 to ``ns``.
+
+    Used by
+    -------
+    ``PropagationEngine`` with the native injection of the CUDA backend.
+    """
+    environ = os.environ if environ is None else environ
+    forced = environ.get("PYFWI_CUDA_BATCH", "").strip()
+    if forced:
+        if not forced.isdigit() or int(forced) < 1:
+            raise ValueError(f"PYFWI_CUDA_BATCH must be a positive integer (shots run at once), not {forced!r}")
+        return min(int(ns), int(forced))
+    largest = max(1, BATCH_CELLS // (int(tnz) * int(tnx)))
+    batches = max(1, -(-int(ns) // largest))  # rounded up
+    return max(1, -(-int(ns) // batches))
+
+
 def checkpoint_steps(chpr, nt):
     """Time steps at which the forward field is stored for the gradient, as in PyFWI 0.1.10.
 
@@ -300,10 +353,13 @@ class PropagationEngine:
         ``receiver_table`` of the acquisition. With a native program, the source and the receivers
         are then handled one thread per receiver (step 3.4) instead of by the OpenCL injection
         kernels on the whole grid.
+    batch : int, optional
+        With native injection, the shots run at once (step 3.9); ``shot_batch`` when None. Without
+        it, the shots run one by one.
     """
 
     def __init__(self, backend, sources, injection, *, tnz, tnx, ns, nr, nt, nt_ext, dt_scale, chp, dxr,
-                 srcx, srcz, source, rec_top_right_var, numerics="legacy", receivers=None):
+                 srcx, srcz, source, rec_top_right_var, numerics="legacy", receivers=None, batch=None):
         self.backend = backend
         self.tnz, self.tnx, self.ns, self.nr = tnz, tnx, ns, nr
         self.nt, self.nt_ext, self.dt_scale = nt, nt_ext, dt_scale
@@ -338,18 +394,30 @@ class PropagationEngine:
         #: Step 3.4: the native kernels inject and record one thread per receiver, reading the cells
         #: of ``receivers`` (``receiver_table``); launched on a grid of 1 row and ``nr`` columns.
         self.native_injection = self.prg_native is not None and receivers is not None
+        #: Step 3.9: the shots run at once by the native loops (``shot_batch``), each in a slot of the
+        #: buffers of the fields, adjoint fields, gradients, seismograms and residuals; 1 without
+        #: native injection. ``slots`` is the number of shots of the batch being run (the z size of
+        #: its launches, ``_size``), ``_last_slot`` the slot of the last shot run.
+        self.batch = 1
         if self.native_injection:
-            for name in ("inject_and_record", "inject_residual", "advance"):
+            self.batch = shot_batch(ns, tnz, tnx) if batch is None else max(1, min(int(ns), int(batch)))
+        self.slots, self._last_slot = 1, 0
+        #: Values of one field (``tnz * tnx``), and from the start of a slot to the start of the next
+        #: (a field and one row, see ``_slots_host``).
+        self._plane, self._stride = int(tnz) * int(tnx), (int(tnz) + 1) * int(tnx)
+        if self.native_injection:
+            for name in ("inject_and_record", "inject_residual", "advance", "sum_slots", "copy_checkpoint"):
                 setattr(self.knl, name, backend.kernel(self.prg_native, name))
             # Read-only tables: no margins (they would hold the float MARGIN_FILL in int32 buffers).
             self.receiver_cells_b, self.receiver_first_b, self.receiver_following_b = (
                 self._table(table) for table in receivers)
             self.receiver_size = (1, max(int(nr), 1))
             #: Step 3.6: the internal step on the device (``advance`` moves it), the cell of the source
-            #: of the shot, and the source of every step (nt x 4: vx, vz, taux, tauz), read by the
-            #: kernels, so that every launch of a step has the same arguments.
+            #: of the shot (of every slot of a batch, step 3.9), and the source of every step (nt x 4:
+            #: vx, vz, taux, tauz), read by the kernels, so that every launch of a step has the same
+            #: arguments.
             self.step_b = self._table(np.zeros(1, np.int32))
-            self.source_cell_b = self._table(np.zeros(1, np.int32))
+            self.source_cell_b = self._table(np.zeros(self.batch, np.int32))
             self.source_steps_b = backend.allocate_empty(int(nt) * 4 * 4)
         #: Step 3.7: the native time loops replay CUDA graphs of several steps (backend ``capture``),
         #: unless ``PYFWI_CUDA_GRAPHS=0`` or a ``show=True`` run observes every step.
@@ -364,15 +432,16 @@ class PropagationEngine:
         res = np.zeros(int(nr), np.float32)
         for par in COMPONENTS:
             self._set_buffer(f"res_{par}_b", res)
-        # The residual of one shot, every time sample, per component (residual_to_device);
-        # created at the first gradient and reused while its size does not change.
-        self.res_shot_b = {}
+        # The residual of one shot (of every slot of a batch), every time sample, per component
+        # (residual_to_device); created at the first gradient and reused while its size does not
+        # change. ``residual_rows``: the time samples of one shot in it.
+        self.res_shot_b, self.residual_rows = {}, 0
 
-        field = np.zeros((tnz, tnx), np.float32)
+        field = self._slots_host()  # one field per slot of a batch (step 3.9)
         for par in COMPONENTS:
             self._set_buffer(f"{par}_b", field)
 
-        seismogram = np.zeros((nt_ext, nr), np.float32)
+        seismogram = np.zeros((self.batch, nt_ext, nr), np.float32)  # one per slot (step 3.9)
         for par in COMPONENTS:
             self._set_buffer(f"seismogramid_{par}_b", seismogram)
 
@@ -383,7 +452,6 @@ class PropagationEngine:
         #: device, as many as the backend has room for (step 3.8: ``checkpoint_budget``), in one buffer
         #: of ``(5 components, _device_shots, nchp, tnz, tnx)`` values, stored and restored by device
         #: copies; those of the other shots on the host (see ``checkpoints``).
-        self._plane = int(tnz) * int(tnx)  # values of one field
         per_shot = 5 * self.nchp * self._plane * 4  # bytes of the checkpoints of one shot
         budget = backend.checkpoint_budget() if hasattr(backend, "checkpoint_budget") else 0
         self._device_shots = min(int(ns), budget // per_shot)
@@ -465,6 +533,30 @@ class PropagationEngine:
         """The five device buffers of the forward field, in the order of ``COMPONENTS``."""
         return (self.vx_b, self.vz_b, self.taux_b, self.tauz_b, self.tauxz_b)
 
+    def _slots_host(self):
+        """The initial content of a buffer of ``FIELD_BUFFERS`` or ``GRADIENT_BUFFERS``.
+
+        One shot at a time: a zero field, ``(tnz, tnx)``. A batch (step 3.9): ``batch`` zero fields,
+        each followed by one row of ``MARGIN_FILL`` that no kernel writes. The stencils of the last
+        rows read one row past the field (a known bug of both numeric modes); with a single shot that
+        row is the margin after the buffer, and with a batch this row, so that every slot computes
+        what a single shot computes (``slot_values`` of elastic.cu).
+        """
+        if self.batch == 1:
+            return np.zeros((self.tnz, self.tnx), np.float32)
+        host = np.full((self.batch, self.tnz + 1, self.tnx), MARGIN_FILL, np.float32)
+        host[:, :self.tnz] = 0
+        return host
+
+    def _slot(self, buffer, slot):
+        """The field of slot ``slot`` in a buffer of ``FIELD_BUFFERS`` or ``GRADIENT_BUFFERS`` (step 3.9).
+
+        The buffer itself without batches: only the CUDA backend, which runs them, has ``section``.
+        """
+        if self.batch == 1:
+            return buffer
+        return self.backend.section(buffer, slot * self._stride * 4, self._plane * 4)
+
     def set_pml(self, vdx_pml, vdz_pml):
         """Device buffers of the absorbing boundary (damping times the largest velocity), per forward run.
 
@@ -483,21 +575,38 @@ class PropagationEngine:
 
     def prepare_gradient(self):
         """Create the gradient, preconditioner and adjoint-field buffers, zeroed, for a new gradient."""
-        field = np.zeros((self.tnz, self.tnx), np.float32)
+        field = self._slots_host()  # one field per slot of a batch (step 3.9)
         for name in ("Gmu_b", "Glam_b", "Grho_b", "g_mu_precond_b", "g_lam_precond_b", "g_rho_precond_b",
                      "avx_b", "avz_b", "ataux_b", "atauz_b", "atauxz_b"):
             self._set_buffer(name, field)
 
     def read_field(self, name, host):
-        """Copy the device buffer ``self.<name>`` (e.g. ``"vx_b"``) into ``host`` and return it."""
-        self.backend.to_host(host, getattr(self, name))
+        """Copy the device buffer ``self.<name>`` (e.g. ``"vx_b"``) into ``host`` and return it.
+
+        With a batch of shots (step 3.9) the buffers of the fields and adjoint fields hold one field per
+        slot: the field of the last shot run is read, as 0.1.10's buffers hold it; those of the
+        gradients, slot 0, which holds the sum of every shot after ``gradient``.
+        """
+        buffer = getattr(self, name)
+        if name in FIELD_BUFFERS or name in GRADIENT_BUFFERS:
+            buffer = self._slot(buffer, self._last_slot if name in FIELD_BUFFERS else 0)
+        self.backend.to_host(host, buffer)
         return host
 
     # ------------------------------------------------------------------ arguments and launches
 
+    def _size(self, size, slots=None):
+        """The global size of a launch over ``size`` for every slot of a batch (step 3.9).
+
+        ``size`` itself for one slot, else ``(*size, slots)``: the slots are the z dimension of the CUDA
+        grid. ``slots`` defaults to those of the batch being run (``self.slots``).
+        """
+        slots = self.slots if slots is None else slots
+        return size if slots == 1 else (*size, slots)
+
     def _launch(self, kernel):
-        """Launch ``kernel`` on the whole grid with the arguments set before (step 1.3)."""
-        self.backend.launch(kernel, self.global_size)
+        """Launch ``kernel`` on the whole grid (of every slot of the batch) with the arguments set before (step 1.3)."""
+        self.backend.launch(kernel, self._size(self.global_size))
 
     def _set_update_args(self, coeff):
         """Set the arguments of the four update kernels of the elastic fields.
@@ -586,12 +695,12 @@ class PropagationEngine:
 
     def _set_native_residual_args(self):
         """Arguments of inject_residual for a shot (step 3.6): the residual of the shot on the device
-        (``residual_to_device``), read at the sample of the step on the device."""
-        rows = self.backend.nbytes(self.res_shot_b["vx"]) // (4 * int(self.nr))
+        (``residual_to_device``; of every shot of a batch, step 3.9), read at the sample of the step on
+        the device."""
         self.backend.set_args(self.knl.inject_residual, self.avx_b, self.avz_b, self.ataux_b, self.atauz_b,
                               self.atauxz_b, *(self.res_shot_b[par] for par in COMPONENTS), self.receiver_cells_b,
                               self.receiver_first_b, self.receiver_following_b, self.step_b,
-                              np.int32(self.steps_per_sample), np.int32(min(rows, int(self.nt_ext))))
+                              np.int32(self.steps_per_sample), np.int32(self.residual_rows))
 
     def _inject_residual(self):
         """Add the residual sample set by ``residual_sample`` to the adjoint fields (Adj_injSrc)."""
@@ -622,14 +731,15 @@ class PropagationEngine:
             self._set_native_injection_args()
             self.backend.set_args(self.knl.advance, self.step_b, np.int32(+1))
             self._graph_cache = {}  # recorded again: the buffers of this run may be new
-        for s in range(self.ns):
-            self.backend.call(self.knl.MakeAllZero, self.global_size, *self._field_buffers())
+        for shots in self._batches(observe):
+            self.slots, self._last_slot = len(shots), len(shots) - 1
+            self.backend.call(self.knl.MakeAllZero, self._size(self.global_size), *self._field_buffers())
             if self.native_injection:
-                self._start_native_shot(s, 0)
-                self._forward_shot_native(s, observe)
+                self._start_native_batch(shots, 0)
+                self._forward_batch_native(shots, observe)
                 continue
-            self._set_injection_args(s)
-            self._forward_shot(s, observe)
+            self._set_injection_args(shots[0])  # one shot per batch without native injection
+            self._forward_shot(shots[0], observe)
         # The checkpoint copies did not block: wait for them before the checkpoints can be read.
         self.backend.finish()
         return self.seismogram
@@ -671,10 +781,22 @@ class PropagationEngine:
                               self.source_cell_b, self.source_steps_b, self.step_b,
                               np.int32(self.steps_per_sample), np.int32(self.nt_ext))
 
-    def _start_native_shot(self, s, step):
-        """Put the source cell of shot ``s`` and the first internal step of its loop on the device."""
-        cell = int(self.srcz[s]) * int(self.tnx) + int(self.srcx[s])
-        self.backend.to_device(self.source_cell_b, np.array([cell], np.int32))
+    def _batches(self, observe):
+        """The shots in batches of ``batch`` (step 3.9), as ranges: slot b of a batch runs its shot b.
+
+        The last batch may be shorter. One shot per batch when ``observe`` sees every step (the
+        ``show=True`` path reads the field of the shot being run).
+        """
+        size = 1 if observe is not None else self.batch
+        return [range(s, min(s + size, self.ns)) for s in range(0, self.ns, size)]
+
+    def _start_native_batch(self, shots, step):
+        """Put the source cells of ``shots`` (slot b: ``shots[b]``) and the first internal step of their
+        loop on the device."""
+        cells = np.zeros(self.batch, np.int32)  # the whole table: a copy has the size of its buffer
+        for b, s in enumerate(shots):
+            cells[b] = int(self.srcz[s]) * int(self.tnx) + int(self.srcx[s])
+        self.backend.to_device(self.source_cell_b, cells)
         self.backend.to_device(self.step_b, np.array([step], np.int32))
 
     def _replay(self, kind, step, count):
@@ -682,40 +804,43 @@ class PropagationEngine:
 
         A graph records the launches of ``count`` steps once (backend ``capture``) and replays them
         with one call (step 3.7); every step reads its time from the device, so one graph serves
-        every run of the same length. The graphs of a run are kept in ``_graph_cache`` by kind and
-        length.
+        every run of the same length. The graphs of a run are kept in ``_graph_cache`` by kind,
+        length and slots of the batch (step 3.9: a shorter last batch has launches of its own).
         """
         while count > 0:
             length = min(count, MAX_GRAPH_STEPS)
-            graph = self._graph_cache.get((kind, length))
+            key = (kind, length, self.slots)
+            graph = self._graph_cache.get(key)
             if graph is None:
                 graph = self.backend.capture(lambda n=length: [step() for _ in range(n)])
-                self._graph_cache[(kind, length)] = graph
+                self._graph_cache[key] = graph
             graph.launch()
             count -= length
 
     def _native_forward_step(self):
         """One forward step with the native kernels: source and receivers, the updates, the next step."""
-        self.backend.launch(self.knl.inject_and_record, self.receiver_size)
+        self.backend.launch(self.knl.inject_and_record, self._size(self.receiver_size))
         self._forward_step()
         self.backend.launch(self.knl.advance, (1, 1))
 
-    def _store_checkpoint(self, s, chpc):
-        """Copy the field into checkpoint ``chpc`` of shot ``s``, without blocking (step 1.5): on the device
-        when the checkpoints of the shot are there (step 3.8), else on the host."""
+    def _store_checkpoint(self, s, chpc, slot=0):
+        """Copy the field of slot ``slot`` into checkpoint ``chpc`` of shot ``s``, without blocking (step
+        1.5): on the device when the checkpoints of the shot are there (step 3.8), else on the host."""
+        fields = [self._slot(buffer, slot) for buffer in self._field_buffers()]
         if s < self._device_shots:
-            for comp, buffer in enumerate(self._field_buffers()):
-                self.backend.copy(self._checkpoint_section(comp, s, chpc), buffer, self._plane * 4)
+            for comp, field in enumerate(fields):
+                self.backend.copy(self._checkpoint_section(comp, s, chpc), field, self._plane * 4)
             return
-        for par, buffer in zip(COMPONENTS, self._field_buffers()):  # the storage, not the property
-            self.backend.to_host(self._host_checkpoints[par][s, chpc], buffer, blocking=False)
+        for par, field in zip(COMPONENTS, fields):  # the storage, not the property
+            self.backend.to_host(self._host_checkpoints[par][s, chpc], field, blocking=False)
 
-    def _forward_shot_native(self, s, observe):
-        """The forward time loop of shot ``s`` with the native kernels and the step on the device.
+    def _forward_batch_native(self, shots, observe):
+        """The forward time loop of the batch ``shots`` with the native kernels and the step on the device.
 
-        The checkpoints are copied after the updates of their step, as in ``_forward_shot``. Without
-        ``observe``, the steps between two checkpoints are replayed as CUDA graphs (``_replay``);
-        with it (``show=True``), step by step, the same kernels.
+        Shot ``shots[b]`` runs in slot b (step 3.9), every launch covering every slot. The checkpoints
+        are copied after the updates of their step, as in ``_forward_shot``. Without ``observe``, the
+        steps between two checkpoints are replayed as CUDA graphs (``_replay``); with it
+        (``show=True``, one shot per batch), step by step, the same kernels.
         """
         checkpoints = [int(c) for c in self.chp]
         if self.graphs and observe is None:
@@ -724,17 +849,49 @@ class PropagationEngine:
                 if c >= t:
                     self._replay("forward", self._native_forward_step, c - t + 1)
                     t = c + 1
-                self._store_checkpoint(s, chpc)
+                self._store_checkpoints(shots, chpc)
             self._replay("forward", self._native_forward_step, self.nt - t)
         else:
             stored = {c: chpc for chpc, c in enumerate(checkpoints)}
             for t in range(self.nt):
                 self._native_forward_step()
                 if t in stored:
-                    self._store_checkpoint(s, stored[t])
+                    self._store_checkpoints(shots, stored[t])
                 if observe is not None:
-                    observe(s, t)
-        self.make_seismogram(s)
+                    observe(shots[0], t)  # the only shot of an observed batch (_batches)
+        for slot, s in enumerate(shots):
+            self.make_seismogram(s, slot)
+
+    def _store_checkpoints(self, shots, chpc):
+        """Store checkpoint ``chpc`` of every shot of the batch ``shots``, each from its slot: those kept on
+        the device in one launch (``_copy_checkpoints``), the others as ``_store_checkpoint``."""
+        on_device = self._copy_checkpoints(shots, chpc, restore=0)
+        for slot in range(on_device, len(shots)):
+            self._store_checkpoint(shots[slot], chpc, slot)
+
+    def _restore_checkpoints(self, shots, chpc):
+        """Restore checkpoint ``chpc`` of every shot of the batch ``shots``, each into its slot: those kept
+        on the device in one launch (``_copy_checkpoints``), the others as ``_restore_checkpoint``."""
+        on_device = self._copy_checkpoints(shots, chpc, restore=1)
+        for slot in range(on_device, len(shots)):
+            self._restore_checkpoint(shots[slot], chpc, slot)
+
+    def _copy_checkpoints(self, shots, chpc, restore):
+        """Copy the field of the slots of ``shots`` whose checkpoints are on the device into checkpoint
+        ``chpc`` (``restore`` 0) or back (1), with one launch of ``copy_checkpoint`` (step 3.9).
+
+        One copy per component and shot cost about 6 us of host time each, which made most of the
+        time of a small grid. The device holds the checkpoints of the first ``_device_shots`` shots
+        (step 3.8), so they are the first slots of a batch. Returns how many slots were copied.
+        """
+        count = max(0, min(len(shots), self._device_shots - shots[0]))
+        if count:
+            per_shot = self.nchp * self._plane  # values; Python ints: no int32 overflow
+            offset = (shots[0] * self.nchp + int(chpc)) * self._plane
+            self.backend.call(self.knl.copy_checkpoint, self._size(self.global_size, count), *self._field_buffers(),
+                              self._device_checkpoints, np.int64(offset), np.int64(per_shot),
+                              np.int64(self._device_shots * per_shot), np.int32(restore))
+        return count
 
     def _native_adjoint_step(self, backward):
         """One gradient step with the native kernels (step 3.6): the forward field one step back (unless
@@ -745,32 +902,35 @@ class PropagationEngine:
         if not self.fused:  # the separate kernels (tests): Grad first, as in _adjoint_step
             self._launch(self.knl.Grad)
         self._adjoint_updates()  # fused: grad_adjoint_v (the gradient, then the adjoint velocities), Adj_update_tau
-        self.backend.launch(self.knl.inject_residual, self.receiver_size)
+        self.backend.launch(self.knl.inject_residual, self._size(self.receiver_size))
         self.backend.launch(self.knl.advance, (1, 1))
 
-    def _restore_checkpoint(self, s, chpc):
-        """Copy checkpoint ``chpc`` of shot ``s`` back into the field, without blocking (step 1.5): from
-        the device when the checkpoints of the shot are there (step 3.8), else from the host."""
+    def _restore_checkpoint(self, s, chpc, slot=0):
+        """Copy checkpoint ``chpc`` of shot ``s`` back into the field of slot ``slot``, without blocking
+        (step 1.5): from the device when the checkpoints of the shot are there (step 3.8), else from
+        the host."""
+        fields = [self._slot(buffer, slot) for buffer in self._field_buffers()]
         if s < self._device_shots:
-            for comp, buffer in enumerate(self._field_buffers()):
-                self.backend.copy(buffer, self._checkpoint_section(comp, s, chpc), self._plane * 4)
+            for comp, field in enumerate(fields):
+                self.backend.copy(field, self._checkpoint_section(comp, s, chpc), self._plane * 4)
             return
-        for par, buffer in zip(COMPONENTS, self._field_buffers()):  # the storage, not the property
-            self.backend.to_device(buffer, self._host_checkpoints[par][s, chpc], blocking=False)
+        for par, field in zip(COMPONENTS, fields):  # the storage, not the property
+            self.backend.to_device(field, self._host_checkpoints[par][s, chpc], blocking=False)
 
-    def _gradient_shot_native(self, s, observe):
-        """The backward time loop of shot ``s`` with the native kernels and the step on the device.
+    def _gradient_batch_native(self, shots, observe):
+        """The backward time loop of the batch ``shots`` with the native kernels and the step on the device.
 
-        Steps nt - 1 down to 1, as ``_gradient_shot``: at a checkpoint step the forward field is
-        restored, otherwise rebuilt one step back. Without ``observe`` the runs of steps between two
-        checkpoints are replayed as CUDA graphs; with it, step by step.
+        Steps nt - 1 down to 1, as ``_gradient_shot``: at a checkpoint step the forward field of
+        every shot is restored into its slot, otherwise rebuilt one step back. Without ``observe``
+        the runs of steps between two checkpoints are replayed as CUDA graphs; with it (one shot per
+        batch), step by step.
         """
         restored = {int(c): chpc for chpc, c in enumerate(self.chp)}
         if self.graphs and observe is None:
             t = self.nt - 1
             while t >= 1:
                 if t in restored:
-                    self._restore_checkpoint(s, restored[t])
+                    self._restore_checkpoints(shots, restored[t])
                     self._replay("restored", lambda: self._native_adjoint_step(False), 1)
                     t -= 1
                     continue
@@ -783,13 +943,13 @@ class PropagationEngine:
         t_src = np.int32(self.nt_ext)
         for t in range(self.nt - 1, 0, -1):
             if t in restored:
-                self._restore_checkpoint(s, restored[t])
+                self._restore_checkpoints(shots, restored[t])
             self._native_adjoint_step(t not in restored)
             sample, offset = divmod(t, self.steps_per_sample)
             if offset == 0 and sample < self.nt_ext:
                 t_src = np.int32(sample)
             if observe is not None:
-                observe(s, t, t_src)
+                observe(shots[0], t, t_src)  # the only shot of an observed batch (_batches)
 
     def _forward_step(self):
         """The four field updates of one time step; arguments set by ``_set_update_args``.
@@ -819,13 +979,17 @@ class PropagationEngine:
         self._launch(self.knl.update_velz)
         self._launch(self.knl.update_velx)
 
-    def make_seismogram(self, s):
-        """Read the seismograms of shot ``s`` from the device into ``self.seismogram[...][:, :, s]``.
+    def make_seismogram(self, s, slot=0):
+        """Read the seismograms of shot ``s``, run in slot ``slot``, into ``self.seismogram[...][:, :, s]``.
 
-        The five reads are enqueued without blocking and waited for once (step 1.4).
+        The five reads are enqueued without blocking and waited for once (step 1.4). With batches
+        (step 3.9) the seismogram buffers hold those of every slot, one after the other.
         """
         buffers = (self.seismogramid_vx_b, self.seismogramid_vz_b, self.seismogramid_taux_b,
                    self.seismogramid_tauz_b, self.seismogramid_tauxz_b)
+        if self.batch > 1:
+            nbytes = int(self.nt_ext) * int(self.nr) * 4
+            buffers = [self.backend.section(buffer, slot * nbytes, nbytes) for buffer in buffers]
         host = {par: np.empty((self.nt_ext, self.nr), np.float32) for par in COMPONENTS}
         events = [self.backend.to_host(host[par], buffer, blocking=False) for par, buffer in zip(COMPONENTS, buffers)]
         self.backend.wait(events)
@@ -845,7 +1009,7 @@ class PropagationEngine:
             ``observe(s, t, t_src)`` is called after every internal step ``t`` of shot ``s``
             (``t_src``: the last recorded sample injected, ``nt_ext`` before the first).
         """
-        self.backend.call(self.knl.MakeGradZero, self.global_size,
+        self.backend.call(self.knl.MakeGradZero, self._size(self.global_size, self.batch),  # every slot
                           self.Gmu_b, self.Glam_b, self.Grho_b,
                           self.g_mu_precond_b, self.g_lam_precond_b, self.g_rho_precond_b)
 
@@ -857,17 +1021,23 @@ class PropagationEngine:
         if self.native_injection:
             self.backend.set_args(self.knl.advance, self.step_b, np.int32(-1))
             self._graph_cache = {}  # recorded again: the buffers of this run may be new
-        for s in range(self.ns):
-            self.backend.call(self.knl.MakeAllZero, self.global_size, *self._field_buffers())
-            self.backend.call(self.knl.MakeAllZero, self.global_size,
+        for shots in self._batches(observe):
+            self.slots, self._last_slot = len(shots), len(shots) - 1
+            self.backend.call(self.knl.MakeAllZero, self._size(self.global_size), *self._field_buffers())
+            self.backend.call(self.knl.MakeAllZero, self._size(self.global_size),
                               self.avx_b, self.avz_b, self.ataux_b, self.atauz_b, self.atauxz_b)
-            self.residual_to_device(res, s)
+            self.residual_to_device(res, shots[0], len(shots))
             if self.native_injection:
                 self._set_native_residual_args()
-                self._start_native_shot(s, self.nt - 1)
-                self._gradient_shot_native(s, observe)
+                self._start_native_batch(shots, self.nt - 1)
+                self._gradient_batch_native(shots, observe)
                 continue
-            self._gradient_shot(s, observe)
+            self._gradient_shot(shots[0], observe)  # one shot per batch without native injection
+        if self.batch > 1:
+            # Step 3.9: every slot accumulated the gradient of its shots; slot 0 gets the sum, added in
+            # the order of the slots (the same bits at every run).
+            self.backend.call(self.knl.sum_slots, self.global_size, self.Gmu_b, self.g_mu_precond_b, self.Glam_b,
+                              self.g_lam_precond_b, self.Grho_b, self.g_rho_precond_b, np.int32(self.batch))
 
     def _gradient_shot(self, s, observe):
         """The backward time loop of the gradient of shot ``s``."""
@@ -960,19 +1130,33 @@ class PropagationEngine:
             t_src = np.int32(sample)
         return t_src
 
-    def residual_to_device(self, res, s):
-        """Copy the residual of shot ``s``, all time samples, to the device (step 1.4).
+    def residual_to_device(self, res, s, count=1):
+        """Copy the residual of shots ``s`` to ``s + count - 1``, all time samples, to the device (step 1.4).
 
         0.1.10 copied one time sample from the host before each injection (``make_residual``):
         five blocking copies every ``dt_scale`` steps. Now the five components of the shot are
-        copied once, and ``residual_sample`` copies each sample on the device.
+        copied once, and ``residual_sample`` copies each sample on the device (the native kernels
+        read it in place). With native injection, the shots of a batch (step 3.9) are copied one
+        after the other (slot b: shot ``s + b``), each with the rows that the kernels read
+        (``nt_ext`` at most: ``residual_rows``), into buffers of ``batch`` shots.
         """
+        nr = int(self.nr)
+        rows = len(res["vx"])
+        if self.native_injection:
+            rows = min(rows, int(self.nt_ext))
+        self.residual_rows = rows
         for par in COMPONENTS:
-            # Columns s*nr to (s+1)*nr, as float32 and contiguous: the values make_residual sent.
-            shot = np.ascontiguousarray(res[par][:, s * self.nr:(s + 1) * self.nr], dtype=np.float32)
-            if self.res_shot_b.get(par) is None or self.backend.nbytes(self.res_shot_b[par]) != shot.nbytes:
-                self.res_shot_b[par] = self.backend.allocate_empty(shot.nbytes)
-            self.backend.to_device(self.res_shot_b[par], shot)
+            # Columns s*nr to (s+count)*nr, as float32 and contiguous, shot after shot: the values
+            # make_residual sent.
+            columns = np.asarray(res[par])[:rows, s * nr:(s + count) * nr]
+            shots = np.ascontiguousarray(columns.reshape(rows, count, nr).transpose(1, 0, 2), dtype=np.float32)
+            nbytes = self.batch * shots[0].nbytes
+            if self.res_shot_b.get(par) is None or self.backend.nbytes(self.res_shot_b[par]) != nbytes:
+                self.res_shot_b[par] = self.backend.allocate_empty(nbytes)
+            target = self.res_shot_b[par]
+            if count < self.batch:  # the last batch: the first slots of the buffer
+                target = self.backend.section(target, 0, shots.nbytes)
+            self.backend.to_device(target, shots)
 
     def residual_sample(self, t):
         """Copy sample ``t - 1`` of the shot's residual into the buffers that Adj_injSrc reads.
@@ -1011,13 +1195,14 @@ class PropagationEngine:
         """
         shape = (self.tnz, self.tnx)
         g_mu, g_lam, g_rho = (np.zeros(shape, np.float32) for _ in range(3))
-        self.backend.to_host(g_mu, self.Gmu_b)
-        self.backend.to_host(g_lam, self.Glam_b)
-        self.backend.to_host(g_rho, self.Grho_b)
+        # Slot 0, which holds the sum of the shots of every slot (step 3.9).
+        self.backend.to_host(g_mu, self._slot(self.Gmu_b, 0))
+        self.backend.to_host(g_lam, self._slot(self.Glam_b, 0))
+        self.backend.to_host(g_rho, self._slot(self.Grho_b, 0))
         if not preconditioners:
             return g_mu, g_lam, g_rho, np.ones(shape, np.float32), np.ones(shape, np.float32), np.ones(shape, np.float32)
         precond = [np.zeros(shape, np.float32) for _ in range(3)]
-        self.backend.to_host(precond[0], self.g_mu_precond_b)
-        self.backend.to_host(precond[1], self.g_lam_precond_b)
-        self.backend.to_host(precond[2], self.g_rho_precond_b)
+        self.backend.to_host(precond[0], self._slot(self.g_mu_precond_b, 0))
+        self.backend.to_host(precond[1], self._slot(self.g_lam_precond_b, 0))
+        self.backend.to_host(precond[2], self._slot(self.g_rho_precond_b, 0))
         return (g_mu, g_lam, g_rho, *precond)

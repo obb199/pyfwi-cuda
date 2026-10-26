@@ -30,6 +30,17 @@
 __device__ __forceinline__ int row_of_thread() { return blockIdx.y * blockDim.y + threadIdx.y; }
 __device__ __forceinline__ int column_of_thread() { return blockIdx.x * blockDim.x + threadIdx.x; }
 
+// Step 3.9: several shots at once. The kernels marked "batched" (all but advance and sum_slots) run on
+// a grid whose z index is the slot of a shot in the batch (PropagationEngine.batch): the fields,
+// adjoint fields and gradients of slot b start b * (Nz + 1) * Nx values into their buffers (slot 0
+// with a single shot, the grid then having one z index), its seismograms and residual b * rows * Nr
+// values; the model and the absorbing layer are the same for every shot, one plane. Between two
+// slots, one row that no kernel writes, holding the value of the margins: the stencils of the last
+// rows read one row past the field (row Nz, test_known_bugs), which must not be the first row of the
+// next shot (a source or receivers on row 0 without absorbing layer), so that each slot computes
+// exactly what a single shot computes.
+__device__ __forceinline__ long long slot_values() { return (long long)blockIdx.z * (Nz + 1) * Nx; }
+
 // Staggered first derivatives of order 2*SDO of the quantity f (a callable: f(k) is its value at
 // the flat index k), at the flat index k, along the axis whose neighbours are `step` apart (1 for
 // x, the columns; Nx for z, the rows). Not divided by the grid spacing.
@@ -82,7 +93,7 @@ __device__ __forceinline__ Field field(const float *p) { return Field{p}; }
 extern "C" __global__ void MakeAllZero(float *vx, float *vz, float *taux, float *tauz, float *tauxz) {
     const int i = row_of_thread(), j = column_of_thread();
     if (i >= Nz || j >= Nx) return;
-    const int k = i * Nx + j;
+    const long long k = slot_values() + i * Nx + j;  // batched
     vx[k] = 0;
     vz[k] = 0;
     taux[k] = 0;
@@ -94,7 +105,7 @@ extern "C" __global__ void MakeGradZero(float *Gmu, float *Glam, float *Grho,
                                         float *Gmu_precond, float *Glam_precond, float *Grho_precond) {
     const int i = row_of_thread(), j = column_of_thread();
     if (i >= Nz || j >= Nx) return;
-    const int k = i * Nx + j;
+    const long long k = slot_values() + i * Nx + j;  // batched
     Gmu[k] = 0;
     Glam[k] = 0;
     Grho[k] = 0;
@@ -112,6 +123,8 @@ extern "C" __global__ void MakeGradZero(float *Gmu, float *Glam, float *Grho,
 
 extern "C" __global__ void update_velx(int coeff, float *vx, const float *taux, const float *tauxz,
                                        const float *rho_b, const float *dxpml, const float *dzpml) {
+    const long long f = slot_values();  // batched
+    vx += f, taux += f, tauxz += f;
     const int i = row_of_thread() + sdo, j = column_of_thread() + sdo;
     if (i > Nz - sdo || j > Nx - sdo) return;
     const int k = i * Nx + j;
@@ -128,6 +141,8 @@ extern "C" __global__ void update_velx(int coeff, float *vx, const float *taux, 
 
 extern "C" __global__ void update_velz(int coeff, float *vz, const float *tauz, const float *tauxz,
                                        const float *rho_b, const float *dxpml, const float *dzpml) {
+    const long long f = slot_values();  // batched
+    vz += f, tauz += f, tauxz += f;
     const int i = row_of_thread() + sdo, j = column_of_thread() + sdo;
     if (i > Nz - sdo || j > Nx - sdo) return;
     const int k = i * Nx + j;
@@ -145,6 +160,8 @@ extern "C" __global__ void update_velz(int coeff, float *vz, const float *tauz, 
 extern "C" __global__ void update_tauz(int coeff, const float *vx, const float *vz, float *taux, float *tauz,
                                        const float *lambda, const float *mu, const float *dxpml,
                                        const float *dzpml) {
+    const long long f = slot_values();  // batched
+    vx += f, vz += f, taux += f, tauz += f;
     const int i = row_of_thread() + sdo, j = column_of_thread() + sdo;
     if (i > Nz - sdo || j > Nx - sdo) return;
     const int k = i * Nx + j;
@@ -165,6 +182,8 @@ extern "C" __global__ void update_tauz(int coeff, const float *vx, const float *
 
 extern "C" __global__ void update_tauxz(int coeff, const float *vx, const float *vz, float *tauxz,
                                         const float *mu, const float *dxpml, const float *dzpml) {
+    const long long f = slot_values();  // batched
+    vx += f, vz += f, tauxz += f;
     const int i = row_of_thread() + sdo, j = column_of_thread() + sdo;
     if (i > Nz - sdo || j > Nx - sdo) return;
     const int k = i * Nx + j;
@@ -188,6 +207,8 @@ extern "C" __global__ void update_tauxz(int coeff, const float *vx, const float 
 extern "C" __global__ void Adj_update_tau(const float *Avx, const float *Avz, float *Ataux, float *Atauz,
                                           float *Atauxz, const float *rho_b, const float *dxpml,
                                           const float *dzpml, int z0, int z1, int x0, int x1) {
+    const long long f = slot_values();  // batched
+    Avx += f, Avz += f, Ataux += f, Atauz += f, Atauxz += f;
     const int i = row_of_thread() + sdo, j = column_of_thread() + sdo;
     if (i > Nz - sdo || j > Nx - sdo) return;
     const int k = i * Nx + j;
@@ -206,6 +227,8 @@ extern "C" __global__ void Adj_update_tau(const float *Avx, const float *Avz, fl
 extern "C" __global__ void Adj_update_v(float *Avx, float *Avz, const float *Ataux, const float *Atauz,
                                         const float *Atauxz, const float *lam, const float *mu,
                                         const float *dxpml, const float *dzpml) {
+    const long long f = slot_values();  // batched
+    Avx += f, Avz += f, Ataux += f, Atauz += f, Atauxz += f;
     const int i = row_of_thread() + sdo, j = column_of_thread() + sdo;
     if (i > Nz - sdo || j > Nx - sdo) return;
     const int k = i * Nx + j;
@@ -235,6 +258,9 @@ extern "C" __global__ void Grad(const float *vx, const float *vz, const float *t
                                 const float *Atauz, const float *Atauxz, const float *lambda, const float *mu,
                                 const float *rho_b, float *Gmu, float *Gmu_precond, float *Glam,
                                 float *Glam_precond, float *Grho, float *Grho_precond) {
+    const long long f = slot_values();  // batched
+    vx += f, vz += f, taux += f, tauz += f, tauxz += f, Avx += f, Avz += f, Ataux += f, Atauz += f, Atauxz += f;
+    Gmu += f, Gmu_precond += f, Glam += f, Glam_precond += f, Grho += f, Grho_precond += f;
     const int i = row_of_thread() + npml + sdo, j = column_of_thread() + npml + sdo;
     if (i > Nz - sdo - npml || j > Nx - sdo - npml) return;
     const int k = i * Nx + j;
@@ -269,6 +295,8 @@ extern "C" __global__ void Grad(const float *vx, const float *vz, const float *t
 extern "C" __global__ void update_v(int coeff, float *vx, float *vz, const float *taux, const float *tauz,
                                     const float *tauxz, const float *rho_b, const float *dxpml,
                                     const float *dzpml, int z0, int z1, int x0, int x1) {
+    const long long f = slot_values();  // batched
+    vx += f, vz += f, taux += f, tauz += f, tauxz += f;
     const int i = row_of_thread() + sdo, j = column_of_thread() + sdo;
     if (i > Nz - sdo || j > Nx - sdo) return;
     const int k = i * Nx + j;
@@ -293,6 +321,8 @@ extern "C" __global__ void update_v(int coeff, float *vx, float *vz, const float
 extern "C" __global__ void update_tau(int coeff, const float *vx, const float *vz, float *taux, float *tauz,
                                       float *tauxz, const float *lambda, const float *mu, const float *dxpml,
                                       const float *dzpml, int z0, int z1, int x0, int x1) {
+    const long long f = slot_values();  // batched
+    vx += f, vz += f, taux += f, tauz += f, tauxz += f;
     const int i = row_of_thread() + sdo, j = column_of_thread() + sdo;
     if (i > Nz - sdo || j > Nx - sdo) return;
     const int k = i * Nx + j;
@@ -326,6 +356,9 @@ extern "C" __global__ void grad_adjoint_v(const float *vx, const float *vz, cons
                                           const float *dzpml, float *Gmu, float *Gmu_precond, float *Glam,
                                           float *Glam_precond, float *Grho, float *Grho_precond, int z0,
                                           int z1, int x0, int x1) {
+    const long long f = slot_values();  // batched
+    vx += f, vz += f, taux += f, tauz += f, tauxz += f, Avx += f, Avz += f, Ataux += f, Atauz += f, Atauxz += f;
+    Gmu += f, Gmu_precond += f, Glam += f, Glam_precond += f, Grho += f, Grho_precond += f;
     const int i = row_of_thread() + sdo, j = column_of_thread() + sdo;
     if (i > Nz - sdo || j > Nx - sdo) return;
     const int k = i * Nx + j;
@@ -367,7 +400,7 @@ extern "C" __global__ void grad_adjoint_v(const float *vx, const float *vz, cons
 //
 // Step 3.4: one thread per receiver instead of the whole grid. The cell of every receiver comes
 // from a table made on the host (PyFWI.engine.propagation.receiver_table, the loops of the OpenCL
-// kernels); the engine launches these kernels on a grid of 1 row and Nr columns.
+// kernels); the engine launches these kernels on a grid of 1 row and Nr columns (per slot of a batch).
 //
 // Step 3.6: the time step is on the device. *step is the internal step t (advance changes it); the
 // source of every step comes from source_steps (4 values per step: vx, vz, taux, tauz), the residual
@@ -390,11 +423,15 @@ extern "C" __global__ void inject_and_record(float *vx, float *vz, float *taux, 
                                              float *seismogram_tauxi, float *seismogram_tauzi,
                                              float *seismogram_tauxzi, const int *cells, const int *source_cell,
                                              const float *source_steps, const int *step, int dt_scale, int rows) {
+    // batched: source_cell holds the cell of the source of every slot
+    const long long f = slot_values(), g = (long long)blockIdx.z * rows * Nr;
+    vx += f, vz += f, taux += f, tauz += f, tauxz += f;
+    seismogram_vxi += g, seismogram_vzi += g, seismogram_tauxi += g, seismogram_tauzi += g, seismogram_tauxzi += g;
     const int r = column_of_thread();
     if (row_of_thread() != 0) return;
     const int t = *step;
     if (r == 0) {
-        const int cell = *source_cell;
+        const int cell = source_cell[blockIdx.z];
         vx[cell] += source_steps[4 * t];
         vz[cell] += source_steps[4 * t + 1];
         taux[cell] += source_steps[4 * t + 2];
@@ -420,6 +457,10 @@ extern "C" __global__ void inject_residual(float *Avx, float *Avz, float *Ataux,
                                            const float *res_tauz, const float *res_tauxz, const int *cells,
                                            const int *first, const int *following, const int *step,
                                            int dt_scale, int rows) {
+    // batched: the residual of each slot
+    const long long f = slot_values(), g = (long long)blockIdx.z * rows * Nr;
+    Avx += f, Avz += f, Ataux += f, Atauz += f, Atauxz += f;
+    res_vx += g, res_vz += g, res_taux += g, res_tauz += g, res_tauxz += g;
     const int r = column_of_thread();
     if (row_of_thread() != 0 || r >= Nr || cells[r] < 0 || !first[r]) return;
     const int sample = recorded_sample(*step, dt_scale, rows);
@@ -445,4 +486,43 @@ extern "C" __global__ void inject_residual(float *Avx, float *Avz, float *Ataux,
 // Move the time step on the device: *step += delta (one thread).
 extern "C" __global__ void advance(int *step, int delta) {
     if (row_of_thread() == 0 && column_of_thread() == 0) *step += delta;
+}
+
+// Step 3.9: add the gradients of the slots 1 to slots - 1 to slot 0, in that order (a fixed order:
+// the same bits at every run, without atomic operations). Launched on the grid of one shot.
+extern "C" __global__ void sum_slots(float *Gmu, float *Gmu_precond, float *Glam, float *Glam_precond, float *Grho,
+                                     float *Grho_precond, int slots) {
+    const int i = row_of_thread(), j = column_of_thread();
+    if (i >= Nz || j >= Nx) return;
+    const long long k = i * Nx + j, stride = (long long)(Nz + 1) * Nx;  // see slot_values
+    for (int b = 1; b < slots; b++) {
+        Gmu[k] += Gmu[b * stride + k];
+        Gmu_precond[k] += Gmu_precond[b * stride + k];
+        Glam[k] += Glam[b * stride + k];
+        Glam_precond[k] += Glam_precond[b * stride + k];
+        Grho[k] += Grho[b * stride + k];
+        Grho_precond[k] += Grho_precond[b * stride + k];
+    }
+}
+
+// Step 3.9: copy the forward field of every slot launched into its checkpoint on the device (restore =
+// 0), or back (restore = 1), in one launch instead of one copy per component and shot. The checkpoints
+// of the shots kept on the device are one buffer of (5 components, shots, checkpoints, Nz * Nx)
+// values (PropagationEngine._device_checkpoints): slot b's checkpoint of component c starts
+// c * component_pitch + offset + b * shot_pitch values into it, offset being that of the first slot.
+extern "C" __global__ void copy_checkpoint(float *vx, float *vz, float *taux, float *tauz, float *tauxz,
+                                           float *checkpoints, long long offset, long long shot_pitch,
+                                           long long component_pitch, int restore) {
+    const int i = row_of_thread(), j = column_of_thread();
+    if (i >= Nz || j >= Nx) return;
+    const long long k = i * Nx + j, f = slot_values() + k;  // batched
+    float *stored = checkpoints + offset + blockIdx.z * shot_pitch + k;
+    float *fields[5] = {vx, vz, taux, tauz, tauxz};
+    for (int c = 0; c < 5; c++) {
+        if (restore) {
+            fields[c][f] = stored[c * component_pitch];
+        } else {
+            stored[c * component_pitch] = fields[c][f];
+        }
+    }
 }

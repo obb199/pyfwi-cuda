@@ -865,6 +865,31 @@ Each optimisation is a separate commit, with a benchmark before and after, so th
   runs, `fixed`; large 3): small 0.04 s / 0.07 s → 0.04 s / 0.065 s, medium 1.82 s / 4.10 s → 1.60 s /
   3.84 s, large 51.3 s / 135.0 s → 43.4 s / 122.8 s. Done before step 3.9 (the order of the table does
   not matter for these independent steps).
+- **3.9 (batched shots):** the native loops run several shots with the same launches: the slots of a
+  batch are the z dimension of the CUDA grid (`blockIdx.z`), and the fields, adjoint fields and
+  gradients hold one field per slot, the seismograms and residuals one block per slot, the source cell
+  one value per slot. After each field, one row that no kernel writes, holding the value of the
+  margins: the stencils of the last rows read one row past the field (open point 4 of G2), which must
+  not be the first row of the next shot (without absorbing layer and with the sources on row 0, a batch
+  without that row recorded up to 4.5e-3 where single shots record nothing; now a test). Every slot
+  accumulates the gradient of its shots, and `sum_slots` adds the slots into slot 0 at the end, in
+  their order: deterministic, without atomic operations. The checkpoints of a batch kept on the device
+  are stored and restored by one launch (`copy_checkpoint`) instead of one copy per component and shot:
+  those copies cost about 6 µs of host time each and were most of the forward time of the small
+  scenario. Batch size: `PYFWI_CUDA_BATCH`, else balanced batches of at most 2^20 cells (`shot_batch`,
+  `BATCH_CELLS`: 8 shots of at most 5 run as 4 + 4); `show=True` runs one shot per batch. Measured
+  against one shot at a time (forward / gradient): 4 shots of 140 × 140 cells, batch of 4: −42 % / −4 %
+  (batch of 2: −32 % / −8 %; with 4 the working set of the gradient leaves the 3 MB L2 cache); 4 shots of
+  440 × 440: −11 % / −7 % (batch of 2: −7 % / −4 %); 2 shots of 640 × 790: −3 % / −2 %. Tests: DET (two
+  runs with a batch of 4, the same bits); OTM with B = 1, 2 and 4 (5 shots, so that the last batch is
+  shorter) and on the 16 cases with their 2 shots in one batch: the seismograms are the bits of single
+  shots, the gradients differ by float32 rounding (1e-6 to 6e-6 relative) and stay within the OTM
+  tolerance; on the fake backend, the slots, a shorter last batch, the three checkpoint tiers and the
+  observed runs. The gradient now depends on the batch size by float32 rounding (CHANGELOG, numerical
+  changes). DES (5 runs, `fixed`; large 3), against the previous commit in the same session (the GPU
+  ran slower than for step 3.10): small 0.047 s / 0.073 s → 0.023 s / 0.066 s, medium (2 shots in one
+  batch, scaled to 8) 1.78 s / 4.31 s → 1.65 s / 4.16 s, large (1 shot) 48.4 s / 139.2 s → 48.6 s /
+  138.2 s (unchanged).
 
 ### 3.11 `auto` default and release 0.3.0
 

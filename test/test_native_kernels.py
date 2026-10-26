@@ -20,7 +20,11 @@ Measured, the largest difference on the 16 cases:
 * step 3.8 (checkpoints on the device): the same, with the checkpoints on the device, on the host or
   split (``test_checkpoints_give_the_same_bits_on_the_device_on_the_host_and_split``);
 * step 3.10 (no damping read inside the absorbing layer's zero rectangle): the same; the fused kernels,
-  which skip the reads, still give the bits of the separate ones, which do not.
+  which skip the reads, still give the bits of the separate ones, which do not;
+* step 3.9 (batched shots): the same with the shots one by one and in batches (the 2 shots of each
+  case in one batch; 5 shots in batches of 1, 2 and 4); the seismograms of a batch are the bits of
+  single shots, the gradients differ by float32 rounding (the slots are added at the end), and two
+  runs give the same bits (``test_batches_match_the_parity_kernels_and_are_deterministic``).
 """
 import numpy as np
 import pytest
@@ -52,14 +56,16 @@ def relative_l2(expected, actual):
 def test_native_kernels_match_the_parity_kernels(cuda_device, monkeypatch, case):
     monkeypatch.setenv("PYFWI_BACKEND", "cuda:strict")
     monkeypatch.setenv("PYFWI_NUMERICS", "fixed")
-    outputs = {}
-    for kernels in ("parity", "native"):
-        monkeypatch.setenv("PYFWI_CUDA_KERNELS", kernels)
-        outputs[kernels] = run_propagation_case(case, guard=False)
-    parity, native = outputs["parity"], outputs["native"]
-    assert parity.keys() == native.keys()
-    failures = [f"{key}: {relative_l2(parity[key], native[key]):.1e}" for key in parity
-                if relative_l2(parity[key], native[key]) > TOLERANCE[key.split("/")[0]]]
+    monkeypatch.setenv("PYFWI_CUDA_KERNELS", "parity")
+    parity = run_propagation_case(case, guard=False)
+    monkeypatch.setenv("PYFWI_CUDA_KERNELS", "native")
+    failures = []
+    for batch in ("1", "2"):  # step 3.9: the 2 shots of the case one by one, then in one batch
+        monkeypatch.setenv("PYFWI_CUDA_BATCH", batch)
+        native = run_propagation_case(case, guard=False)
+        assert parity.keys() == native.keys()
+        failures += [f"batch {batch}, {key}: {relative_l2(parity[key], native[key]):.1e}" for key in parity
+                     if relative_l2(parity[key], native[key]) > TOLERANCE[key.split("/")[0]]]
     assert not failures, "\n".join(failures)
 
 
@@ -138,6 +144,60 @@ def test_checkpoints_give_the_same_bits_on_the_device_on_the_host_and_split(cuda
         for a, b in zip(runs[0], other):
             for key in a:
                 np.testing.assert_array_equal(a[key], b[key], err_msg=key)
+
+
+@pytest.mark.gpu
+def test_batches_match_the_parity_kernels_and_are_deterministic(cuda_device, monkeypatch):
+    # Step 3.9, OTM with B = 1, 2 and 4, and DET: 5 shots, so that the batches of 2 and of 4 end with a
+    # shorter one. The seismograms of a batch are the bits of single shots; the gradients agree within
+    # the OTM tolerance (the slots are added at the end, another order of the float32 additions); two
+    # runs with the same batch give the same bits.
+    from helpers import forward_and_gradient
+
+    monkeypatch.setenv("PYFWI_BACKEND", "cuda:strict")
+    monkeypatch.setenv("PYFWI_NUMERICS", "fixed")
+    kw = {"ns": 5, "sdo": 8, "acq_type": 2, "components": 4, "chpr": 50}
+    monkeypatch.setenv("PYFWI_CUDA_KERNELS", "parity")
+    parity_seismograms, parity_gradient = forward_and_gradient(tiny_case(**kw))
+    monkeypatch.setenv("PYFWI_CUDA_KERNELS", "native")
+    runs = {}
+    for batch in ("1", "2", "4", "4"):
+        monkeypatch.setenv("PYFWI_CUDA_BATCH", batch)
+        case = tiny_case(**kw)
+        assert case.W._engine.batch == int(batch)
+        runs.setdefault(batch, []).append(forward_and_gradient(case))
+    for first, second in zip(*runs["4"]):  # DET
+        for key in first:
+            np.testing.assert_array_equal(first[key], second[key], err_msg=key)
+    single_seismograms = runs["1"][0][0]
+    for batch, ((seismograms, gradient), *_) in runs.items():
+        for key in seismograms:
+            np.testing.assert_array_equal(seismograms[key], single_seismograms[key], err_msg=f"{batch} {key}")
+            assert relative_l2(parity_seismograms[key], seismograms[key]) <= TOLERANCE["raw_seismogram"]
+        for key in gradient:
+            assert relative_l2(parity_gradient[key], gradient[key]) <= TOLERANCE["raw_gradient"], (batch, key)
+
+
+@pytest.mark.gpu
+def test_the_slots_of_a_batch_are_separated_by_a_row_of_margin(cuda_device, monkeypatch):
+    # Step 3.9: the stencils of the last rows read one row past the field. With a single shot that row
+    # is the margin after the buffer; in a batch, the row of margin after every slot, not the first row
+    # of the next shot. Without absorbing layer and with every source on row 0, a batch without that
+    # row records values where single shots record none (measured: up to 4.5e-3).
+    monkeypatch.setenv("PYFWI_BACKEND", "cuda:strict")
+    monkeypatch.setenv("PYFWI_NUMERICS", "fixed")
+    runs = []
+    for batch in ("1", "4"):
+        monkeypatch.setenv("PYFWI_CUDA_BATCH", batch)
+        case = tiny_case(ns=4, inpa_extra={"npml": 0, "pmlR": 0, "pml_dir": 2})
+        engine = case.W._engine
+        engine.srcz = np.zeros_like(engine.srcz)  # every source on row 0
+        seismograms = case.W.forward_modeling(case.model, False)
+        field = engine.read_field("taux_b", np.empty((engine.tnz, engine.tnx), np.float32))
+        assert engine.batch == int(batch) and field[0].any()  # the source on row 0
+        runs.append({**seismograms, **{f"W {par}": stored for par, stored in engine.checkpoints.items()}})
+    for key in runs[0]:
+        np.testing.assert_array_equal(runs[1][key], runs[0][key], err_msg=key)
 
 
 @pytest.mark.gpu

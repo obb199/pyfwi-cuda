@@ -11,7 +11,10 @@ how much and in which numeric mode.
 
 ### Numerical changes
 
-- None so far.
+- CUDA, `fixed` mode, batched shots (step 3.9): the native kernels run several shots at once
+  (`PYFWI_CUDA_BATCH`, else balanced batches of at most 2^20 grid cells) and add the gradients of the shots
+  of each batch at the end, so the gradient depends on the batch size by float32 rounding only
+  (measured: 1e-6 to 6e-6 relative between batches of 1, 2 and 4); the seismograms are the same bits.
 
 ## [0.2.0] - 2026-10-26
 

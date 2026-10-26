@@ -105,6 +105,15 @@ def test_blocks_fill_the_multiprocessors(backend):
             assert np.prod(backend.grid(size, (32, 2 * block[1], 1))) < target, size
 
 
+def test_a_batch_of_shots_is_the_z_dimension_of_the_grid(backend):
+    # Step 3.9: a global size (rows, columns, slots) repeats the blocks of one shot along z, and the
+    # block rule counts the blocks of every slot (a small grid in a batch takes taller blocks).
+    assert backend.grid((140, 140, 4), (32, 8, 1)) == (5, 18, 4)
+    assert backend.grid((140, 140), (32, 8, 1)) == (5, 18, 1)
+    assert backend.grid((140, 140, 4), backend.block((140, 140, 4)))[2] == 4
+    assert backend.block((140, 140, 4))[1] >= backend.block((140, 140))[1]
+
+
 #: A kernel that records, for every work item, the thread index along x of the block (step 3.1).
 THREADS = """
 #define Nz 61

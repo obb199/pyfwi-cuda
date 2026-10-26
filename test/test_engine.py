@@ -43,7 +43,7 @@ def make_engine(injection="surface", chpr=30, numerics="legacy", nt_ext=NT_EXT, 
     in PyFWI for some ``dt`` and ``t``.
     """
     from PyFWI.engine.propagation import PropagationEngine, checkpoint_steps
-    backend = FakeBackend(nr=NR, tnx=TNX, budget=budget)
+    backend = FakeBackend(nr=NR, tnz=TNZ, tnx=TNX, budget=budget)
     sources = {"elastic": "elastic source", "crosswell": "crosswell source", "surface": "surface source"}
     engine = PropagationEngine(backend, sources, injection, tnz=TNZ, tnx=TNX, ns=NS, nr=NR, nt=NT, nt_ext=nt_ext,
                                dt_scale=DT_SCALE, chp=checkpoint_steps(chpr, NT), dxr=np.int32(1), srcx=SRCX,
@@ -54,11 +54,11 @@ def make_engine(injection="surface", chpr=30, numerics="legacy", nt_ext=NT_EXT, 
     return engine
 
 
-def residual(nt_ext=NT_EXT):
-    """Residual of both shots: sample k of shot s at receiver r is (k + 1) (s + 1) + r / 10."""
+def residual(nt_ext=NT_EXT, ns=NS):
+    """Residual of ``ns`` shots: sample k of shot s at receiver r is (k + 1) (s + 1) + r / 10."""
     samples = np.arange(nt_ext)[:, None] + 1
-    columns = [(s + 1) * samples + np.arange(NR) / 10 for s in range(NS)]
-    one = np.hstack(columns).astype(np.float32)  # (NT_EXT, NR * NS)
+    columns = [(s + 1) * samples + np.arange(NR) / 10 for s in range(ns)]
+    one = np.hstack(columns).astype(np.float32)  # (NT_EXT, NR * ns)
     return {par: one.copy() for par in COMPONENTS}
 
 
@@ -129,7 +129,7 @@ def test_a_native_program_provides_every_kernel_but_the_injection():
     # Phase 3: with a "native" source (the CUDA kernels of PyFWI/kernels/elastic.cu) the stencil
     # kernels come from it; injSrc and Adj_injSrc still come from the program of the acquisition.
     from PyFWI.engine.propagation import NATIVE_KERNELS, PropagationEngine, checkpoint_steps
-    backend = FakeBackend(nr=NR, tnx=TNX)
+    backend = FakeBackend(nr=NR, tnz=TNZ, tnx=TNX)
     sources = {"elastic": "elastic", "crosswell": "crosswell", "surface": "surface", "native": "native"}
     engine = PropagationEngine(backend, sources, "surface", tnz=TNZ, tnx=TNX, ns=NS, nr=NR, nt=NT, nt_ext=NT_EXT,
                                dt_scale=DT_SCALE, chp=checkpoint_steps(30, NT), dxr=np.int32(1), srcx=SRCX,
@@ -161,16 +161,20 @@ def test_receiver_table_follows_the_loops_of_the_opencl_kernels():
     assert cells[2] == -1 and first[2] == 0
 
 
-def _native_engine(nt_ext=NT_EXT):
-    """An engine on the fake backend with a native program and a receiver table (step 3.4)."""
+def _native_engine(nt_ext=NT_EXT, batch=1, ns=NS, budget=0):
+    """An engine on the fake backend with a native program and a receiver table (step 3.4), running
+    ``batch`` shots at once (step 3.9). A third shot, when ``ns`` is 3, has its source on cell (2, 2);
+    ``budget``: bytes of checkpoints on the device (step 3.8)."""
     from PyFWI.engine.propagation import PropagationEngine, checkpoint_steps
-    backend = FakeBackend(nr=NR, tnx=TNX)
+    backend = FakeBackend(nr=NR, tnz=TNZ, tnx=TNX, budget=budget)
+    srcx, srcz = np.array([1, 3, 2][:ns], np.int32), np.full(ns, 2, np.int32)
     sources = {"elastic": "elastic", "crosswell": "crosswell", "surface": "surface", "native": "native"}
     cells = np.array([1 * TNX + 0, 1 * TNX + 2, 1 * TNX + 0], np.int32)  # receivers 0 and 2 share a cell
     table = (cells, np.array([1, 1, 0], np.int32), np.array([2, -1, -1], np.int32))
-    engine = PropagationEngine(backend, sources, "surface", tnz=TNZ, tnx=TNX, ns=NS, nr=NR, nt=NT, nt_ext=nt_ext,
-                               dt_scale=DT_SCALE, chp=checkpoint_steps(30, NT), dxr=np.int32(1), srcx=SRCX,
-                               srcz=SRCZ, source=source, rec_top_right_var=0, numerics="fixed", receivers=table)
+    engine = PropagationEngine(backend, sources, "surface", tnz=TNZ, tnx=TNX, ns=ns, nr=NR, nt=NT, nt_ext=nt_ext,
+                               dt_scale=DT_SCALE, chp=checkpoint_steps(30, NT), dxr=np.int32(1), srcx=srcx,
+                               srcz=srcz, source=source, rec_top_right_var=0, numerics="fixed", receivers=table,
+                               batch=batch)
     field = np.ones((TNZ, TNX), np.float32)
     engine.set_pml(0 * field, 0 * field)
     engine.set_model(RHO_INVERSE * field, MU * field, LAM * field)
@@ -250,6 +254,101 @@ def test_observed_native_runs_are_not_recorded():
     unobserved, _, _, _ = _native_run(True)
     for key in observed:
         np.testing.assert_array_equal(observed[key], unobserved[key], err_msg=key)
+
+
+def _batched_run(batch, ns=NS, device_shots=0, graphs=True, observe=None):
+    """Forward and gradient on the native fake engine with ``batch`` shots at once (step 3.9).
+
+    Returns the seismograms, the gradients, the fields of the last shot (forward and adjoint), the
+    checkpoints, and the engine.
+    """
+    engine, _ = _native_engine(batch=batch, ns=ns, budget=device_shots * 5 * 3 * TNZ * TNX * 4)
+    engine.graphs = graphs
+    seismogram = engine.forward(None if observe is None else lambda s, t: observe.append(("forward", s)))
+    outputs = {par: seismogram[par].copy() for par in COMPONENTS}
+    outputs["last vx"] = engine.read_field("vx_b", np.empty((TNZ, TNX), np.float32))
+    engine.prepare_gradient()
+    engine.gradient(residual(ns=ns), None if observe is None else lambda s, t, t_src: observe.append(("gradient", s)))
+    outputs.update({f"g{k}": g for k, g in enumerate(engine.read_gradient())})
+    outputs["last avx"] = engine.read_field("avx_b", np.empty((TNZ, TNX), np.float32))
+    outputs["Gmu_b"] = engine.read_field("Gmu_b", np.empty((TNZ, TNX), np.float32))
+    assert engine._device_shots == device_shots  # the tier held during the runs
+    outputs.update({f"W {par}": stored.copy() for par, stored in engine.checkpoints.items()})
+    return outputs, engine
+
+
+def _assert_same_runs(actual, expected):
+    """The outputs of ``_batched_run`` are the same bits, but for the gradients (float32 rounding).
+
+    With batches, every slot accumulates the gradient of its shots and ``sum_slots`` adds the slots
+    at the end: another order of the float32 additions than shot after shot.
+    """
+    for key in expected:
+        if key.startswith("g") or key == "Gmu_b":
+            np.testing.assert_allclose(actual[key], expected[key], rtol=1e-6, err_msg=key)
+        else:
+            np.testing.assert_array_equal(actual[key], expected[key], err_msg=key)
+
+
+@pytest.mark.parametrize("ns, batch, device_shots", [(2, 2, 0), (2, 2, 2), (3, 2, 0), (3, 2, 1), (3, 3, 3), (3, 4, 2)])
+def test_batches_give_the_results_of_single_shots(ns, batch, device_shots):
+    # Step 3.9: the shots of a batch run in the slots of the same launches, and every slot computes
+    # what its shot computes alone. 3 shots in batches of 2: a shorter last batch; the checkpoints on
+    # the host, on the device, or split; with graphs and step by step.
+    single, _ = _batched_run(1, ns, device_shots)
+    for graphs in (True, False):
+        batched, engine = _batched_run(batch, ns, device_shots, graphs)
+        assert engine.batch == min(batch, ns) and batched["W vx"].shape[0] == ns
+        _assert_same_runs(batched, single)
+
+
+def test_a_batch_runs_its_shots_with_the_same_launches():
+    engine, _ = _native_engine(batch=2, budget=2 * 5 * 3 * TNZ * TNX * 4)
+    engine.graphs = False
+    backend = engine.backend
+    engine.forward()
+    sizes = dict(backend.sizes)
+    # Both shots in every launch of the step: the grid (or the receivers) of each, two slots.
+    assert sizes["update_v"] == sizes["update_tau"] == (TNZ, TNX, 2) and sizes["inject_and_record"] == (1, NR, 2)
+    assert sizes["advance"] == (1, 1) and sizes["MakeAllZero"] == (TNZ, TNX, 2)
+    names = launches(engine)
+    assert names.count("update_v") == names.count("inject_and_record") == NT  # not NS * NT
+    # The checkpoints of both shots in one launch per checkpoint, no copy.
+    assert names.count("copy_checkpoint") == engine.nchp and not any(e[0] == "copy" for e in backend.log)
+    engine.prepare_gradient()
+    backend.log.clear()
+    backend.sizes.clear()
+    engine.gradient(residual())
+    names = launches(engine)
+    assert names.count("grad_adjoint_v") == names.count("inject_residual") == NT - 1
+    assert dict(backend.sizes)["MakeGradZero"] == (TNZ, TNX, 2)  # every slot
+    # At the end, the gradients of slot 1 added to slot 0, once, on the grid of one shot.
+    assert names[-1] == "sum_slots" and names.count("sum_slots") == 1 and backend.sizes[-1] == ("sum_slots", (TNZ, TNX))
+
+
+def test_batches_run_one_shot_at_a_time_when_observed():
+    # show=True reads the field of the shot being run: one shot per batch, the same results.
+    seen = []
+    observed, _ = _batched_run(2, observe=seen)
+    _assert_same_runs(observed, _batched_run(2)[0])
+    assert [s for kind, s in seen if kind == "forward"] == [0] * NT + [1] * NT
+    assert [s for kind, s in seen if kind == "gradient"] == [0] * (NT - 1) + [1] * (NT - 1)
+
+
+def test_shot_batch():
+    from PyFWI.engine.propagation import BATCH_CELLS, shot_batch
+
+    plane = BATCH_CELLS // 5  # 5 shots fit in BATCH_CELLS cells
+    assert shot_batch(10, 1, plane, {}) == 5 and shot_batch(5, 1, plane, {}) == 5
+    assert shot_batch(3, 1, plane, {}) == 3  # never more than the shots
+    assert shot_batch(8, 1, plane, {}) == 4 and shot_batch(6, 1, plane, {}) == 3  # balanced: 4 + 4, 3 + 3
+    assert shot_batch(11, 1, plane, {}) == 4  # 3 batches: 4 + 4 + 3
+    assert shot_batch(8, 1, 2 * BATCH_CELLS, {}) == 1 and shot_batch(0, 1, plane, {}) == 1  # at least one
+    assert shot_batch(8, 1000, 1000, {"PYFWI_CUDA_BATCH": "4"}) == 4
+    assert shot_batch(2, 10, 10, {"PYFWI_CUDA_BATCH": " 4 "}) == 2
+    for wrong in ("0", "-1", "two", "1.5"):
+        with pytest.raises(ValueError, match="PYFWI_CUDA_BATCH"):
+            shot_batch(8, 10, 10, {"PYFWI_CUDA_BATCH": wrong})
 
 
 @pytest.mark.parametrize("device_shots", [0, 1, 2])
