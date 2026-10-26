@@ -258,18 +258,18 @@ def _advance(backend, step, delta):
     step.view(np.int32)[0] += int(delta)
 
 
-def _update_v(backend, coeff, vx, vz, taux, tauz, tauxz, rho, vdx, vdz):
+def _update_v(backend, coeff, vx, vz, taux, tauz, tauxz, rho, vdx, vdz, *undamped):
     _update_vel(backend, coeff, vx, taux, tauxz, rho, vdx, vdz)
     _update_vel(backend, coeff, vz, tauz, tauxz, rho, vdx, vdz)
 
 
-def _update_tau(backend, coeff, vx, vz, taux, tauz, tauxz, lam, mu, vdx, vdz):
+def _update_tau(backend, coeff, vx, vz, taux, tauz, tauxz, lam, mu, vdx, vdz, *undamped):
     _update_tauz(backend, coeff, vx, vz, taux, tauz, lam, mu, vdx, vdz)
     _update_tauxz(backend, coeff, vx, vz, tauxz, mu, vdx, vdz)
 
 
 def _grad_adjoint_v(backend, vx, vz, taux, tauz, tauxz, avx, avz, ataux, atauz, atauxz, lam, mu, rho, vdx, vdz,
-                    g_mu, mu_precond, g_lam, lam_precond, g_rho, rho_precond):
+                    g_mu, mu_precond, g_lam, lam_precond, g_rho, rho_precond, *undamped):
     _grad(backend, vx, vz, taux, tauz, tauxz, avx, avz, ataux, atauz, atauxz, lam, mu, rho,
           g_mu, mu_precond, g_lam, lam_precond, g_rho, rho_precond)
 

@@ -191,6 +191,38 @@ def receiver_table(acq_type, tnz, tnx, nr, dxr, n_surface, n_well, surface, left
     return cells.astype(np.int32), first, following
 
 
+def undamped_rectangle(vdx_pml, vdz_pml):
+    """Rows ``z0..z1`` and columns ``x0..x1`` (inclusive) where both damping profiles are zero (step 3.10).
+
+    The native kernels do not read the profiles there (``damping`` of elastic.cu): the damping of
+    those cells is 0 as read, so nothing changes. PyFWI's profiles are separable (``vdx_pml`` depends
+    on the column only, ``vdz_pml`` on the row): the rectangle spans the columns where ``vdx_pml`` is
+    zero in every row and the rows where ``vdz_pml`` is zero in every column, checked to be zero on
+    both before it is used.
+
+    Parameters
+    ----------
+    vdx_pml, vdz_pml : numpy.ndarray
+        The damping profiles, ``(tnz, tnx)``.
+
+    Returns
+    -------
+    tuple of numpy.int32
+        ``(z0, z1, x0, x1)``; ``(0, -1, 0, -1)``, an empty rectangle, when there is none.
+    """
+    vdx, vdz = np.asarray(vdx_pml), np.asarray(vdz_pml)
+    columns = np.flatnonzero(~np.any(vdx != 0, axis=0))
+    rows = np.flatnonzero(~np.any(vdz != 0, axis=1))
+    empty = tuple(np.int32(v) for v in (0, -1, 0, -1))
+    if not (columns.size and rows.size):
+        return empty
+    z0, z1, x0, x1 = int(rows.min()), int(rows.max()), int(columns.min()), int(columns.max())
+    inside = (slice(z0, z1 + 1), slice(x0, x1 + 1))
+    if np.any(vdx[inside] != 0) or np.any(vdz[inside] != 0):  # not one rectangle: no savings, no risk
+        return empty
+    return tuple(np.int32(v) for v in (z0, z1, x0, x1))
+
+
 def checkpoint_steps(chpr, nt):
     """Time steps at which the forward field is stored for the gradient, as in PyFWI 0.1.10.
 
@@ -434,9 +466,14 @@ class PropagationEngine:
         return (self.vx_b, self.vz_b, self.taux_b, self.tauz_b, self.tauxz_b)
 
     def set_pml(self, vdx_pml, vdz_pml):
-        """Device buffers of the absorbing boundary (damping times the largest velocity), per forward run."""
+        """Device buffers of the absorbing boundary (damping times the largest velocity), per forward run.
+
+        Also the rectangle where both profiles are zero, which the native kernels do not read there
+        (``undamped_rectangle``, step 3.10).
+        """
         self._set_buffer("vdx_pml_b", vdx_pml)
         self._set_buffer("vdz_pml_b", vdz_pml)
+        self.undamped = undamped_rectangle(vdx_pml, vdz_pml)
 
     def set_model(self, rho_inverse, mu, lam):
         """Device buffers of the model (1 / density and the Lame parameters), per forward run."""
@@ -478,11 +515,11 @@ class PropagationEngine:
                  self.lam_b, self.mu_b, self.vdx_pml_b, self.vdz_pml_b)
         set_args(k.update_tauxz, coeff, self.vx_b, self.vz_b, self.tauxz_b, self.mu_b,
                  self.vdx_pml_b, self.vdz_pml_b)
-        if self.fused:
+        if self.fused:  # with the rectangle without damping (step 3.10)
             set_args(k.update_v, coeff, self.vx_b, self.vz_b, self.taux_b, self.tauz_b, self.tauxz_b, self.rho_b,
-                     self.vdx_pml_b, self.vdz_pml_b)
+                     self.vdx_pml_b, self.vdz_pml_b, *self.undamped)
             set_args(k.update_tau, coeff, *self._field_buffers(), self.lam_b, self.mu_b, self.vdx_pml_b,
-                     self.vdz_pml_b)
+                     self.vdz_pml_b, *self.undamped)
 
     def _set_injection_args(self, s):
         """Set the arguments of injSrc that stay the same for every time step of shot ``s``.
@@ -512,7 +549,8 @@ class PropagationEngine:
         residuals = (self.res_vx_b, self.res_vz_b, self.res_taux_b, self.res_tauz_b, self.res_tauxz_b)
         if not self.native_injection:  # inject_residual: _set_native_residual_args, once per shot
             set_args(k.Adj_injSrc, *adjoint, *residuals, self.dxr)
-        set_args(k.Adj_update_tau, *adjoint, self.rho_b, self.vdx_pml_b, self.vdz_pml_b)
+        native = (*self.undamped,) if self.prg_native is not None else ()  # elastic.cu: the rectangle (3.10)
+        set_args(k.Adj_update_tau, *adjoint, self.rho_b, self.vdx_pml_b, self.vdz_pml_b, *native)
         set_args(k.Adj_update_v, *adjoint, self.lam_b, self.mu_b, self.vdx_pml_b, self.vdz_pml_b)
         set_args(k.Grad, *self._field_buffers(), *adjoint, self.lam_b, self.mu_b, self.rho_b,
                  self.Gmu_b, self.g_mu_precond_b, self.Glam_b, self.g_lam_precond_b,
@@ -520,7 +558,7 @@ class PropagationEngine:
         if self.fused:
             set_args(k.grad_adjoint_v, *self._field_buffers(), *adjoint, self.lam_b, self.mu_b, self.rho_b,
                      self.vdx_pml_b, self.vdz_pml_b, self.Gmu_b, self.g_mu_precond_b, self.Glam_b,
-                     self.g_lam_precond_b, self.Grho_b, self.g_rho_precond_b)
+                     self.g_lam_precond_b, self.Grho_b, self.g_rho_precond_b, *self.undamped)
 
     def _inject(self, samples, row):
         """Add ``samples`` to the fields at the source and record the receivers in ``row`` (injSrc).

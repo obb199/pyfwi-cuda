@@ -62,6 +62,14 @@ __device__ __forceinline__ float backward_difference(F f, int k, int step) {
 constexpr float inv_dx = 1.0f / dx;
 constexpr float inv_dz = 1.0f / dz;
 
+// The damping of the absorbing layer at a cell, dxpml + dzpml (step 3.10). Inside the rectangle of rows
+// z0..z1 and columns x0..x1 where both profiles are zero (PropagationEngine.set_pml finds it: most of
+// the grid), the profiles are not read, which saves two reads per cell; the value there is 0, as read.
+__device__ __forceinline__ float damping(const float *dxpml, const float *dzpml, int i, int j, int k,
+                                         int z0, int z1, int x0, int x1) {
+    return (i >= z0 && i <= z1 && j >= x0 && j <= x1) ? 0.0f : dxpml[k] + dzpml[k];
+}
+
 // A field as a callable for the derivatives: field(p)(k) is p[k].
 struct Field {
     const float *p;
@@ -179,19 +187,20 @@ extern "C" __global__ void update_tauxz(int coeff, const float *vx, const float 
 
 extern "C" __global__ void Adj_update_tau(const float *Avx, const float *Avz, float *Ataux, float *Atauz,
                                           float *Atauxz, const float *rho_b, const float *dxpml,
-                                          const float *dzpml) {
+                                          const float *dzpml, int z0, int z1, int x0, int x1) {
     const int i = row_of_thread() + sdo, j = column_of_thread() + sdo;
     if (i > Nz - sdo || j > Nx - sdo) return;
     const int k = i * Nx + j;
+    const float d = damping(dxpml, dzpml, i, j, k, z0, z1, x0, x1);
     const auto avx_rho = [=](int n) { return Avx[n] * rho_b[n]; };
     const auto avz_rho = [=](int n) { return Avz[n] * rho_b[n]; };
     const float DxpAVx = forward_difference<sdo>(avx_rho, k, 1) * inv_dx;
     const float DzmAVz = backward_difference<sdo>(avz_rho, k, Nx) * inv_dz;
-    Ataux[k] += -dt * ((dxpml[k] + dzpml[k]) * Ataux[k] + DxpAVx);
-    Atauz[k] += -dt * ((dxpml[k] + dzpml[k]) * Atauz[k] + DzmAVz);
+    Ataux[k] += -dt * (d * Ataux[k] + DxpAVx);
+    Atauz[k] += -dt * (d * Atauz[k] + DzmAVz);
     const float DzpAvx = forward_difference<sdo>(avx_rho, k, Nx) * inv_dz;
     const float DxmAvz = backward_difference<sdo>(avz_rho, k, 1) * inv_dx;
-    Atauxz[k] += -dt * (((dxpml[k] + dzpml[k]) * Atauxz[k]) + (DzpAvx + DxmAvz));
+    Atauxz[k] += -dt * ((d * Atauxz[k]) + (DzpAvx + DxmAvz));
 }
 
 extern "C" __global__ void Adj_update_v(float *Avx, float *Avz, const float *Ataux, const float *Atauz,
@@ -259,33 +268,35 @@ extern "C" __global__ void Grad(const float *vx, const float *vz, const float *t
 
 extern "C" __global__ void update_v(int coeff, float *vx, float *vz, const float *taux, const float *tauz,
                                     const float *tauxz, const float *rho_b, const float *dxpml,
-                                    const float *dzpml) {
+                                    const float *dzpml, int z0, int z1, int x0, int x1) {
     const int i = row_of_thread() + sdo, j = column_of_thread() + sdo;
     if (i > Nz - sdo || j > Nx - sdo) return;
     const int k = i * Nx + j;
+    const float d = damping(dxpml, dzpml, i, j, k, z0, z1, x0, x1);
     const float DxmTx = backward_difference<sdo>(field(taux), k, 1) * inv_dx;
     const float DzmTxz = backward_difference<sdo>(field(tauxz), k, Nx) * inv_dz;
     const float DxpTxz = forward_difference<sdo>(field(tauxz), k, 1) * inv_dx;
     const float DzpTz = forward_difference<sdo>(field(tauz), k, Nx) * inv_dz;
     if (coeff == 1) {
         vx[k] += coeff * dt * (rho_b[k] * (DxmTx + DzmTxz));
-        vx[k] += coeff * dt * (-(dxpml[k] + dzpml[k]) * vx[k]);
+        vx[k] += coeff * dt * (-d * vx[k]);
         vz[k] += coeff * dt * (rho_b[k] * (DzpTz + DxpTxz));
-        vz[k] += coeff * dt * (-(dzpml[k] + dxpml[k]) * vz[k]);
+        vz[k] += coeff * dt * (-d * vz[k]);
     } else if (coeff == -1) {
-        vx[k] += coeff * dt * (+(dxpml[k] + dzpml[k]) * vx[k]);
+        vx[k] += coeff * dt * (+d * vx[k]);
         vx[k] += coeff * dt * (rho_b[k] * (DxmTx + DzmTxz));
-        vz[k] += coeff * dt * (+(dzpml[k] + dxpml[k]) * vz[k]);
+        vz[k] += coeff * dt * (+d * vz[k]);
         vz[k] += coeff * dt * (rho_b[k] * (DzpTz + DxpTxz));
     }
 }
 
 extern "C" __global__ void update_tau(int coeff, const float *vx, const float *vz, float *taux, float *tauz,
                                       float *tauxz, const float *lambda, const float *mu, const float *dxpml,
-                                      const float *dzpml) {
+                                      const float *dzpml, int z0, int z1, int x0, int x1) {
     const int i = row_of_thread() + sdo, j = column_of_thread() + sdo;
     if (i > Nz - sdo || j > Nx - sdo) return;
     const int k = i * Nx + j;
+    const float d = damping(dxpml, dzpml, i, j, k, z0, z1, x0, x1);
     const float DxpVx = forward_difference<sdo>(field(vx), k, 1) * inv_dx;
     const float DzmVz = backward_difference<sdo>(field(vz), k, Nx) * inv_dz;
     const float DxmVz = backward_difference<sdo>(field(vz), k, 1) * inv_dx;
@@ -293,16 +304,16 @@ extern "C" __global__ void update_tau(int coeff, const float *vx, const float *v
     if (coeff == 1) {
         taux[k] += coeff * dt * ((lambda[k] + 2 * mu[k]) * DxpVx + lambda[k] * DzmVz);
         tauz[k] += coeff * dt * ((lambda[k] + 2 * mu[k]) * DzmVz + lambda[k] * DxpVx);
-        taux[k] += coeff * dt * (-(dxpml[k] + dzpml[k]) * taux[k]);
-        tauz[k] += coeff * dt * (-(dxpml[k] + dzpml[k]) * tauz[k]);
+        taux[k] += coeff * dt * (-d * taux[k]);
+        tauz[k] += coeff * dt * (-d * tauz[k]);
         tauxz[k] += coeff * dt * (mu[k] * (DxmVz + DzpVx));
-        tauxz[k] += coeff * dt * (-(dxpml[k] + dzpml[k]) * tauxz[k]);
+        tauxz[k] += coeff * dt * (-d * tauxz[k]);
     } else if (coeff == -1) {
-        taux[k] += coeff * dt * (+(dxpml[k] + dzpml[k]) * taux[k]);
-        tauz[k] += coeff * dt * (+(dxpml[k] + dzpml[k]) * tauz[k]);
+        taux[k] += coeff * dt * (+d * taux[k]);
+        tauz[k] += coeff * dt * (+d * tauz[k]);
         taux[k] += coeff * dt * ((lambda[k] + 2 * mu[k]) * DxpVx + lambda[k] * DzmVz);
         tauz[k] += coeff * dt * ((lambda[k] + 2 * mu[k]) * DzmVz + lambda[k] * DxpVx);
-        tauxz[k] += coeff * dt * (+(dxpml[k] + dzpml[k]) * tauxz[k]);
+        tauxz[k] += coeff * dt * (+d * tauxz[k]);
         tauxz[k] += coeff * dt * (mu[k] * (DxmVz + DzpVx));
     }
 }
@@ -313,7 +324,8 @@ extern "C" __global__ void grad_adjoint_v(const float *vx, const float *vz, cons
                                           const float *Atauz, const float *Atauxz, const float *lambda,
                                           const float *mu, const float *rho_b, const float *dxpml,
                                           const float *dzpml, float *Gmu, float *Gmu_precond, float *Glam,
-                                          float *Glam_precond, float *Grho, float *Grho_precond) {
+                                          float *Glam_precond, float *Grho, float *Grho_precond, int z0,
+                                          int z1, int x0, int x1) {
     const int i = row_of_thread() + sdo, j = column_of_thread() + sdo;
     if (i > Nz - sdo || j > Nx - sdo) return;
     const int k = i * Nx + j;
@@ -335,6 +347,7 @@ extern "C" __global__ void grad_adjoint_v(const float *vx, const float *vz, cons
         Grho_precond[k] += dt * dt * (vx[k] * vx[k] * (DxmPx * DxmPx + DzmPxz * DzmPxz)
                                       + vz[k] * vz[k] * (DzpPz * DzpPz + DxpPxz * DxpPxz));
     }
+    const float d = damping(dxpml, dzpml, i, j, k, z0, z1, x0, x1);
     const auto p_ataux = [=](int n) { return (lambda[n] + 2 * mu[n]) * Ataux[n]; };
     const auto p_atauz = [=](int n) { return (lambda[n] + 2 * mu[n]) * Atauz[n]; };
     const auto l_ataux = [=](int n) { return lambda[n] * Ataux[n]; };
@@ -346,8 +359,8 @@ extern "C" __global__ void grad_adjoint_v(const float *vx, const float *vz, cons
     const float DzpAtauz = forward_difference<sdo>(p_atauz, k, Nx) * inv_dz;
     const float DzpAtaux = forward_difference<sdo>(l_ataux, k, Nx) * inv_dz;
     const float DxpAtauxz = forward_difference<sdo>(m_atauxz, k, 1) * inv_dx;
-    Avx[k] += -dt * ((dxpml[k] + dzpml[k]) * Avx[k] + (DxmAtaux + DxmAtauz + DzmAtauxz));
-    Avz[k] += -dt * ((dxpml[k] + dzpml[k]) * Avz[k] + (DzpAtaux + DzpAtauz + DxpAtauxz));
+    Avx[k] += -dt * (d * Avx[k] + (DxmAtaux + DxmAtauz + DzmAtauxz));
+    Avz[k] += -dt * (d * Avz[k] + (DzpAtaux + DzpAtauz + DxpAtauxz));
 }
 
 // ------------------------------------------------------------------ source and receivers

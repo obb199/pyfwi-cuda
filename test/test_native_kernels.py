@@ -18,7 +18,9 @@ Measured, the largest difference on the 16 cases:
 * step 3.7 (CUDA graphs): the same; replaying the graphs gives the bits of the step-by-step loops
   (``test_cuda_graphs_give_the_bits_of_the_step_by_step_loops``);
 * step 3.8 (checkpoints on the device): the same, with the checkpoints on the device, on the host or
-  split (``test_checkpoints_give_the_same_bits_on_the_device_on_the_host_and_split``).
+  split (``test_checkpoints_give_the_same_bits_on_the_device_on_the_host_and_split``);
+* step 3.10 (no damping read inside the absorbing layer's zero rectangle): the same; the fused kernels,
+  which skip the reads, still give the bits of the separate ones, which do not.
 """
 import numpy as np
 import pytest

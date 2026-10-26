@@ -85,6 +85,19 @@ def recorded_rows(engine):
 
 # ---------------------------------------------------------------------------------- helpers
 
+def test_undamped_rectangle():
+    # Step 3.10: the rows and columns where both damping profiles are zero, inclusive.
+    from PyFWI.engine.propagation import undamped_rectangle
+    columns = np.array([3, 1, 0, 0, 0, 2], np.float32)  # vdx: a profile of the column
+    rows = np.array([5, 0, 0, 0, 4], np.float32)  # vdz: a profile of the row
+    vdx, vdz = np.tile(columns, (5, 1)), np.tile(rows[:, None], (1, 6))
+    assert undamped_rectangle(vdx, vdz) == (1, 3, 2, 4)
+    assert undamped_rectangle(0 * vdx, 0 * vdz) == (0, 4, 0, 5)  # no absorbing layer: every cell
+    assert undamped_rectangle(vdx + 1, vdz) == (0, -1, 0, -1)  # damped everywhere: empty
+    vdx[2, 3] = 7  # not separable: the zero rectangle would be wrong, so none
+    assert undamped_rectangle(vdx, vdz) == (0, -1, 0, -1)
+
+
 def test_checkpoint_steps_follow_0_1_10():
     from PyFWI.engine.propagation import checkpoint_steps
     assert list(checkpoint_steps(30, 10)) == [0, 4, 9]

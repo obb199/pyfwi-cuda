@@ -854,6 +854,17 @@ Each optimisation is a separate commit, with a benchmark before and after, so th
   of the benchmark assumes the checkpoints of all 8 shots fit as those of 2 do; run for real with 8
   shots, the medium scenario takes 2.62 s / 4.6 s (4 shots on the device, 4 on the host), against 2.95 s /
   5.0 s with every checkpoint on the host.
+- **3.10 (damping read only at the borders):** `set_pml` finds the rectangle where both damping
+  profiles are zero (`undamped_rectangle`: PyFWI's profiles are separable, and the rectangle is checked
+  to be zero on both, else none is used); the native kernels that the loops run (`update_v`,
+  `update_tau`, `grad_adjoint_v`, `Adj_update_tau`) take it and read `dxpml + dzpml` only outside it,
+  where they would read 0 anyway: two reads per cell saved on most of the grid, the same bits (the
+  fused kernels, which skip the reads, still give the bits of the separate native ones, which do not;
+  OTM and MAT, PML reflection included, unchanged). Per kernel, large scenario: `update_v` 71.0 → 57.1 µs,
+  `update_tau` 91.2 → 77.9 µs, `Adj_update_tau` 74.4 → 63.1 µs, `grad_adjoint_v` 211 → 201 µs. DES (5
+  runs, `fixed`; large 3): small 0.04 s / 0.07 s → 0.04 s / 0.065 s, medium 1.82 s / 4.10 s → 1.60 s /
+  3.84 s, large 51.3 s / 135.0 s → 43.4 s / 122.8 s. Done before step 3.9 (the order of the table does
+  not matter for these independent steps).
 
 ### 3.11 `auto` default and release 0.3.0
 
