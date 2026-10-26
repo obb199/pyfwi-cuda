@@ -9,6 +9,15 @@ how much and in which numeric mode.
 
 ## [Unreleased]
 
+### Changed
+
+- The default backend is `auto` (step 3.11; `opencl` in 0.2.0): CUDA when the OpenCL device that would
+  be used is an NVIDIA GPU, or when there is no OpenCL device, and CUDA can run; otherwise OpenCL.
+  CUDA cannot run without CuPy, so an installation without the `cuda13` or `cuda12` extra keeps the
+  OpenCL engine and the results of 0.1.10; with one of them, on an NVIDIA GPU, PyFWI runs CUDA in the
+  `fixed` numeric mode unless `PYFWI_NUMERICS=legacy` or `PYFWI_BACKEND=opencl`. `PyFWI.info()` shows
+  `(auto, the default)` and, when it falls back to OpenCL, why.
+
 ### Numerical changes
 
 - CUDA, `fixed` mode, batched shots (step 3.9): the native kernels run several shots at once

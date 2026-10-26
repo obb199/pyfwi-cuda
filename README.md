@@ -130,9 +130,9 @@ so they cannot be installed in the same environment: uninstall one before instal
 ## What is running
 
 `PyFWI.info()` says which PyFWI runs and on what: the fork and its git commit (when it runs from a
-checkout), the backend (`opencl`) and numeric mode (`legacy`: the results of PyFWI 0.1.10), the
-OpenCL device a propagator would use, the OpenCL platforms and the versions of the libraries. Attach
-it to any bug report.
+checkout), the backend (for example `cuda device 0 (auto, the default)`) and the numeric mode (`legacy`:
+the results of PyFWI 0.1.10; `fixed`), the OpenCL device a propagator would use, the OpenCL platforms
+and the versions of the libraries. Attach it to any bug report.
 
 ```python
 import PyFWI
@@ -145,14 +145,19 @@ the process; Python shows it with `logging.basicConfig(level=logging.INFO)`.
 ## Choosing the backend
 
 The backend that runs the kernels is chosen by `inpa['backend']`, else by the environment variable
-`PYFWI_BACKEND`, else it is `opencl`:
+`PYFWI_BACKEND`, else it is `auto`:
 
 | Value | Meaning |
 | --- | --- |
-| `opencl` | The OpenCL engine of PyFWI 0.1.10 (default) |
+| `auto` | CUDA when the OpenCL device that would be used is an NVIDIA GPU (or when there is no OpenCL device) and CUDA can run, otherwise OpenCL (default since 0.3.0) |
+| `opencl` | The OpenCL engine of PyFWI 0.1.10 (the default of 0.2.0) |
 | `cuda` | CUDA when it can run here, otherwise OpenCL with the reason in the log |
 | `cuda:strict` | CUDA, or an error that says why it cannot run |
-| `auto` | CUDA when the OpenCL device that would be used is an NVIDIA GPU and CUDA can run |
+
+CUDA cannot run without CuPy, so a plain installation (no `cuda13` or `cuda12` extra) keeps the OpenCL
+engine and the results of PyFWI 0.1.10. With one of those extras on an NVIDIA GPU, `auto` runs CUDA, in
+the `fixed` numeric mode; `PYFWI_NUMERICS=legacy` keeps the results of 0.1.10 on CUDA (with the slower
+parity kernels), and `PYFWI_BACKEND=opencl` keeps the OpenCL engine.
 
 The numeric mode is chosen the same way, with `inpa['numerics']` or `PYFWI_NUMERICS`: `legacy` gives the
 results of PyFWI 0.1.10 (default on OpenCL), `fixed` corrects its numerical bugs (default on CUDA;
@@ -161,9 +166,10 @@ the source at every internal time step instead of once per recorded sample, whic
 grid-scale noise that 0.1.10 creates at grid spacings of a few metres.
 
 CUDA needs CuPy for the CUDA version of the driver: the `cuda13` extra for drivers of the 580 series
-or newer, `cuda12` for older ones (see [Installing the fork](#installing-the-fork)). The CUDA backend of Phase 2 runs the same kernels as OpenCL (its results agree
-with OpenCL to about 1e-6 for seismograms and 2e-5 for gradients); the faster CUDA kernels come in
-Phase 3.
+or newer, `cuda12` for older ones (see [Installing the fork](#installing-the-fork)). In the `fixed` mode
+the CUDA backend runs kernels written for CUDA (Phase 3), in the `legacy` mode the kernel files of
+OpenCL compiled for CUDA (its results agree with OpenCL to about 1e-6 for seismograms and 2e-5 for
+gradients).
 
 ## Citing PyFWI
 

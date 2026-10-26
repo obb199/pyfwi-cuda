@@ -47,7 +47,10 @@ def test_info_reports_the_package_and_versions(monkeypatch):
     assert set(summary) == {"pyfwi", "origin", "source", "commit", "backend", "numeric_mode", "device",
                             "opencl_platforms", "opencl_error", "versions"}
     assert summary["pyfwi"] == PyFWI.__version__ and summary["origin"] == ORIGIN
-    assert (summary["backend"], summary["numeric_mode"]) == ("opencl", "legacy")  # the defaults
+    # The defaults (step 3.11): auto, CUDA in the fixed mode where it can run, else OpenCL in the legacy one.
+    from PyFWI.backends.selection import DEFAULT_NUMERICS
+    backend = summary["backend"].split()[0]
+    assert "(auto, the default" in summary["backend"] and summary["numeric_mode"] == DEFAULT_NUMERICS[backend]
     assert summary["source"] == os.path.dirname(os.path.abspath(PyFWI.__file__))
     assert summary["versions"]["numpy"] == numpy.__version__ and summary["versions"]["scipy"] == scipy.__version__
     assert repr(summary).startswith(f"PyFWI {PyFWI.__version__}: pyfwi-cuda")  # printed as the summary

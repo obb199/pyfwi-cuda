@@ -3,6 +3,7 @@
 pytest loads this file automatically before the tests in ``test/``. It:
 
 * puts the repository root on ``sys.path`` so tests can ``import tools.*``;
+* runs the tests that choose no backend on OpenCL (``PYFWI_BACKEND``, see below);
 * provides fixtures that **skip** a test when the hardware it needs is absent,
   so the same suite runs on the RTX machine and on GPU-less CI runners;
 * reports a test as skipped, not failed, when PoCL cannot compile kernels for the
@@ -25,6 +26,13 @@ import pytest
 #: Absolute path of the repository root (the parent of ``test/``).
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, REPO)
+
+# The backend of the tests that do not choose one. The default of the package, ``auto`` since step
+# 3.11, depends on the machine (CUDA where CuPy and an NVIDIA GPU are present); the suite pins OpenCL,
+# the backend of the golden masters of 0.1.10, also for the scripts it runs in subprocesses. The tests
+# of CUDA set PYFWI_BACKEND themselves (the ``backend`` fixture), and those of the default remove it
+# (test_backend_selection.py, test_info.py). A value set before pytest starts is kept.
+os.environ.setdefault("PYFWI_BACKEND", "opencl")
 
 #: Error of PoCL 3.0 (LLVM 14, the OpenCL-on-CPU of the pinned PyOpenCL wheels) on a CPU that
 #: LLVM 14 does not know, such as the AMD EPYC 9V45 (Zen 5) of some GitHub-hosted runners: PoCL

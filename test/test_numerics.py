@@ -63,7 +63,7 @@ def test_fixed_kernels_have_no_fp64_instruction(cuda_device, order):
 
 def test_propagators_take_their_mode(opencl_platform, monkeypatch):
     monkeypatch.delenv("PYFWI_NUMERICS", raising=False)
-    monkeypatch.delenv("PYFWI_BACKEND", raising=False)
+    monkeypatch.setenv("PYFWI_BACKEND", "opencl")  # the default mode of OpenCL (auto may choose CUDA, step 3.11)
     assert tiny_case().W.numerics == "legacy"
     W = tiny_case(inpa_extra={"numerics": "fixed"}).W
     assert W.numerics == "fixed" and "PYFWI_FIXED" in W.kernel_caller()[0]

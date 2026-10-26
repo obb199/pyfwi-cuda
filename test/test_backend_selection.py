@@ -58,7 +58,7 @@ def select():
 
 def test_precedence_inpa_then_environment_then_default():
     from PyFWI.backends.selection import requested_backend
-    assert requested_backend({}, {}) == ("opencl", "default")
+    assert requested_backend({}, {}) == ("auto", "default")  # step 3.11 (opencl in 0.2.0)
     assert requested_backend({}, {"PYFWI_BACKEND": " CUDA "}) == ("cuda", "PYFWI_BACKEND")
     assert requested_backend({"backend": "auto"}, {"PYFWI_BACKEND": "cuda"}) == ("auto", "inpa['backend']")
     assert requested_backend({"backend": None}, {"PYFWI_BACKEND": "cuda:strict"}) == ("cuda:strict", "PYFWI_BACKEND")
@@ -82,7 +82,20 @@ def test_numeric_mode_precedence_and_defaults():
 
 def test_opencl_never_probes_cuda(select):
     assert select({"backend": "opencl"}, probe=never).backend == "opencl"
-    assert select(probe=never).describe() == "opencl"
+    assert select(env={"PYFWI_BACKEND": "opencl"}, probe=never).describe() == "opencl (opencl asked by PYFWI_BACKEND)"
+
+
+def test_the_default_is_auto(select, caplog):
+    # Step 3.11: CUDA on the NVIDIA GPU that OpenCL would use, when CUDA can run; else OpenCL, with the
+    # reason in the description (PyFWI.info) and in the log at INFO level.
+    selection = select(device=nvidia_device(4), probe=usable("0000:04:00.0"))
+    assert (selection.backend, selection.requested, selection.origin) == ("cuda", "auto", "default")
+    assert selection.describe() == "cuda device 0 (auto, the default)"
+    with caplog.at_level(logging.INFO, logger="PyFWI"):
+        selection = select(device=nvidia_device(4), probe=unusable("CuPy is not installed"))
+    assert selection.describe() == "opencl (auto, the default; CUDA cannot run: CuPy is not installed)"
+    assert caplog.records[-1].levelno == logging.INFO
+    assert select(device=CPU, probe=usable("0000:04:00.0")).backend == "opencl"  # a CPU stays on OpenCL
 
 
 # ---------------------------------------------------------------------------------- the choice
@@ -173,14 +186,18 @@ def test_has_cuda_backend_looks_for_the_module():
     assert has_cuda_backend() == os.path.exists(module)
 
 
-def test_without_opencl_auto_stays_on_opencl(select, monkeypatch):
+def test_without_opencl_auto_takes_cuda_device_0(select, monkeypatch):
+    # Step 3.11: no OpenCL device at all (the NVIDIA driver without OpenCL): CUDA is the only engine.
     import PyFWI._opencl_device as opencl_device
 
     def no_platform(*args, **kwargs):
         raise RuntimeError("No OpenCL platform found.")
     monkeypatch.setattr(opencl_device, "choose_devices", no_platform)
-    selection = select({"backend": "auto"}, probe=usable("0000:04:00.0"))
-    assert selection.backend == "opencl" and selection.reason == "no OpenCL device to match with a CUDA GPU"
+    selection = select({"backend": "auto"}, probe=usable("0000:04:00.0", "0000:05:00.0"))
+    assert (selection.backend, selection.cuda_ordinal) == ("cuda", 0)
+    # A device named in inpa that cannot be found is not replaced by a CUDA GPU.
+    selection = select({"backend": "auto", "device": 1}, probe=usable("0000:04:00.0"))
+    assert selection.backend == "opencl" and selection.reason == "the OpenCL device named in inpa does not exist"
 
 
 def test_opencl_bus_ids():
@@ -210,6 +227,25 @@ def test_propagators_follow_the_selection(opencl_platform, monkeypatch, caplog):
             tiny_case(inpa_extra={"backend": "cuda:strict"})
     with pytest.raises(ValueError, match="Unknown backend"):
         tiny_case(inpa_extra={"backend": "vulkan"})
+
+
+def test_the_default_runs_cuda_on_the_rtx_and_opencl_on_a_cpu(nvidia_opencl_platform, cuda_device, monkeypatch):
+    # Step 3.11, on the real machine: without PYFWI_BACKEND, a propagator on the NVIDIA OpenCL device
+    # runs on CUDA, in the fixed numeric mode; on the CPU (POCL), on OpenCL in the legacy mode.
+    import pyopencl as cl
+
+    monkeypatch.delenv("PYFWI_BACKEND", raising=False)
+    monkeypatch.delenv("PYFWI_NUMERICS", raising=False)
+    monkeypatch.setenv("PYOPENCL_CTX", str(nvidia_opencl_platform))
+    W = tiny_case().W
+    assert (W._backend.name, W.numerics, W.backend_selection.origin) == ("cuda", "fixed", "default")
+    cpu = next((i for i, p in enumerate(cl.get_platforms()) if "Portable" in p.name), None)
+    if cpu is None:
+        pytest.skip("no POCL platform for the second half")
+    monkeypatch.setenv("PYOPENCL_CTX", str(cpu))
+    W = tiny_case().W
+    assert (W._backend.name, W.numerics) == ("opencl", "legacy")
+    assert "is not a CUDA GPU" in W.backend_selection.reason
 
 
 def test_the_rtx_matches_its_cuda_device(nvidia_opencl_platform, cuda_device):

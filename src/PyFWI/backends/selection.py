@@ -4,16 +4,20 @@ What is asked, in order of precedence:
 
 1. ``inpa['backend']``;
 2. the ``PYFWI_BACKEND`` environment variable;
-3. ``DEFAULT`` (``"opencl"`` in Phase 2: CUDA comes in as an option).
+3. ``DEFAULT``: ``"auto"`` since 0.3.0 (step 3.11); ``"opencl"`` in 0.2.0, where CUDA came in as an
+   option.
 
 The values:
 
 * ``"opencl"``: the OpenCL engine of PyFWI 0.1.10;
 * ``"cuda"``: CUDA if it can run here, otherwise OpenCL, with the reason in the log (warning);
 * ``"cuda:strict"``: CUDA, or an error that says why it cannot run;
-* ``"auto"``: CUDA when the OpenCL device that would be used is an NVIDIA GPU and CUDA can run,
-  otherwise OpenCL (the reason in the log, at INFO level). A CPU or a non-NVIDIA GPU chosen with
-  ``inpa['platform']``/``inpa['device']`` therefore keeps ``auto`` on OpenCL.
+* ``"auto"``: CUDA when the OpenCL device that would be used is an NVIDIA GPU, or when there is no
+  OpenCL device at all (a machine with the NVIDIA driver but no OpenCL), and CUDA can run; otherwise
+  OpenCL (the reason in the log, at INFO level). A CPU or a non-NVIDIA GPU chosen with
+  ``inpa['platform']``/``inpa['device']`` or ``PYOPENCL_CTX`` therefore keeps ``auto`` on OpenCL.
+  Without CuPy (installed by the ``cuda13`` and ``cuda12`` extras) CUDA cannot run, so a default
+  installation keeps the OpenCL engine of 0.1.10.
 
 CUDA can run when CuPy imports, sees a GPU, the NVIDIA driver supports the CUDA version of CuPy,
 and this PyFWI has a CUDA backend (``PyFWI.backends.cuda``, step 2.3). The CUDA device is the one
@@ -33,8 +37,8 @@ from dataclasses import dataclass
 #: Values of ``inpa['backend']`` and ``PYFWI_BACKEND``.
 CHOICES = ("opencl", "cuda", "cuda:strict", "auto")
 
-#: What runs when nothing is asked.
-DEFAULT = "opencl"
+#: What is asked when neither ``inpa`` nor the environment asks anything (step 3.11; ``"opencl"`` in 0.2.0).
+DEFAULT = "auto"
 
 #: Environment variable read when ``inpa`` has no ``backend`` key.
 ENVIRONMENT_VARIABLE = "PYFWI_BACKEND"
@@ -89,14 +93,13 @@ class Selection:
     def describe(self):
         """One line for the log and ``PyFWI.info()``.
 
-        For example ``"opencl"`` (the default), ``"cuda device 0 (cuda asked by PYFWI_BACKEND)"`` or
-        ``"opencl (auto asked by inpa['backend']; CUDA cannot run: CuPy is not installed ...)"``.
+        For example ``"cuda device 0 (auto, the default)"``, ``"cuda device 0 (cuda asked by
+        PYFWI_BACKEND)"`` or ``"opencl (auto asked by inpa['backend']; CUDA cannot run: CuPy is not
+        installed ...)"``.
         """
         text = f"cuda device {self.cuda_ordinal}" if self.backend == "cuda" else self.backend
-        if self.origin != "default":
-            text += f" ({self.requested} asked by {self.origin}"
-            text += f"; CUDA cannot run: {self.reason})" if self.reason else ")"
-        return text
+        asked = f"{self.requested}, the default" if self.origin == "default" else f"{self.requested} asked by {self.origin}"
+        return f"{text} ({asked}; CUDA cannot run: {self.reason})" if self.reason else f"{text} ({asked})"
 
 
 def requested_backend(inpa, environ=None):
@@ -205,10 +208,12 @@ def select_backend(inpa, environ=None, device=None, probe=probe_cuda):
     if status.usable:
         if bus_id is not None and bus_id in status.bus_ids:
             ordinal = status.bus_ids.index(bus_id)
+        elif device is None and not explicit_device:
+            ordinal = 0  # no OpenCL device at all: CUDA is the only engine that can run (auto too, 3.11)
         elif requested == "auto" or explicit_device:
             # auto only follows an NVIDIA OpenCL device; cuda follows inpa when it names a device.
             reason = (f"the chosen OpenCL device ({device.name} on {device.platform.name}) is not a CUDA GPU"
-                      if device is not None else "no OpenCL device to match with a CUDA GPU")
+                      if device is not None else "the OpenCL device named in inpa does not exist")
         else:
             ordinal = 0
 
