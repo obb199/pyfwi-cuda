@@ -691,6 +691,19 @@ CUDA comes in as an option; the default stays `opencl`.
 
 - **Goes in:** `tools/parity_report.py`, which writes `docs/cuda-migration/reports/parity-0.2.0.md` with the error per case and per field; CHANGELOG; tag.
 - **Tests:** full PAR; 2-iteration FWI CUDA × OpenCL; EXA on both backends; DES (parity CUDA cannot be slower than OpenCL with cached kernels); PKG.
+- **Result (part 1, DES):** measured first, the parity CUDA backend (`legacy`) was slower than
+  OpenCL on the gradient of the small scenario (0.81 s against 0.75 s; faster elsewhere). Two causes,
+  both in the backend, neither changing a result: its "non-blocking" copies were synchronous (CuPy
+  copies from pageable NumPy memory make the host wait for the GPU, device to host, or for the
+  driver's staging, host to device: 0.65 s of the 0.80 s in the profile), and the 32 × 8 blocks left
+  most of the 28 multiprocessors idle on a 140 × 140 grid, where the FP64 arithmetic of `legacy`
+  makes the kernels GPU-bound (`Grad` 68 µs against 47 µs on OpenCL). The backend now copies through
+  a ring of pinned staging buffers (`_StagingPool`, 16 per size; copies to the host complete when
+  waited for or at `finish`) and takes blocks of 32 columns by 8, 4 or 2 rows, the most rows that
+  still give 8 blocks per multiprocessor (a sweep: 32 × 2 is 20 % faster on the small grid, 32 × 8
+  and 32 × 4 within 2 % on the medium one; step 3.1 replaces the rule with a tuning). Results are
+  bit for bit those of before. DES, 3 runs each, `legacy` on both: small 0.29 s / 0.65 s against
+  0.41 s / 0.75 s on OpenCL (forward / gradient), medium 13.7 s / 33.9 s against 17.7 s / 38.7 s.
 
 ### Gate G2
 

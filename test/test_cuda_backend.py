@@ -2,8 +2,9 @@
 
 The same checks as ``test_backends.py`` for OpenCL, with a kernel written in PyFWI's OpenCL C
 (``__kernel``, ``__global``, ``get_global_id``) that the backend compiles as CUDA, plus what is
-specific to CUDA: the bounds guard of ``portable_source`` (the grid of blocks is rounded up), and
-loading a module compiled by an NVRTC newer than the driver.
+specific to CUDA: the bounds guard of ``portable_source`` (the grid of blocks is rounded up),
+loading a module compiled by an NVRTC newer than the driver, the asynchronous copies through pinned
+buffers and the choice of the block (step 2.7).
 """
 import numpy as np
 import pytest
@@ -62,6 +63,46 @@ def test_copies(backend):
     small = np.zeros(4, np.float32)
     backend.to_host(small, target)
     np.testing.assert_array_equal(small, [8, 9, 10, 11])
+
+
+def test_non_blocking_copies_are_asynchronous_and_complete(backend):
+    # Through pinned staging buffers (_StagingPool): more copies than buffers of one size, with the
+    # device data changing in between, as the checkpoints of a time loop.
+    from PyFWI.backends.cuda import STAGING_DEPTH, _Copy
+
+    buffer = backend.allocate_empty(4 * 1000)
+    copies = 3 * STAGING_DEPTH
+    hosts = [np.zeros(1000, np.float32) for _ in range(copies)]
+    events = []
+    for k in range(copies):
+        source = np.full(1000, k, np.float32)
+        event = backend.to_device(buffer, source, blocking=False)
+        assert isinstance(event, _Copy)
+        source[:] = -1  # the copy took the data when it was called
+        events.append(backend.to_host(hosts[k], buffer, blocking=False))
+    backend.wait(events[-1:])  # only the last copy is waited for here ...
+    assert (hosts[-1] == copies - 1).all()
+    backend.finish()  # ... finish completes the others
+    for k in range(copies):
+        assert (hosts[k] == k).all(), k
+    assert len(backend._staging.rings[4000]) == STAGING_DEPTH  # reused, not grown
+
+
+def test_blocks_fill_the_multiprocessors(backend):
+    # 32 columns and 8 rows, or fewer rows when the grid would give fewer than BLOCKS_PER_SM blocks per
+    # streaming multiprocessor (the gradient of the small benchmark grid, 140 x 140, is 20 % faster that
+    # way in the legacy mode).
+    from PyFWI.backends.cuda import BLOCKS_PER_SM
+
+    target = BLOCKS_PER_SM * backend.multiprocessors
+    for size in [(140, 140), (440, 440), (5, 37), (4000, 4000)]:
+        block = backend.block(size)
+        assert block[0] == 32 and block[1] in (8, 4, 2), size
+        columns, rows, _ = backend.grid(size, block)
+        if block[1] > 2:
+            assert columns * rows >= target, size
+        if block[1] < 8:
+            assert np.prod(backend.grid(size, (32, 2 * block[1], 1))) < target, size
 
 
 def test_kernels_run_exactly_on_the_opencl_work_items(backend):

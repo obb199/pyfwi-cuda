@@ -37,6 +37,12 @@ how much and in which numeric mode.
 
 ### Changed
 
+- The CUDA backend copies through pinned staging buffers, so that its non-blocking copies (the
+  checkpoints and the seismograms of the time loops) no longer make the host wait for the GPU, and
+  sizes its blocks to the grid (32 columns by 8, 4 or 2 rows, enough blocks for every
+  multiprocessor). Same results; in the `legacy` mode it is now faster than OpenCL in every scenario
+  of the benchmark (small: forward 0.29 s against 0.41 s, gradient 0.65 s against 0.75 s).
+
 - Every OpenCL call of `PyFWI.wave_propagation` goes through a backend object (step 2.1):
   `PyFWI.backends.opencl.OpenCLBackend` (allocate with margins, copy, compile, set arguments,
   launch, synchronise), the interface that the CUDA backend will also implement. No change in what
