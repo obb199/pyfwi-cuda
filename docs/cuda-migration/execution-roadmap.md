@@ -604,6 +604,14 @@ CUDA comes in as an option; the default stays `opencl`.
   Measured in `fixed`: vp 0.61 %, vs 0.27 %, density 1.4 % (0.1.10: 6.9 %, 60 %, 135 %); the
   remaining density error is the one-step offset of its term in `_adjoint_step`. `fixed` ×
   `legacy`: raw gradients up to 45 % (`mu`), cosines 0.955 (lambda), 0.89 (mu), 0.93 (density).
+- **MAT in `fixed` (test):** `tools/math_baseline.py` gains the density check (`gradient_fd_rho`)
+  and the one-step dot product (`adjoint_dot`, `None` for the published 0.1.10, which has no
+  engine; the known-bug test now calls it); the baseline was regenerated with 0.1.10 (only the new
+  entries changed: density 135 %). `test/test_math.py` measures both numeric modes and requires
+  each not to be worse than 0.1.10; for `fixed` it also requires the three gradients within 3 % of
+  finite differences and the dot product below 1e-5. Measured in `fixed`: gradients 0.6 % (vp),
+  0.27 % (vs), 1.4 % (density); dot product 1.1e-7 (`legacy` 4.3e-3); analytic correlation 0.9990
+  (0.9987); reflection 1.09 % (1.08 %); late energy 6.9e-9 (4.3e-9).
 
 ### 2.5 API contract on CUDA
 

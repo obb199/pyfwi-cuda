@@ -3,9 +3,9 @@
 The golden masters check that results do not *change*; this script checks how *right*
 they are, with four metrics computed on small homogeneous or inclusion models:
 
-``gradient_fd`` (vp) and ``gradient_fd_vs`` (vs)
+``gradient_fd`` (vp), ``gradient_fd_vs`` (vs) and ``gradient_fd_rho`` (density)
     The adjoint-state gradient against centred finite differences of the misfit
-    J(m) = 1/2 ||d(m) - d_obs||^2. For six smooth random perturbations dm of vp (or vs),
+    J(m) = 1/2 ||d(m) - d_obs||^2. For six smooth random perturbations dm of vp (vs, rho),
     limited to the interior of the model, the ratio
     [J(m + eps dm) - J(m - eps dm)] / (2 eps) / <g, dm> should be 1. Metric: the median
     of |ratio - 1| (and the six ratios). PyFWI sizes its absorbing layer with the
@@ -25,6 +25,13 @@ they are, with four metrics computed on small homogeneous or inclusion models:
 ``late_energy``
     Energy of the wavefield at the end of a 1.2 s run divided by its peak, in a 600 m
     homogeneous model (the wave should have left through the absorbing boundary).
+``adjoint_dot``
+    The dot-product test of one time step: |<(A - I) u, v> - <u, (A^T - I) v>| divided by
+    |<(A - I) u, v>|, A being the forward step of the propagation engine and A^T the adjoint
+    updates of its gradient loop, for random fields away from the edges, without absorbing
+    layer. It needs the engine of the fork (``None`` for the published 0.1.10, whose public
+    API exposes no single time step); the ``legacy`` mode runs the kernels of 0.1.10 in their
+    order, so it measures them.
 
 The script prints the metrics as JSON. With ``--write`` (only with the published
 0.1.10, like ``make_golden.py``) it stores them as the baseline in
@@ -33,8 +40,9 @@ version not to be worse.
 
 Not measured on 0.1.10, and why (see the roadmap): the convergence order (at grid
 spacings of 4 to 6 m the source injection of 0.1.10 excites a spurious grid-scale
-oscillation, a known bug) and the adjoint dot-product test (the public API exposes no
-single time step and its adjoint).
+oscillation, a known bug, fixed in the ``fixed`` numeric mode of the fork).
+
+The numeric mode is that of ``PYFWI_NUMERICS`` (``test/test_math.py`` measures both).
 
 Usage::
 
@@ -63,6 +71,9 @@ BASELINE_PATH = os.path.join(REPO, "test", "golden", "math_baseline.json")
 
 #: Velocity (m/s), recording sampling (s) and Ricker frequency (Hz) of the homogeneous tests.
 VELOCITY, DT, FDOM = 2500.0, 0.004, 15
+
+#: The five wavefield components, in the order of the engine's field buffers.
+COMPONENTS = ("vx", "vz", "taux", "tauz", "tauxz")
 
 
 def homogeneous_run(size, dh, order, src_xz, rec_xz, t, npml=20, chpr=0):
@@ -193,11 +204,57 @@ def metric_gradient_fd(parameter="vp"):
     return {"median_abs_error": float(np.median(np.abs(np.array(ratios) - 1))), "ratios": ratios}
 
 
+def metric_adjoint_dot():
+    """Relative mismatch of the dot-product test of one time step (``None`` without the fork's engine)."""
+    from helpers import tiny_case
+
+    case = tiny_case()
+    if not hasattr(case.W, "_engine"):  # the published 0.1.10
+        return {"relative_mismatch": None}
+    case.W.forward_modeling(case.model, False)  # the model and the arguments of the kernels
+    engine = case.W._engine
+    engine.prepare_gradient()
+    zero = np.zeros((engine.tnz, engine.tnx), np.float32)
+    engine.set_pml(zero, zero)
+    rng = np.random.default_rng(3)
+    # Stresses scaled by an impedance (2,200 kg/m3 x 2,500 m/s), adjoint stresses by its inverse,
+    # so that no block of the step dominates the dot products.
+    scale = {"vx": 1.0, "vz": 1.0, "taux": 5.5e6, "tauz": 5.5e6, "tauxz": 5.5e6}
+
+    def random_fields(power):
+        fields = {}
+        for par in COMPONENTS:
+            field = zero.copy()
+            field[12:-12, 12:-12] = rng.standard_normal((engine.tnz - 24, engine.tnx - 24)) * scale[par] ** power
+            fields[par] = field
+        return fields
+
+    def apply(buffers, fields, step):
+        for buffer, par in zip(buffers, COMPONENTS):
+            engine.backend.to_device(buffer, fields[par])
+        step()
+        out = {par: np.empty_like(zero) for par in COMPONENTS}
+        for buffer, par in zip(buffers, COMPONENTS):
+            engine.backend.to_host(out[par], buffer)
+        return out
+
+    u, v = random_fields(1), random_fields(-1)
+    engine._set_update_args(np.int32(1))
+    au = apply(engine._field_buffers(), u, engine._forward_step)
+    engine._set_adjoint_args()
+    adjoint = (engine.avx_b, engine.avz_b, engine.ataux_b, engine.atauz_b, engine.atauxz_b)
+    atv = apply(adjoint, v, engine._adjoint_updates)
+    left = sum(np.sum((au[p].astype(np.float64) - u[p]) * v[p]) for p in COMPONENTS)
+    right = sum(np.sum(u[p].astype(np.float64) * (atv[p].astype(np.float64) - v[p])) for p in COMPONENTS)
+    return {"relative_mismatch": float(abs(left - right) / abs(left))}
+
+
 def measure():
     """All metrics, as a JSON-serialisable dict."""
     return {"gradient_fd": metric_gradient_fd("vp"), "gradient_fd_vs": metric_gradient_fd("vs"),
-            "analytic": metric_analytic(), "pml_reflection": metric_pml_reflection(),
-            "late_energy": metric_late_energy()}
+            "gradient_fd_rho": metric_gradient_fd("rho"), "analytic": metric_analytic(),
+            "pml_reflection": metric_pml_reflection(), "late_energy": metric_late_energy(),
+            "adjoint_dot": metric_adjoint_dot()}
 
 
 def main():
