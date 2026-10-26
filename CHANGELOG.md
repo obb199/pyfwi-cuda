@@ -25,8 +25,9 @@ how much and in which numeric mode.
   backend (OpenCL: `legacy`, the results of 0.1.10; CUDA: `fixed`). `W.numerics` and `PyFWI.info()`
   say which. The `fixed` mode writes the floating-point constants as float literals with 9 significant
   digits: the kernels compute in FP32 only, and `dt` is no longer truncated to 6 decimals. With it the
-  CUDA backend runs the medium scenario of the benchmark in 4.5 s (forward) and 6.5 s (gradient),
-  against 47.3 s and 57.3 s for 0.1.10.
+  CUDA backend runs the medium scenario of the benchmark in 4.5 s (forward) and 6.3 s (gradient),
+  against 47.3 s and 57.3 s for 0.1.10. The other corrections of `fixed` are listed under
+  Numerical changes.
 
 ### Changed
 

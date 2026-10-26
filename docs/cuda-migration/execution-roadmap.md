@@ -30,7 +30,7 @@ This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into 
 | 2.1 | Engine and backend interface; OpenCL behind the interface | Phase 2 · **done** |
 | 2.2 | Backend selector and fallback | **done** |
 | 2.3 | Parity CUDA backend (single source, `legacy` mode) | **done** |
-| 2.4 | `legacy` and `fixed` numeric modes | |
+| 2.4 | `legacy` and `fixed` numeric modes | **done** |
 | 2.5 | API contract on the CUDA backend | |
 | 2.6 | `[cuda13]` and `[cuda12]` extras | |
 | 2.7 | Parity report and release 0.2.0 | **G2** |
@@ -630,6 +630,25 @@ CUDA comes in as an option; the default stays `opencl`.
   minimises the misfit times the scale (same minimum and directions, a first step of about 1 m/s;
   the misfit history is unscaled): 2 iterations take the misfit from 9.5e-6 to 1.3e-6. Known-bug
   tests for both, unit-amplitude source; `legacy` keeps 0.1.10.
+- **Result (summary):** criterion met. PRE: no FP64 instruction in any kernel of `fixed`. Every
+  known bug of the step passes in `fixed` and stays an expected failure in `legacy`, whose kernels
+  are, after the C preprocessor, token for token those of 0.1.10 (the characterisation tests check
+  its results bit for bit). Corrected in `fixed`: float constants and the full `dt`; `vz` in the
+  wells; no access outside the buffers but the row past the field edge (Phase 3); the source
+  resampled to every internal step (no grid noise); residual and recording rows aligned; the Taylor
+  order-8 coefficients; the gradient loop as the adjoint of the forward step, with the adjoint
+  absorbing layer and the shear strain of Grad corrected; optimisers independent of the data
+  amplitude. Differences published in the CHANGELOG: propagation cases up to 6 % (seismograms) and
+  45 % (raw gradients, `mu`); inversion cases of the golden masters: models 1e-4 to 9e-4, misfits 1
+  to 8 %, time-lapse differences 3 to 4 %; examples: gradients about 50 % (vs, density), misfit of
+  the FWI example 25 % at its second stage. MAT not worse on any metric, and better on most:
+  gradients against finite differences vp 6.9 → 0.6 %, vs 60 → 0.27 %, density 135 → 1.4 %;
+  one-step dot product 4.3e-3 → 1.1e-7; analytic correlation 0.9987 → 0.9990; order-8 convergence
+  2.2 → 7.5; grid noise 2e-2 → 2.5e-9. On the examples `fixed` inverts a little better (FWI model
+  error 2599 → 2562 m/s, misfit of the second stage 14.9 → 11.2; time-lapse error 0.683 → 0.679).
+  SAN: `compute-sanitizer` finds no error in the CUDA kernels (they run `fixed`). DES (CUDA `fixed`,
+  3 runs): medium 4.5 s forward and 6.3 s gradient, small 0.20 s and 0.18 s (0.1.10: 47.3 s / 57.3 s
+  and 1.50 s / 1.91 s); OpenCL stays `legacy` by default.
 
 ### 2.5 API contract on CUDA
 
