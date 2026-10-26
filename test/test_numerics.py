@@ -21,8 +21,9 @@ so far:
   exist, and the residual is injected at the very step where it was recorded;
 * the gradient loop is the adjoint of the forward step: the adjoint velocities are updated
   before the adjoint stresses, and Grad pairs the forward field with the adjoint field of the
-  same step (0.1.10: about two steps earlier). The gradients change by up to 30 %, mostly the
-  density one (cosine 0.96 or more with 0.1.10).
+  same step (0.1.10: about two steps earlier), and the adjoint fields are damped in the absorbing
+  layer as the forward ones. The gradients change by up to 30 %, mostly the density one (cosine
+  0.96 or more with 0.1.10).
 """
 import numpy as np
 import pytest

@@ -199,10 +199,12 @@ def test_gradient(run_example):
     # inclusion and larger there than in the rest of the model.
     update, inside = -gradients[20]["vp"], true["vp"] == 3000.0
     assert update[inside].mean() > 0 and update[inside].mean() > update[~inside].mean()
-    # Checkpoints: a few percent already gives the gradient of dense checkpointing.
+    # Checkpoints: a few percent already gives the gradient of dense checkpointing. Measured cosine
+    # with chpr = 20: 0.999997 in the legacy numeric mode, 0.99999 in the fixed one (whose adjoint
+    # absorbing layer differs, step 2.4), both far closer than the gradient's own accuracy.
     reference = gradients[20]["vp"]
     cos5 = np.dot(gradients[5]["vp"].ravel(), reference.ravel()) / np.linalg.norm(gradients[5]["vp"]) / np.linalg.norm(reference)
-    assert cos5 > 0.99999
+    assert cos5 > 0.9999
     # Parameterisations: lam/mu/rho converted with grad_lmd_to_vd equals the vp/vs/rho gradient.
     for name in ("vp", "vs", "rho"):
         np.testing.assert_allclose(r["gradient_lmd_as_dv"][name], gradients[20][name], rtol=1e-5,

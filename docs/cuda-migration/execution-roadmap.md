@@ -588,6 +588,16 @@ CUDA comes in as an option; the default stays `opencl`.
   stresses first and runs Grad last. Known-bug tests: the one-step dot product (4.3e-3 → 1.1e-7,
   fork only) and the vp gradient against finite differences (6.9 % → 1.9 %). Density 135 % → 51 %,
   vs 60 % → 58 %. `fixed` × `legacy`: raw gradients up to 20 % (density), seismograms unchanged.
+- **Correction 2 (adjoint absorbing layer, kernels):** in `fixed`, `Adj_update_tau` and `Adj_update_v`
+  damp every adjoint field by `dxpml + dzpml`, as the forward kernels damp theirs (`#ifdef
+  PYFWI_FIXED` blocks; `legacy` token for token as 0.1.10). 0.1.10 used `dxpml` for `Ataux`, `dzpml`
+  for `Atauz`, `2 dxpml + dzpml` for `Avx` and `dxpml + 2 dzpml` for `Avz`. Static known-bug test;
+  the vp check tightened to 1.5 % (measured 0.6 %). vs and density stay dominated by the shear-strain
+  bug of Grad until correction 3 (55 % and 82 % at this point). `fixed` × `legacy`: raw gradients
+  up to 21 %. The gradient example's checkpoint check (cosine of `chpr = 5` with `chpr = 20`) gives
+  0.99999 in `fixed` against 0.999997 in `legacy` (the backward rebuild through the absorbing layer
+  meets a different adjoint field there; `chpr = 1` improves, 0.990 against 0.986): its bound goes
+  from 0.99999 to 0.9999.
 
 ### 2.5 API contract on CUDA
 

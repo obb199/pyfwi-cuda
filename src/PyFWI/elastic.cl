@@ -418,8 +418,15 @@ __kernel void Adj_update_tau(__global float *Avx, __global float *Avz,
                HIGH_ORDER(c3*(Avz[below2]*rho_b[below2] -Avz[above3]*rho_b[above3])) +
                HIGH_ORDER(c4*(Avz[below3]*rho_b[below3] -Avz[above4]*rho_b[above4])))/dz;
 
+#ifdef PYFWI_FIXED
+  // Fixed mode (step 2.4): every field damped by dxpml + dzpml, as in the forward kernels;
+  // 0.1.10 damps the adjoint fields with other combinations of the two profiles.
+  Ataux[center]+= - dt * ((dxpml[center] + dzpml[center])*Ataux[center] + DxpAVx);
+  Atauz[center]+= - dt * ((dxpml[center] + dzpml[center])*Atauz[center] + DzmAVz);
+#else
   Ataux[center]+= - dt * ((dxpml[center])*Ataux[center] + DxpAVx);
   Atauz[center]+= - dt * ((dzpml[center])*Atauz[center] + DzmAVz);
+#endif
     
     float DzpAvx= (c1*(Avx[below]*rho_b[below] - Avx[center]*rho_b[center]) +
                     c2*(Avx[below2]*rho_b[below2] -Avx[above]*rho_b[above])+
@@ -488,8 +495,15 @@ float DxmAtaux =  (c1*((lam[center]+2*mu[center])*Ataux[center] - (lam[left]+2*m
                     HIGH_ORDER(c3*(mu[right3]*Atauxz[right3] - mu[left2]*Atauxz[left2])) + 
                     HIGH_ORDER(c4*(mu[right4]*Atauxz[right4] - mu[left3]*Atauxz[left3])))/dx;
 
+#ifdef PYFWI_FIXED
+  // Fixed mode (step 2.4): every field damped by dxpml + dzpml, as in the forward kernels;
+  // 0.1.10 damps the adjoint fields with other combinations of the two profiles.
+  Avx[center]+= -dt* ((dxpml[center] + dzpml[center]) * Avx[center] + (DxmAtaux + DxmAtauz + DzmAtauxz));
+  Avz[center]+= -dt* ((dxpml[center] + dzpml[center]) * Avz[center] + (DzpAtaux + DzpAtauz + DxpAtauxz));
+#else
   Avx[center]+= -dt* ((2*dxpml[center] + dzpml[center]) * Avx[center] + (DxmAtaux + DxmAtauz + DzmAtauxz));
   Avz[center]+= -dt* ((dxpml[center] + 2*dzpml[center]) * Avz[center] + (DzpAtaux + DzpAtauz + DxpAtauxz));
+#endif
 
 }
 

@@ -75,6 +75,10 @@ how much and in which numeric mode.
   the check against finite differences of `tools/math_baseline.py` the vp gradient goes from 6.9 %
   to 1.9 % (median error) and the density gradient from 135 % to 51 %; gradients change by up to
   30 % (mostly density; cosine 0.96 or more with `legacy`).
+- In the `fixed` mode the adjoint kernels damp every adjoint field by `dxpml + dzpml` inside the
+  absorbing layer, as the forward kernels do. 0.1.10 damps `Ataux` with `dxpml` alone, `Atauz` with
+  `dzpml` alone, `Avx` with `2 dxpml + dzpml` and `Avz` with `dxpml + 2 dzpml`, so that part of the
+  adjoint field comes back from the boundary. vp gradient against finite differences: 1.9 % → 0.6 %.
 - In the `fixed` mode order 8 uses the Taylor coefficients of the staggered first derivative
   (1225/1024, -245/3072, 49/5120, -5/7168). 0.1.10 uses them multiplied by 1434 and rounded to
   integers, so that `c1 + 3 c2 + 5 c3 + 7 c4` is 1436/1434 instead of 1: every order-8 wave travels

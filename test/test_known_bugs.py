@@ -36,7 +36,8 @@ and must pass everywhere else.
 | ``test_seismograms_do_not_depend_on_the_source_sampling`` | same bug, seen in the seismograms: 3 to 6 % off at dh = 10 m, several times the signal at 5 m | 2.4 (``fixed`` mode) |
 | ``test_residual_is_injected_where_it_was_recorded`` | the residual is injected one recorded sample off when rounding makes ``nt_ext`` differ from the recorded steps | 2.4 (``fixed`` mode) |
 | ``test_adjoint_step_is_the_transpose_of_the_forward_step`` | the adjoint updates run in the wrong order (fork only: needs the engine) | 2.4 (``fixed`` mode) |
-| ``test_vp_gradient_agrees_with_finite_differences`` | ``Grad`` pairs the forward field with the adjoint field of two steps earlier: 7 % off | 2.4 (``fixed`` mode) |
+| ``test_adjoint_fields_are_damped_as_the_forward_ones`` | the adjoint kernels damp the adjoint fields with other combinations of the absorbing profiles | 2.4 (``fixed`` mode) |
+| ``test_vp_gradient_agrees_with_finite_differences`` | ``Grad`` pairs the forward field with the adjoint field of two steps earlier, and the adjoint absorbing layer differs: 7 % off | 2.4 (``fixed`` mode) |
 | ``test_receivers_are_recorded_inside_the_seismograms`` | the same rounding records the last sample one row past the seismograms (``dt`` = 5 ms) | 2.4 (``fixed`` mode) |
 | ``test_crosswell_vz_seismogram_records_vz`` | the crosswell ``vz`` seismogram stores ``vx`` | 2.4 (``fixed`` mode) |
 | ``test_crosswell_kernels_assign_vz_to_vz_seismograms`` | same bug, lines 27 and 74 of ``elastic_crosswell.cl`` | 2.4 (``fixed`` mode) |
@@ -379,17 +380,37 @@ def test_adjoint_step_is_the_transpose_of_the_forward_step(opencl_platform, nume
 
 
 @pytest.mark.parametrize("numerics", NUMERIC_MODES)
+def test_adjoint_fields_are_damped_as_the_forward_ones(numerics):
+    # The forward kernels damp every field by dt (dxpml + dzpml) inside the absorbing layer. The
+    # adjoint kernels of 0.1.10 damp Ataux with dxpml alone, Atauz with dzpml alone, Avx with
+    # 2 dxpml + dzpml and Avz with dxpml + 2 dzpml: the adjoint field is not absorbed as the forward
+    # one, and part of it comes back from the boundary.
+    import PyFWI
+    with open(os.path.join(os.path.dirname(PyFWI.__file__), "elastic.cl")) as f:
+        source = active_source(f.read(), fixed=numerics == "fixed")
+    damping = []
+    for kernel in ("Adj_update_tau", "Adj_update_v"):
+        body = source[source.index(f"__kernel void {kernel}("):]
+        body = body[:body.index("\n}")]
+        damping += [line.strip() for line in body.splitlines() if "pml[center]" in line and "+=" in line]
+    assert len(damping) == 5, damping  # Ataux, Atauz, Atauxz, Avx, Avz
+    assert all("(dxpml[center] + dzpml[center])" in line for line in damping), damping
+
+
+@pytest.mark.parametrize("numerics", NUMERIC_MODES)
 def test_vp_gradient_agrees_with_finite_differences(opencl_platform, monkeypatch, numerics):
     # The mathematical-baseline check (tools/math_baseline.py): six smooth interior perturbations of
     # vp, the absorbing layer pinned. 0.1.10 injects the residual of step t, updates the adjoint
     # field and only then runs Grad, pairing the forward field after step t with the adjoint field
-    # of about two steps earlier; the fixed mode runs Grad first (PropagationEngine._adjoint_step).
+    # of about two steps earlier; the fixed mode runs Grad first (PropagationEngine._adjoint_step)
+    # and damps the adjoint fields as the forward ones.
     from tools.math_baseline import metric_gradient_fd
 
     monkeypatch.setenv("PYFWI_NUMERICS", numerics)
     error = metric_gradient_fd("vp")["median_abs_error"]
-    # Measured: 6.9 % in 0.1.10 and in the legacy mode; 1.9 % in the fixed mode.
-    assert error < 0.03, f"median |ratio - 1| = {error:.3f}"
+    # Measured: 6.9 % in 0.1.10 and in the legacy mode; in the fixed mode 1.9 % with the adjoint
+    # order alone, 0.6 % with the adjoint damping too.
+    assert error < 0.015, f"median |ratio - 1| = {error:.3f}"
 
 
 @pytest.mark.parametrize("numerics", NUMERIC_MODES)
