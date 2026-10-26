@@ -1,5 +1,4 @@
 import os
-from types import SimpleNamespace
 import numpy as np
 # from numpy.core.shape_base import block
 import pyopencl as cl
@@ -8,30 +7,12 @@ from scipy.ndimage import gaussian_filter
 
 import PyFWI.fwi_tools as tools
 from PyFWI.backends.opencl import OpenCLBackend
+from PyFWI.engine.propagation import PropagationEngine, checkpoint_steps
 import PyFWI._info as _info
 from PyFWI.fwi_tools import expand_model
 import PyFWI.acquisition as acq
 from PyFWI.processing import prepare_residual
 from PyFWI.grad_switcher import grad_lmd_to_vd
-
-
-#: The five recorded components, in the order of the seismogram and residual buffers.
-COMPONENTS = ("vx", "vz", "taux", "tauz", "tauxz")
-
-#: Value of the margins around every device buffer (step 1.7 of the fork): what the out-of-bounds
-#: reads of the kernels of 0.1.10 return. 0 reproduces the golden masters, which 0.1.10 computed
-#: inside zero guard bands; the tests set NaN or 1.0 to see where the kernels read and write.
-MARGIN_FILL = 0.0
-
-#: Smallest margin before and after every device buffer, in bytes: the size of the guard bands
-#: with which the golden masters of 0.1.10 were made (test/oob_guard.py).
-MIN_MARGIN_BYTES = 1 << 16
-
-#: Names of the OpenCL kernels that PyFWI launches (in elastic.cl, and injSrc and Adj_injSrc
-#: also in elastic_crosswell.cl and elastic_surface.cl). WavePreparation retrieves each of them
-#: once, in ``self.knl``.
-KERNELS = ("MakeAllZero", "MakeGradZero", "injSrc", "Adj_injSrc", "update_velx", "update_velz",
-           "update_tauz", "update_tauxz", "Adj_update_tau", "Adj_update_v", "Grad")
 
 
 class WavePreparation:
@@ -113,10 +94,8 @@ class WavePreparation:
         
         self.dxr = np.int32(rec_dis / self.dh)
 
-        chp = int(chpr * self.nt / 100)
-        self.chp = np.linspace(0, self.nt-1, chp, dtype=np.int32)
-        if (len(self.chp) < 2): #& (chpr != 0)
-            self.chp = np.array([1, self.nt-1])
+        # Time steps whose forward field is stored for the gradient (PyFWI.engine.checkpoint_steps).
+        self.chp = checkpoint_steps(chpr, self.nt)
 
         self.nchp = len(self.chp)
         # Take chpr into account
@@ -168,14 +147,6 @@ class WavePreparation:
         self.dx_pml, self.dz_pml = tools.pml_counstruction(self.tnz, self.tnx, self.dh, self.npml,
                                                      pmlR, pml_dir)
 
-        # Checkpoints of the forward field: for each component an array (ns, nchp, tnz, tnx), so
-        # that the field of one shot at one checkpoint is a contiguous block, copied straight from
-        # and to the device without blocking (step 1.5 of the fork). 0.1.10 stored them as
-        # (tnz, tnx, ns, nchp), where that field is scattered with a stride of ns * nchp values;
-        # the attribute W still shows them in that layout (see the W property).
-        self._checkpoints = {par: np.zeros((self.ns, self.nchp, self.tnz, self.tnx), dtype=np.float32)
-                             for par in COMPONENTS}
-
         self.D = tools.Fdm(order=self.sdo * 2)
 
         self.components = components
@@ -188,120 +159,34 @@ class WavePreparation:
         self._backend = OpenCLBackend(inpa.get("platform"), inpa.get("device"))
         self.ctx = self._backend.context
         self.queue = self._backend.queue
-
-        kernel, kernel_crosswell, kernel_surface = self.kernel_caller()
-
-        self.prg_cw = self._backend.build(kernel_crosswell)
-        self.prg = self._backend.build(kernel)
-        self.prg_surf = self._backend.build(kernel_surface)
-
-        if self.acq_type == 0:
-            self.prg.injSrc = self.prg_cw.injSrc
-            self.prg.Adj_injSrc = self.prg_cw.Adj_injSrc
-        elif self.acq_type == 1:
-            self.prg.injSrc = self.prg_surf.injSrc
-            self.prg.Adj_injSrc = self.prg_surf.Adj_injSrc
-
-        # The kernel objects, retrieved once and reused at every launch (step 1.3 of the fork).
-        # 0.1.10 wrote ``self.prg.update_velx(...)`` at every launch, and each ``self.prg.<name>``
-        # created a new kernel object (clCreateKernel), several times per time step; PyOpenCL
-        # 2026 also warns about it (RepeatedKernelRetrieval). injSrc and Adj_injSrc come from the
-        # program of the acquisition (assigned to self.prg just above for acq_type 0 and 1).
-        self.knl = SimpleNamespace(**{name: self._backend.kernel(self.prg, name) for name in KERNELS})
-        # Global size of every launch: one work item per grid point, absorbing boundary included.
-        self.global_size = (int(self.tnz), int(self.tnx))
-
         self.mf = cl.mem_flags
 
-        # Margins around every device buffer (step 1.7 of the fork). The kernels of 0.1.10 read and
-        # write outside their buffers: the stencils up to 4 grid rows before and after a field, the
-        # unbounded loop of the right well (acq_type 0 and 2) up to rec_top_right_var rows past the
-        # end of a field, and up to tnz values past the end of a seismogram or residual. In 0.1.10
-        # those accesses hit whatever lay next to the buffer (garbage, NaN on POCL, or a
-        # CL_OUT_OF_RESOURCES crash); now they hit margins of MARGIN_FILL inside the allocation.
-        # Sub-buffers must start at a multiple of the base-address alignment of the device.
-        align = self._backend.alignment
-        needed = max(MIN_MARGIN_BYTES, (int(self.rec_top_right_var) + 8) * int(self.tnx) * 4,
-                     (int(self.tnz) + 8) * 4)
-        self.margin_bytes = -(-needed // align) * align
-        # The allocation (margins included) of every device buffer, by attribute name.
-        self._allocations = {}
+        # The time loops, the device buffers (with margins), the kernels and the checkpoints live in
+        # the engine (step 2.1 of the fork, PyFWI.engine.propagation); its attributes (W.vx_b,
+        # W.knl, W.prg...) are shown as attributes of the propagator (__getattr__ below).
+        kernel, kernel_crosswell, kernel_surface = self.kernel_caller()
+        injection = {0: "crosswell", 1: "surface"}.get(self.acq_type, "elastic")
+        self._engine = PropagationEngine(
+            self._backend, {"elastic": kernel, "crosswell": kernel_crosswell, "surface": kernel_surface},
+            injection, tnz=self.tnz, tnx=self.tnx, ns=self.ns, nr=self.nr, nt=self.nt, nt_ext=self.nt_ext,
+            dt_scale=self.dt_scale, chp=self.chp, dxr=self.dxr, srcx=self.srcx, srcz=self.srcz, source=self.src,
+            rec_top_right_var=self.rec_top_right_var)
 
-        # Buffer for residuals
-        res = np.zeros((np.int32(self.nr))).astype(np.float32, order='C')
+        # Make a list for seismograms (filled by the engine)
+        self.seismogram = self._engine.seismogram
 
-        self._set_buffer("res_vx_b", res)
-        self._set_buffer("res_vz_b", res)
-        self._set_buffer("res_taux_b", res)
-        self._set_buffer("res_tauz_b", res)
-        self._set_buffer("res_tauxz_b", res)
-        # The residual of one shot, every time sample, per component (residual_to_device);
-        # created at the first gradient and reused while its size does not change.
-        self.res_shot_b = {}
+    def __getattr__(self, name):
+        """The attributes of the engine as attributes of the propagator, as in 0.1.10 (step 2.1).
 
-
-        v = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
-
-        # Buffer for forward modelling
-        self._set_buffer("vx_b", v)
-        self._set_buffer("vz_b", v)
-        self._set_buffer("taux_b", v)
-        self._set_buffer("tauz_b", v)
-        self._set_buffer("tauxz_b", v)
-
-        # Buffer for seismograms
-        seismogram_id = np.zeros((self.nt_ext, self.nr)).astype(np.float32, order='C')
-
-        self._set_buffer("seismogramid_vx_b", seismogram_id)
-        self._set_buffer("seismogramid_vz_b", seismogram_id)
-        self._set_buffer("seismogramid_taux_b", seismogram_id)
-        self._set_buffer("seismogramid_tauz_b", seismogram_id)
-        self._set_buffer("seismogramid_tauxz_b", seismogram_id)
-
-        # Make a list for seismograms
-        self.seismogram = {
-            'vx': np.zeros((self.nt_ext, self.nr, self.ns)).astype(np.float32, order='C'),
-            'vz': np.zeros((self.nt_ext, self.nr, self.ns)).astype(np.float32, order='C'),
-            'taux': np.zeros((self.nt_ext, self.nr, self.ns)).astype(np.float32, order='C'),
-            'tauz': np.zeros((self.nt_ext, self.nr, self.ns)).astype(np.float32, order='C'),
-            'tauxz': np.zeros((self.nt_ext, self.nr, self.ns)).astype(np.float32, order='C'),
-        }
-
-    def _set_buffer(self, name, host):
-        """Create the device buffer ``self.<name>`` holding ``host``, with margins (step 1.7 of the fork).
-
-        The allocation is ``[margin | the data of host | margin]``, the margins filled with
-        ``MARGIN_FILL`` and ``margin_bytes`` long; ``self.<name>`` is the sub-buffer of the data,
-        which the kernels use as before, and ``self._allocations[name]`` the whole allocation
-        (``margins_changed`` reads it). Replacing a buffer releases its old allocation.
-
-        Parameters
-        ----------
-        name : str
-            Attribute name, e.g. ``"vx_b"``.
-        host : numpy.ndarray
-            Initial content (float32 in PyFWI), copied to the device.
+        Python calls this only for names the propagator itself does not have: the device buffers
+        (``W.vx_b``...), the programs and kernels (``W.prg``, ``W.knl``), the margins
+        (``W.margin_bytes``, ``W.margins_changed()``) and the other attributes of
+        ``PyFWI.engine.propagation.PropagationEngine``.
         """
-        buffer, self._allocations[name] = self._backend.allocate(host, self.margin_bytes, MARGIN_FILL)
-        setattr(self, name, buffer)
-
-    def margins_changed(self):
-        """Names of the device buffers whose margins no longer hold ``MARGIN_FILL`` (step 1.7).
-
-        A kernel wrote outside that buffer (or, with a NaN fill, accumulated into it). Used by the
-        tests of the out-of-bounds accesses; it reads every allocation back from the device.
-        """
-        changed = []
-        margin = self.margin_bytes
-        for name, allocation in self._allocations.items():
-            whole = np.empty(self._backend.nbytes(allocation) // 4, np.float32)
-            self._backend.to_host(whole, allocation)
-            data_bytes = self._backend.nbytes(getattr(self, name))
-            margins = np.concatenate([whole[:margin // 4], whole[(margin + data_bytes) // 4:]])
-            intact = np.isnan(margins).all() if np.isnan(MARGIN_FILL) else (margins == np.float32(MARGIN_FILL)).all()
-            if not intact:
-                changed.append(name)
-        return changed
+        engine = self.__dict__.get("_engine")
+        if engine is None:
+            raise AttributeError(name)
+        return getattr(engine, name)
 
     @property
     def W(self):
@@ -309,12 +194,12 @@ class WavePreparation:
 
         ``W['vx'][:, :, s, c]`` is the field ``vx`` of shot ``s`` at checkpoint ``c`` (time step
         ``chp[c]``), absorbing boundary included. Since step 1.5 the arrays are views of the
-        checkpoint storage (``_checkpoints``, layout ``(ns, nchp, tnz, tnx)``): same shape, dtype,
+        checkpoint storage (``W._engine.checkpoints``, layout ``(ns, nchp, tnz, tnx)``): same shape, dtype,
         axis order and values as in 0.1.10, and writing into them changes the checkpoints, as
         before. The dictionary itself is new at each access, so replacing one of its entries has
         no effect; assign ``W`` instead (setter below).
         """
-        return {par: store.transpose(2, 3, 0, 1) for par, store in self._checkpoints.items()}
+        return {par: store.transpose(2, 3, 0, 1) for par, store in self._engine.checkpoints.items()}
 
     @W.setter
     def W(self, value):
@@ -323,58 +208,17 @@ class WavePreparation:
         Used by ``PyFWI.optimization`` (``FO_waves.W = copy.deepcopy(W)``). The arrays are copied
         into the storage layout, as float32.
         """
-        self._checkpoints = {par: np.ascontiguousarray(np.asarray(array, dtype=np.float32).transpose(2, 3, 0, 1))
-                             for par, array in value.items()}
+        self._engine.checkpoints = {par: np.ascontiguousarray(np.asarray(array, dtype=np.float32).transpose(2, 3, 0, 1))
+                                    for par, array in value.items()}
 
     def adjoint_buffer_preparing(self):
-        # Buffer for gradient
-        g_mu = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
-        self._set_buffer("Gmu_b", g_mu)
-
-        g_lam = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
-        self._set_buffer("Glam_b", g_lam)
-
-        g_rho = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
-        self._set_buffer("Grho_b", g_rho)
-
-        g_mu_precond = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
-        self._set_buffer("g_mu_precond_b", g_mu_precond)
-
-        self._set_buffer("g_lam_precond_b", g_mu_precond)
-
-        self._set_buffer("g_rho_precond_b", g_mu_precond)
-
-        # Buffer for backward modelling
-        v = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
-        self._set_buffer("avx_b", v)
-        self._set_buffer("avz_b", v)
-        self._set_buffer("ataux_b", v)
-        self._set_buffer("atauz_b", v)
-        self._set_buffer("atauxz_b", v)
+        """Create the gradient and adjoint-field buffers for a new gradient (``PropagationEngine.prepare_gradient``)."""
+        self._engine.prepare_gradient()
 
     def gradient_reading(self):
-        g_mu = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
-
-        g_lam = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
-
-        g_rho = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
-
-        self._backend.to_host(g_mu, self.Gmu_b)
-        self._backend.to_host(g_lam, self.Glam_b)
-        self._backend.to_host(g_rho, self.Grho_b)
-
-        if self.energy_balancing:
-            g_mu_precond = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
-            g_lam_precond = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
-            g_rho_precond = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
-
-            self._backend.to_host(g_mu_precond, self.g_mu_precond_b)
-            self._backend.to_host(g_lam_precond, self.g_lam_precond_b)
-            self._backend.to_host(g_rho_precond, self.g_rho_precond_b)
-        else:
-            g_mu_precond = np.ones((self.tnz, self.tnx)).astype(np.float32, order='C')
-            g_lam_precond = np.ones((self.tnz, self.tnx)).astype(np.float32, order='C')
-            g_rho_precond = np.ones((self.tnz, self.tnx)).astype(np.float32, order='C')
+        # The gradient and (with energy balancing) the preconditioners, read from the device.
+        g_mu, g_lam, g_rho, g_mu_precond, g_lam_precond, g_rho_precond = \
+            self._engine.read_gradient(preconditioners=self.energy_balancing)
 
         def denom2factor(precond0):
             precond = np.copy(precond0)
@@ -408,111 +252,26 @@ class WavePreparation:
 
 
     def make_seismogram(self, s, t):
-        """
-        This function read the seismogram buffer and put its value in the
-        right place in main seismogram matrix based on source and the
-        time step.
-
-        Parameters
-        ----------
-            s : int
-                Number of current acive source.
-
-            t : float
-                Current time step.
-        """
-        # The five reads are enqueued without blocking and waited for once (step 1.4 of the
-        # fork); 0.1.10 waited after each of them.
-        buffers = (self.seismogramid_vx_b, self.seismogramid_vz_b, self.seismogramid_taux_b,
-                   self.seismogramid_tauz_b, self.seismogramid_tauxz_b)
-        host = {par: np.empty((self.nt_ext, self.nr), np.float32) for par in COMPONENTS}
-        events = [self._backend.to_host(host[par], buffer, blocking=False)
-                  for par, buffer in zip(COMPONENTS, buffers)]
-        self._backend.wait(events)
-        for par in COMPONENTS:
-            self.seismogram[par][:, :, s] = host[par]
+        """Read the seismograms of shot ``s`` into ``self.seismogram`` (``PropagationEngine.make_seismogram``)."""
+        self._engine.make_seismogram(s)
 
     def make_residual(self, res, s, t):
-        """
-        This function reads the inject the residual to residual buffer based on source and the
-        time step.
-
-        Parameters
-        ----------
-            res: list
-                list containing the residual of all parameters
-
-            s : int
-                Number of current acive source.
-
-            t : float
-                Current time step.
-        """
-        # Injection data into opencl
-        res_src_vx = (res['vx'][np.int32(t - 1), s * self.nr:(s + 1) * self.nr]).astype(np.float32, order='C')
-        self._backend.to_device(self.res_vx_b, res_src_vx)
-
-        res_src_vz = (res['vz'][np.int32(t - 1), s * self.nr:(s + 1) * self.nr]).astype(np.float32, order='C')
-        self._backend.to_device(self.res_vz_b, res_src_vz)
-
-        res_src_taux = (res['taux'][np.int32(t - 1), s * self.nr:(s + 1) * self.nr]).astype(np.float32, order='C')
-        self._backend.to_device(self.res_taux_b, res_src_taux)
-
-        res_src_tauz = (res['tauz'][np.int32(t - 1), s * self.nr:(s + 1) * self.nr]).astype(np.float32, order='C')
-        self._backend.to_device(self.res_tauz_b, res_src_tauz)
-
-        res_src_tauxz = (res['tauxz'][np.int32(t - 1), s * self.nr:(s + 1) * self.nr]).astype(np.float32, order='C')
-        self._backend.to_device(self.res_tauxz_b, res_src_tauxz)
+        """Copy sample ``t - 1`` of the residual of shot ``s`` from the host, as 0.1.10 did (kept, unused)."""
+        self._engine.make_residual(res, s, t)
 
     def residual_to_device(self, res, s):
-        """Copy the residual of shot ``s``, all time samples, to the device (step 1.4 of the fork).
-
-        0.1.10 copied one time sample of the residual from the host before each injection
-        (``make_residual``): five blocking copies every ``dt_scale`` steps, 750 per shot in the
-        example of the documentation. Now the five components of the shot are copied once, and
-        ``residual_sample`` copies each time sample on the device.
-
-        Parameters
-        ----------
-        res : dict
-            Residual of every shot, ``{component: array (time samples, nr * ns)}``, as prepared
-            by ``gradient`` (``prepare_residual``).
-        s : int
-            Index of the shot.
-        """
-        for par in COMPONENTS:
-            # Columns s*nr to (s+1)*nr, as float32 and contiguous: the same values make_residual sent.
-            shot = np.ascontiguousarray(res[par][:, s * self.nr:(s + 1) * self.nr], dtype=np.float32)
-            if self.res_shot_b.get(par) is None or self._backend.nbytes(self.res_shot_b[par]) != shot.nbytes:
-                self.res_shot_b[par] = self._backend.allocate_empty(shot.nbytes)
-            self._backend.to_device(self.res_shot_b[par], shot)
+        """Copy the residual of shot ``s`` to the device (``PropagationEngine.residual_to_device``)."""
+        self._engine.residual_to_device(res, s)
 
     def residual_sample(self, t):
-        """Copy time sample ``t - 1`` of the shot's residual into the buffers that Adj_injSrc reads.
-
-        The copies stay on the device and do not make the host wait. Adj_injSrc keeps reading
-        ``res_vx_b``... of ``nr`` values, as in 0.1.10, so that what its unbounded receiver loops
-        read past the end of them is unchanged (``test_known_bugs.py``).
-
-        Parameters
-        ----------
-        t : int
-            Time index used by 0.1.10 in ``make_residual(res, s, t)``: the sample ``t - 1`` is copied.
-        """
-        row = int(self.nr) * 4  # bytes of one time sample of one component
-        sample = int(t) - 1
-        if sample < 0:  # as NumPy indexing in make_residual: -1 is the last sample
-            sample += self._backend.nbytes(self.res_shot_b["vx"]) // row
-        targets = (self.res_vx_b, self.res_vz_b, self.res_taux_b, self.res_tauz_b, self.res_tauxz_b)
-        for par, target in zip(COMPONENTS, targets):
-            self._backend.copy(target, self.res_shot_b[par], row, sample * row)
+        """Copy residual sample ``t - 1`` on the device (``PropagationEngine.residual_sample``)."""
+        self._engine.residual_sample(t)
 
     def pml_preparation(self, v_max):
 
         vdx_pml = self.dx_pml * v_max
         vdz_pml = self.dz_pml * v_max
-        self._set_buffer("vdx_pml_b", vdx_pml)
-        self._set_buffer("vdz_pml_b", vdz_pml)
+        self._engine.set_pml(vdx_pml, vdz_pml)
 
     def kernel_caller(self):
         '''
@@ -690,10 +449,7 @@ class WavePreparation:
 
         self.vs = model['vs']
 
-        self._set_buffer("rho_b", 1 / model['rho'])
-
-        self._set_buffer("mu_b", self.mu)
-        self._set_buffer("lam_b", self.lam)
+        self._engine.set_model(1 / model['rho'], self.mu, self.lam)
 
 
 class WavePropagator(WavePreparation):
@@ -736,220 +492,23 @@ class WavePropagator(WavePreparation):
                 A dictionary containing p-wave velocity and density
 
         """
-        coeff = np.int32(+1)
-
+        observe = None
         if self.forward_show:
             self.initial_wavefield_plot(model)
+            showpurose = np.zeros((self.tnz, self.tnx), dtype=np.float32)
 
-        # The arguments that do not change during the time loop are set once (step 1.3).
-        self._set_update_args(coeff)
-        for s in range(self.ns):
-            self._backend.call(self.knl.MakeAllZero, self.global_size,
-                               self.vx_b, self.vz_b,
-                               self.taux_b, self.tauz_b, self.tauxz_b)
-            self._set_injection_args(s)
+            def observe(s, t):  # called by the engine after every time step
+                if np.remainder(t, 20) == 0:
+                    self.plot_propagation(self._engine.read_field("vx_b", showpurose), t)
 
-            self.__kernel(s, coeff)
-
-        # The checkpoint copies did not block: wait for them before W can be read.
-        self._backend.finish()
+        # The time loop of every shot (PyFWI.engine.propagation.PropagationEngine.forward).
+        self._engine.forward(observe)
 
         if self.acq_type == 2:
             for par in self.seismogram:
                 self.seismogram[par][:, :self.n_well_rec] = np.flip(self.seismogram[par][:, :self.n_well_rec], axis=1)
         return self.seismogram
     
-    def _field_buffers(self):
-        """The five device buffers of the forward field, in the order of ``COMPONENTS``."""
-        return (self.vx_b, self.vz_b, self.taux_b, self.tauz_b, self.tauxz_b)
-
-    def _launch(self, kernel):
-        """Launch ``kernel`` on the whole grid with the arguments set before (``set_args``/``set_arg``).
-
-        ``pyopencl.enqueue_nd_range_kernel`` only enqueues, whereas calling the kernel object
-        (``kernel(queue, size, None, *args)``) also sets every argument again. Used for the
-        launches of the time loops (step 1.3 of the fork).
-        """
-        self._backend.launch(kernel, self.global_size)
-
-    def _set_update_args(self, coeff):
-        """Set the arguments of the four update kernels of the elastic fields.
-
-        Parameters
-        ----------
-        coeff : numpy.int32
-            +1 to propagate forward in time (forward modelling), -1 to go backward (the forward
-            field rebuilt during the gradient).
-
-        Called at the start of each forward modelling and of each gradient, after the model and
-        PML buffers of that call exist (``elastic_buffers`` and ``pml_preparation`` create new
-        ones at every forward modelling).
-        """
-        self._backend.set_args(self.knl.update_velx, coeff, self.vx_b, self.taux_b, self.tauxz_b, self.rho_b,
-                               self.vdx_pml_b, self.vdz_pml_b)
-        self._backend.set_args(self.knl.update_velz, coeff, self.vz_b, self.tauz_b, self.tauxz_b, self.rho_b,
-                               self.vdx_pml_b, self.vdz_pml_b)
-        self._backend.set_args(self.knl.update_tauz, coeff, self.vx_b, self.vz_b, self.taux_b, self.tauz_b,
-                               self.lam_b, self.mu_b, self.vdx_pml_b, self.vdz_pml_b)
-        self._backend.set_args(self.knl.update_tauxz, coeff, self.vx_b, self.vz_b, self.tauxz_b, self.mu_b,
-                               self.vdx_pml_b, self.vdz_pml_b)
-
-    def _set_injection_args(self, s):
-        """Set the arguments of injSrc that stay the same for every time step of source ``s``.
-
-        The last five arguments (the four source samples and the time index) change at each
-        injection and are set by ``__injSrc``; zeros are placeholders until then.
-        """
-        zero = np.float32(0)
-        self._backend.set_args(self.knl.injSrc, self.vx_b, self.vz_b,
-                               self.taux_b, self.tauz_b, self.tauxz_b,
-                               self.seismogramid_vx_b, self.seismogramid_vz_b,
-                               self.seismogramid_taux_b, self.seismogramid_tauz_b, self.seismogramid_tauxz_b,
-                               self.dxr,
-                               self.srcx[s], self.srcz[s],
-                               zero, zero, zero, zero, np.int32(0))
-
-    def __injSrc(self, t, s):
-        src_kv_x, src_kv_z, src_kt_x, src_kt_z, src_kt_xz = np.float32(self.src(t))
-
-        # Arguments 13 to 17: the source samples and the time index t (the others are set once
-        # per source by _set_injection_args). src_kt_xz is not used by the kernel, as in 0.1.10.
-        for index, value in enumerate((src_kv_x, src_kv_z, src_kt_x, src_kt_z, t), start=13):
-            self._backend.set_arg(self.knl.injSrc, index, value)
-        self._launch(self.knl.injSrc)
-
-    def __update_fwd(self, coeff):
-        # Arguments set by _set_update_args at the start of the forward modelling.
-        self._launch(self.knl.update_velx)
-        self._launch(self.knl.update_velz)
-        self._launch(self.knl.update_tauz)
-        self._launch(self.knl.update_tauxz)
-            
-    def __kernel(self, s, coeff=+1):
-        showpurose = np.zeros((self.tnz, self.tnx), dtype=np.float32)
-        chpc = 0
-        t_src = 0
-        for t in np.arange(self.nt):
-            if t % self.dt_scale == 0:
-                self.__injSrc(np.int32(t_src), s)
-                t_src += 1
-
-            self.__update_fwd(coeff=coeff)
-
-            if t in self.chp:
-                # Straight into the contiguous checkpoint storage, without blocking (step 1.5).
-                # The queue runs in order, so the next updates start after the copies; the host
-                # waits once, at the end of forward_propagator.
-                for par, buffer in zip(COMPONENTS, self._field_buffers()):
-                    self._backend.to_host(self._checkpoints[par][s, chpc], buffer, blocking=False)
-
-                chpc += 1
-
-
-            if self.forward_show and np.remainder(t, 20) == 0:
-                self._backend.to_host(showpurose, self.vx_b)
-                self.plot_propagation(showpurose, t)
-        self.make_seismogram(s, t)
-        
-    def __adjoint_modelling_per_source(self, res):
-        self._backend.call(self.knl.MakeGradZero, self.global_size,
-                           self.Gmu_b, self.Glam_b, self.Grho_b,
-                           self.g_mu_precond_b, self.g_lam_precond_b, self.g_rho_precond_b)
-
-        # The arguments of the time loop do not change during the gradient: set them once
-        # (step 1.3). The update kernels rebuild the forward field backwards (coeff = -1).
-        self._set_update_args(np.int32(-1))
-        self._set_adjoint_args()
-
-        for s in range(self.ns):
-            self._backend.call(self.knl.MakeAllZero, self.global_size,
-                               self.vx_b, self.vz_b,
-                               self.taux_b, self.tauz_b, self.tauxz_b)
-
-            self._backend.call(self.knl.MakeAllZero, self.global_size,
-                               self.avx_b, self.avz_b,
-                               self.ataux_b, self.atauz_b, self.atauxz_b)
-            self.residual_to_device(res, s)
-
-            self.__kernel_gradient(res, s)
-
-    def _set_adjoint_args(self):
-        """Set the arguments of the adjoint kernels (Adj_injSrc, Adj_update_tau, Adj_update_v, Grad).
-
-        Called at the start of each gradient, after ``adjoint_buffer_preparing`` has created the
-        adjoint and gradient buffers. The residual buffers keep their identity; only their content
-        changes (``make_residual``).
-        """
-        self._backend.set_args(self.knl.Adj_injSrc, self.avx_b, self.avz_b,
-                               self.ataux_b, self.atauz_b, self.atauxz_b,
-                               self.res_vx_b, self.res_vz_b,
-                               self.res_taux_b, self.res_tauz_b, self.res_tauxz_b,
-                               self.dxr)
-        self._backend.set_args(self.knl.Adj_update_tau, self.avx_b, self.avz_b,
-                               self.ataux_b, self.atauz_b, self.atauxz_b,
-                               self.rho_b,
-                               self.vdx_pml_b, self.vdz_pml_b)
-        self._backend.set_args(self.knl.Adj_update_v, self.avx_b, self.avz_b,
-                               self.ataux_b, self.atauz_b, self.atauxz_b,
-                               self.lam_b, self.mu_b,
-                               self.vdx_pml_b, self.vdz_pml_b)
-        self._backend.set_args(self.knl.Grad, self.vx_b, self.vz_b,
-                               self.taux_b, self.tauz_b, self.tauxz_b,
-                               self.avx_b, self.avz_b,
-                               self.ataux_b, self.atauz_b, self.atauxz_b,
-                               self.lam_b, self.mu_b, self.rho_b,
-                               self.Gmu_b, self.g_mu_precond_b,
-                               self.Glam_b, self.g_lam_precond_b,
-                               self.Grho_b, self.g_rho_precond_b)
-
-    def __kernel_gradient(self, res, s, coeff=-1):
-        chpc = self.nchp - 1
-
-        coeff = np.int32(coeff)
-
-        vx_show = np.zeros((self.tnz, self.tnx), dtype=np.float32)
-        adj_vx_show = np.zeros((self.tnz, self.tnx), dtype=np.float32)
-
-        t_src = np.int32(self.nt_ext)
-        # time loop
-        for t in range(self.nt - 1, 0, -1):  # range(self.nt-1,self.nt-2,-1):#
-            if t == self.chp[chpc]:
-                # Straight from the contiguous checkpoint storage, without blocking (step 1.5):
-                # the checkpoints do not change during the gradient.
-                for par, buffer in zip(COMPONENTS, self._field_buffers()):
-                    self._backend.to_device(buffer, self._checkpoints[par][s, chpc], blocking=False)
-
-                chpc -= 1
-
-            else:
-                """ Backward propagation  """
-                # Arguments (coeff = -1) set by _set_update_args at the start of the gradient.
-                self._launch(self.knl.update_tauxz)
-                self._launch(self.knl.update_tauz)
-                self._launch(self.knl.update_velz)
-                self._launch(self.knl.update_velx)
-
-            """ Adjoint modeling """
-            # Arguments set by _set_adjoint_args at the start of the gradient.
-            if t % self.dt_scale == 0:
-                self.residual_sample(t_src)  # 0.1.10: self.make_residual(res, s, t_src)
-
-                self._launch(self.knl.Adj_injSrc)
-                t_src -= 1
-
-            self._launch(self.knl.Adj_update_tau)
-            self._launch(self.knl.Adj_update_v)
-            self._launch(self.knl.Grad)
-
-            # Plotting wave propagation
-            if self.backward_show and (np.remainder(t, 20) == 0 or t == self.nt_ext - 2):
-                self._backend.to_host(vx_show, self.taux_b)
-
-                self._backend.to_host(adj_vx_show, self.ataux_b)
-
-                self.plot_propagation(vx_show, t_src, adj_vx_show)
-
-
     def forward_modeling(self, model0, show=False):
         """
         forward_modeling performs the forward modeling.
@@ -1012,7 +571,19 @@ class WavePropagator(WavePreparation):
         if show:
             self.initial_wavefield_plot({'vp':self.vp}, plot_type="Backward")
 
-        self.__adjoint_modelling_per_source(res)
+        observe = None
+        if show:
+            vx_show = np.zeros((self.tnz, self.tnx), dtype=np.float32)
+            adj_vx_show = np.zeros((self.tnz, self.tnx), dtype=np.float32)
+
+            def observe(s, t, t_src):  # called by the engine after every time step
+                if np.remainder(t, 20) == 0 or t == self.nt_ext - 2:
+                    self._engine.read_field("taux_b", vx_show)
+                    self._engine.read_field("ataux_b", adj_vx_show)
+                    self.plot_propagation(vx_show, t_src, adj_vx_show)
+
+        # The backward time loop of every shot (PyFWI.engine.propagation.PropagationEngine.gradient).
+        self._engine.gradient(res, observe)
 
         glam, gmu, grho0 = self.gradient_reading()
 

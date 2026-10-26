@@ -95,7 +95,7 @@ def test_checkpoints_are_stored_contiguously_and_W_shows_views(opencl_platform):
     W = case.W
     W.forward_modeling(case.model, False)
     for name in COMPONENTS:
-        store = W._checkpoints[name]
+        store = W._engine.checkpoints[name]
         assert store.shape == (W.ns, W.nchp, W.tnz, W.tnx) and store[1, 3].flags.c_contiguous
         assert np.shares_memory(W.W[name], store)  # a view, not a copy
 
@@ -106,7 +106,7 @@ def test_forward_and_gradient_make_no_copy_of_the_checkpoints(opencl_platform):
     # and gradient copy fields straight from and to the storage, so the extra memory they need is a
     # small fraction of it (a temporary copy of the checkpoints would need as much again).
     case = tiny_case(ns=2, chpr=100)
-    stored = sum(array.nbytes for array in case.W._checkpoints.values())
+    stored = sum(array.nbytes for array in case.W._engine.checkpoints.values())
     forward_and_gradient(case)  # warm-up: buffers and caches of the first run
     tracemalloc.start()
     try:

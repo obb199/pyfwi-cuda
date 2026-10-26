@@ -43,6 +43,7 @@ stay those of 0.1.10. Next: Phase 2, the CUDA backend.
 | Path | Content |
 | --- | --- |
 | `src/PyFWI/` | The PyFWI package (OpenCL kernels in `*.cl`) |
+| `src/PyFWI/engine/`, `src/PyFWI/backends/` | The time loops of the propagation, and the backends that run their kernels (OpenCL; CUDA in Phase 2) |
 | `example/` | The original examples (notebooks and one script) |
 | `test/` | Test suite (`pytest`); hardware-dependent tests skip themselves when the hardware is missing |
 | `tools/check_env.py` | Checks that an environment can run PyFWI and the CUDA tool chain |

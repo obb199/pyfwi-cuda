@@ -15,6 +15,12 @@ how much and in which numeric mode.
   `PyFWI.backends.opencl.OpenCLBackend` (allocate with margins, copy, compile, set arguments,
   launch, synchronise), the interface that the CUDA backend will also implement. No change in what
   runs; `W.ctx`, `W.queue`, `W.prg`, `W.knl` and the buffer attributes are unchanged.
+- The time loops move to `PyFWI.engine.propagation.PropagationEngine` (step 2.1): device buffers
+  with margins, kernels and their arguments, the forward loop, the checkpoints and the gradient loop,
+  on any backend. `WavePropagator` prepares the inputs and the outputs and shows the engine's
+  attributes as its own (`W.vx_b`, `W.knl`, `W.margins_changed()`...). `MARGIN_FILL` and
+  `MIN_MARGIN_BYTES` are now in `PyFWI.engine.propagation`; the checkpoint storage is
+  `W._engine.checkpoints` (`W.W` is unchanged). Same results bit for bit.
 
 ### Numerical changes
 

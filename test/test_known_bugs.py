@@ -114,7 +114,7 @@ def _filled_outside_buffers(monkeypatch, fill):
     buffers written outside, given the propagator.
 
     0.1.10 (reference environment): guard bands around its buffers (``oob_guard``). The fork (step
-    1.7): the margins it allocates itself around every buffer (``wave_propagation.MARGIN_FILL``),
+    1.7): the margins it allocates itself around every buffer (``PyFWI.engine.propagation.MARGIN_FILL``),
     read back by ``WavePropagator.margins_changed``. Either way a kernel that reads outside a buffer
     sees ``fill``, and one that writes outside changes it.
     """
@@ -124,8 +124,8 @@ def _filled_outside_buffers(monkeypatch, fill):
         with guard_bands(fill=fill) as report:
             yield lambda W: report.touched()
     else:
-        import PyFWI.wave_propagation as wave
-        monkeypatch.setattr(wave, "MARGIN_FILL", fill)
+        import PyFWI.engine.propagation as engine
+        monkeypatch.setattr(engine, "MARGIN_FILL", fill)
         yield lambda W: W.margins_changed()
 
 

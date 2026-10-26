@@ -27,7 +27,7 @@ This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into 
 | 1.7 | Padded buffers: no more reads outside the allocation | **done** (and one shared context per device) |
 | 1.8 | `PyFWI.info()` and diagnostic log | **done** |
 | 1.9 | Fork release 0.1.11 | **done** · **[G1](gates/G1.md) approved** |
-| 2.1 | Engine and backend interface; OpenCL behind the interface | Phase 2 |
+| 2.1 | Engine and backend interface; OpenCL behind the interface | Phase 2 · **done** |
 | 2.2 | Backend selector and fallback | |
 | 2.3 | Parity CUDA backend (single source, `legacy` mode) | |
 | 2.4 | `legacy` and `fixed` numeric modes | |
@@ -438,6 +438,16 @@ CUDA comes in as an option; the default stays `opencl`.
 - **Goes in:** `PyFWI/engine/` (time loop, checkpoint policy, shot batching) and `PyFWI/backends/opencl.py`, with the interface allocate / copy / compile with `#define` / launch / synchronise. `WavePropagator` becomes a facade over `self._engine`.
 - **Tests:** BIT (pure refactoring); API; EXA; UNI of the interface with a fake NumPy backend, which lets the engine be tested without a device.
 - **Criterion:** BIT; engine coverage above 90% with UNI alone.
+- **Result:** `PyFWI/backends/` (interface documented in its `__init__`, `opencl.py`) and
+  `PyFWI/engine/propagation.py` (`PropagationEngine`: buffers with margins, kernels, forward loop,
+  checkpoints, gradient loop, residual; `checkpoint_steps` and `margin_bytes`). `WavePropagator`
+  keeps the inputs, the plots and the post-processing, and shows the engine's attributes as its own.
+  Shot batching is left to Phase 3, where the CUDA kernels can use it. BIT: the characterisation
+  passes bit for bit on NVIDIA and POCL. UNI: `test/test_engine.py` runs the engine on a fake NumPy
+  backend whose toy kernels have predictable effects (`test/fake_backend.py`) and checks the
+  recording, the checkpoints, the backward reconstruction, the residual injection, the order of the
+  launches and the copies; engine coverage with these tests alone: 100 %; mutations of the restore,
+  of the order of the backward updates and of the residual sample are caught.
 
 ### 2.2 Backend selector and fallback
 

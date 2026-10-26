@@ -5,13 +5,13 @@ stencils a few grid rows before and after a field, the unbounded loop of the rig
 past its end, and the receiver loops past the end of seismograms and residuals. In 0.1.10 those
 accesses hit whatever lies next to the buffer, so results depend on the memory layout and on the
 device (POCL returns NaN). Since step 1.7 every buffer is a sub-buffer of an allocation
-``[margin | data | margin]`` whose margins hold ``wave_propagation.MARGIN_FILL`` (0): the same
+``[margin | data | margin]`` whose margins hold ``PyFWI.engine.propagation.MARGIN_FILL`` (0): the same
 accesses now read zeros inside the allocation, as the guard bands of the golden masters did, so
 plain runs reproduce the golden masters bit for bit (``test_characterization.py``).
 
 These tests check the layout of the allocations, that the kernels really see the margins on the
 device, and, with bands placed beyond the margins, that no access goes beyond them, with the
-smallest margins the formula of ``WavePreparation`` allows.
+smallest margins the formula of ``PyFWI.engine.propagation.margin_bytes`` allows.
 """
 import contextlib
 
@@ -38,12 +38,12 @@ BUFFERS = {"vx_b", "vz_b", "taux_b", "tauz_b", "tauxz_b",
 def test_every_buffer_is_an_aligned_sub_buffer_with_margins(opencl_platform):
     import pyopencl as cl
 
-    import PyFWI.wave_propagation as wave
+    import PyFWI.engine.propagation as engine
     case = tiny_case(acq_type=2)
     forward_and_gradient(case)
     W = case.W
     align = max(d.mem_base_addr_align for d in W.ctx.devices) // 8
-    assert W.margin_bytes % align == 0 and W.margin_bytes >= wave.MIN_MARGIN_BYTES
+    assert W.margin_bytes % align == 0 and W.margin_bytes >= engine.MIN_MARGIN_BYTES
     assert W.margin_bytes >= (int(W.rec_top_right_var) + 8) * int(W.tnx) * 4  # the right-well loop
     assert set(W._allocations) == BUFFERS
     for name, allocation in W._allocations.items():
@@ -58,8 +58,8 @@ def test_the_kernels_see_the_margins_on_the_device(opencl_platform, monkeypatch)
     # The kernels use the sub-buffers only. Created with COPY_HOST_PTR, an allocation is placed on
     # the NVIDIA device only for that region, and the margins hold whatever the device memory held
     # (zeros, by luck, in a fresh process); PyFWI writes it whole explicitly. NaN margins must show.
-    import PyFWI.wave_propagation as wave
-    monkeypatch.setattr(wave, "MARGIN_FILL", np.nan)
+    import PyFWI.engine.propagation as engine
+    monkeypatch.setattr(engine, "MARGIN_FILL", np.nan)
     _, grad = forward_and_gradient(tiny_case())
     assert not all(np.isfinite(v).all() for v in grad.values())
 
@@ -68,7 +68,7 @@ def test_the_kernels_see_the_margins_on_the_device(opencl_platform, monkeypatch)
 def _bands_beyond_the_margins(monkeypatch, fill, band=1 << 16):
     """Put bands of ``fill`` beyond the margins of every buffer; yield a function listing those written.
 
-    The fork: ``WavePreparation._set_buffer`` is replaced, for the test, by an allocator of
+    The fork: ``PropagationEngine._set_buffer`` is replaced, for the test, by an allocator of
     ``[band | margin | data | margin | band]`` (margins as PyFWI fills them, bands of ``fill``).
     The guard bands of ``test/oob_guard.py`` cannot do it, because PyFWI allocates its buffers
     without a host array, which the guard does not wrap. 0.1.10 (reference environment): the guard
@@ -81,18 +81,19 @@ def _bands_beyond_the_margins(monkeypatch, fill, band=1 << 16):
 
     import pyopencl as cl
 
-    import PyFWI.wave_propagation as wave
+    import PyFWI.engine.propagation as engine
     allocations = []
 
     def set_buffer(self, name, host):
         host = np.ascontiguousarray(host)
         start = band + self.margin_bytes  # offset of the data; both terms are aligned
         whole = np.full((2 * start + host.nbytes) // 4, fill, np.float32)
-        whole[band // 4:(start + host.nbytes + self.margin_bytes) // 4] = wave.MARGIN_FILL
+        whole[band // 4:(start + host.nbytes + self.margin_bytes) // 4] = engine.MARGIN_FILL
         whole.view(np.uint8)[start:start + host.nbytes] = host.reshape(-1).view(np.uint8)
-        allocation = cl.Buffer(self.ctx, cl.mem_flags.READ_WRITE, whole.nbytes)
-        cl.enqueue_copy(self.queue, allocation, whole)
-        allocations.append((name, self.queue, allocation, start + host.nbytes + self.margin_bytes))
+        context, queue = self.backend.context, self.backend.queue
+        allocation = cl.Buffer(context, cl.mem_flags.READ_WRITE, whole.nbytes)
+        cl.enqueue_copy(queue, allocation, whole)
+        allocations.append((name, queue, allocation, start + host.nbytes + self.margin_bytes))
         setattr(self, name, allocation.get_sub_region(start, host.nbytes))
 
     def written():
@@ -105,7 +106,7 @@ def _bands_beyond_the_margins(monkeypatch, fill, band=1 << 16):
                 names.append(name)
         return names
 
-    monkeypatch.setattr(wave.WavePreparation, "_set_buffer", set_buffer)
+    monkeypatch.setattr(engine.PropagationEngine, "_set_buffer", set_buffer)
     yield written
 
 
@@ -115,9 +116,10 @@ def _bands_beyond_the_margins(monkeypatch, fill, band=1 << 16):
 @pytest.mark.parametrize("acq_type", [0, 1, 2])
 def test_every_out_of_bounds_access_stays_inside_the_margins(opencl_platform, monkeypatch, acq_type, sdo):
     # Bands beyond the margins: NaN shows a read beyond them, 1.0 a write. No minimum margin, so
-    # that only the formula of WavePreparation sizes the margins.
-    import PyFWI.wave_propagation as wave
-    monkeypatch.setattr(wave, "MIN_MARGIN_BYTES", 0, raising=False)
+    # that only the formula of PyFWI.engine.propagation.margin_bytes sizes the margins.
+    if not REFERENCE:
+        import PyFWI.engine.propagation as engine
+        monkeypatch.setattr(engine, "MIN_MARGIN_BYTES", 0)
     with _bands_beyond_the_margins(monkeypatch, np.nan):
         d_obs, grad = forward_and_gradient(tiny_case(acq_type=acq_type, sdo=sdo, components=4))
     assert all(np.isfinite(v).all() for v in d_obs.values()), "read beyond the margins (seismogram)"
