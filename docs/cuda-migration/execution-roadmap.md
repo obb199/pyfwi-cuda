@@ -813,6 +813,17 @@ Each optimisation is a separate commit, with a benchmark before and after, so th
   gradient 5.57 s → 5.06 s; the medium forward stays at 3.04 s because it is now limited by the host
   (127 µs of Python per step for 3 launches and their arguments, against 69 µs on the GPU), which steps
   3.6 and 3.7 address.
+- **3.6 (time on the device):** the internal step is an integer in device memory, which a minimal
+  kernel (`advance`) moves at the end of every step. `inject_and_record` reads the source of the step
+  from a table of the whole run on the device (the resampled source, `nt` × 4 values) and computes the
+  recorded row; `inject_residual` reads the residual of the shot in place at the sample of the step
+  (no more five device-to-device copies per recorded step); the source cell of the shot is on the
+  device too. Every launch of a step now has the same arguments, the condition of the CUDA graphs of
+  step 3.7, and the host no longer converts and sets the source samples at every step. The native
+  loops (`_forward_shot_native`, `_gradient_shot_native`) keep the order and the checkpoints of the
+  others. OTM unchanged (the same numbers as step 3.5); the fake backend of the engine tests runs the
+  same loops with toy kernels that read the step. DES (5 runs, `fixed`): small 0.17 s / 0.15 s →
+  0.14 s / 0.15 s, medium 3.04 s / 5.06 s → 2.90 s / 5.11 s.
 
 ### 3.11 `auto` default and release 0.3.0
 

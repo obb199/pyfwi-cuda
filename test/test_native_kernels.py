@@ -13,7 +13,8 @@ Measured, the largest difference on the 16 cases:
   5.6e-6, gradients 3.8e-5 (rounding);
 * step 3.4 (source, receivers and residual handled one thread per receiver): the same;
 * step 3.5 (fused kernels): the same; the fused kernels give the same bits as the separate native
-  kernels (``test_fused_kernels_give_the_bits_of_the_separate_ones``).
+  kernels (``test_fused_kernels_give_the_bits_of_the_separate_ones``);
+* step 3.6 (the time step on the device): the same.
 """
 import numpy as np
 import pytest

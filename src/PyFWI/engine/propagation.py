@@ -302,12 +302,18 @@ class PropagationEngine:
         #: of ``receivers`` (``receiver_table``); launched on a grid of 1 row and ``nr`` columns.
         self.native_injection = self.prg_native is not None and receivers is not None
         if self.native_injection:
-            self.knl.inject_and_record = backend.kernel(self.prg_native, "inject_and_record")
-            self.knl.inject_residual = backend.kernel(self.prg_native, "inject_residual")
+            for name in ("inject_and_record", "inject_residual", "advance"):
+                setattr(self.knl, name, backend.kernel(self.prg_native, name))
             # Read-only tables: no margins (they would hold the float MARGIN_FILL in int32 buffers).
             self.receiver_cells_b, self.receiver_first_b, self.receiver_following_b = (
                 self._table(table) for table in receivers)
             self.receiver_size = (1, max(int(nr), 1))
+            #: Step 3.6: the internal step on the device (``advance`` moves it), the cell of the source
+            #: of the shot, and the source of every step (nt x 4: vx, vz, taux, tauz), read by the
+            #: kernels, so that every launch of a step has the same arguments.
+            self.step_b = self._table(np.zeros(1, np.int32))
+            self.source_cell_b = self._table(np.zeros(1, np.int32))
+            self.source_steps_b = backend.allocate_empty(int(nt) * 4 * 4)
 
         self.margin_bytes = margin_bytes(tnz, tnx, rec_top_right_var, backend.alignment)
         # The allocation (margins included) of every device buffer, by attribute name.
@@ -456,10 +462,7 @@ class PropagationEngine:
         set_args, k = self.backend.set_args, self.knl
         adjoint = (self.avx_b, self.avz_b, self.ataux_b, self.atauz_b, self.atauxz_b)
         residuals = (self.res_vx_b, self.res_vz_b, self.res_taux_b, self.res_tauz_b, self.res_tauxz_b)
-        if self.native_injection:  # inject_residual of elastic.cu (step 3.4)
-            set_args(k.inject_residual, *adjoint, *residuals, self.receiver_cells_b, self.receiver_first_b,
-                     self.receiver_following_b)
-        else:
+        if not self.native_injection:  # inject_residual: _set_native_residual_args, once per shot
             set_args(k.Adj_injSrc, *adjoint, *residuals, self.dxr)
         set_args(k.Adj_update_tau, *adjoint, self.rho_b, self.vdx_pml_b, self.vdz_pml_b)
         set_args(k.Adj_update_v, *adjoint, self.lam_b, self.mu_b, self.vdx_pml_b, self.vdz_pml_b)
@@ -495,6 +498,15 @@ class PropagationEngine:
         else:
             self._launch(kernel)
 
+    def _set_native_residual_args(self):
+        """Arguments of inject_residual for a shot (step 3.6): the residual of the shot on the device
+        (``residual_to_device``), read at the sample of the step on the device."""
+        rows = self.backend.nbytes(self.res_shot_b["vx"]) // (4 * int(self.nr))
+        self.backend.set_args(self.knl.inject_residual, self.avx_b, self.avz_b, self.ataux_b, self.atauz_b,
+                              self.atauxz_b, *(self.res_shot_b[par] for par in COMPONENTS), self.receiver_cells_b,
+                              self.receiver_first_b, self.receiver_following_b, self.step_b,
+                              np.int32(self.steps_per_sample), np.int32(min(rows, int(self.nt_ext))))
+
     def _inject_residual(self):
         """Add the residual sample set by ``residual_sample`` to the adjoint fields (Adj_injSrc)."""
         if self.native_injection:
@@ -519,8 +531,16 @@ class PropagationEngine:
         if self.fixed:
             # Made at every forward modelling: the wavelet may have changed since the last one.
             self.source_steps = internal_source(self.src, self.nt, self.dt_scale)
+        if self.native_injection:
+            self.backend.to_device(self.source_steps_b, np.ascontiguousarray(self.source_steps[:, :4]))
+            self._set_native_injection_args()
+            self.backend.set_args(self.knl.advance, self.step_b, np.int32(+1))
         for s in range(self.ns):
             self.backend.call(self.knl.MakeAllZero, self.global_size, *self._field_buffers())
+            if self.native_injection:
+                self._start_native_shot(s, 0)
+                self._forward_shot_native(s, observe)
+                continue
             self._set_injection_args(s)
             self._forward_shot(s, observe)
         # The checkpoint copies did not block: wait for them before the checkpoints can be read.
@@ -554,6 +574,82 @@ class PropagationEngine:
             if observe is not None:
                 observe(s, t)
         self.make_seismogram(s)
+
+    # ------------------------------------------------------------------ native time loops (3.6, 3.7)
+
+    def _set_native_injection_args(self):
+        """Arguments of inject_and_record for a whole run (step 3.6): the step comes from the device."""
+        self.backend.set_args(self.knl.inject_and_record, *self._field_buffers(),
+                              self.seismogramid_vx_b, self.seismogramid_vz_b, self.seismogramid_taux_b,
+                              self.seismogramid_tauz_b, self.seismogramid_tauxz_b, self.receiver_cells_b,
+                              self.source_cell_b, self.source_steps_b, self.step_b,
+                              np.int32(self.steps_per_sample), np.int32(self.nt_ext))
+
+    def _start_native_shot(self, s, step):
+        """Put the source cell of shot ``s`` and the first internal step of its loop on the device."""
+        cell = int(self.srcz[s]) * int(self.tnx) + int(self.srcx[s])
+        self.backend.to_device(self.source_cell_b, np.array([cell], np.int32))
+        self.backend.to_device(self.step_b, np.array([step], np.int32))
+
+    def _native_forward_step(self):
+        """One forward step with the native kernels: source and receivers, the updates, the next step."""
+        self.backend.launch(self.knl.inject_and_record, self.receiver_size)
+        self._forward_step()
+        self.backend.launch(self.knl.advance, (1, 1))
+
+    def _store_checkpoint(self, s, chpc):
+        """Copy the field into checkpoint ``chpc`` of shot ``s``, without blocking (step 1.5)."""
+        for par, buffer in zip(COMPONENTS, self._field_buffers()):
+            self.backend.to_host(self.checkpoints[par][s, chpc], buffer, blocking=False)
+
+    def _forward_shot_native(self, s, observe):
+        """The forward time loop of shot ``s`` with the native kernels and the step on the device.
+
+        The checkpoints are copied after the updates of their step, as in ``_forward_shot``.
+        """
+        stored = {int(c): chpc for chpc, c in enumerate(self.chp)}
+        for t in range(self.nt):
+            self._native_forward_step()
+            if t in stored:
+                self._store_checkpoint(s, stored[t])
+            if observe is not None:
+                observe(s, t)
+        self.make_seismogram(s)
+
+    def _native_adjoint_step(self, backward):
+        """One gradient step with the native kernels (step 3.6): the forward field one step back (unless
+        it was just restored), the gradient and the adjoint updates, the residual of the step, the
+        previous step. The order of ``_adjoint_step``."""
+        if backward:
+            self._backward_step()
+        if not self.fused:  # the separate kernels (tests): Grad first, as in _adjoint_step
+            self._launch(self.knl.Grad)
+        self._adjoint_updates()  # fused: grad_adjoint_v (the gradient, then the adjoint velocities), Adj_update_tau
+        self.backend.launch(self.knl.inject_residual, self.receiver_size)
+        self.backend.launch(self.knl.advance, (1, 1))
+
+    def _restore_checkpoint(self, s, chpc):
+        """Copy checkpoint ``chpc`` of shot ``s`` back into the field, without blocking (step 1.5)."""
+        for par, buffer in zip(COMPONENTS, self._field_buffers()):
+            self.backend.to_device(buffer, self.checkpoints[par][s, chpc], blocking=False)
+
+    def _gradient_shot_native(self, s, observe):
+        """The backward time loop of shot ``s`` with the native kernels and the step on the device.
+
+        Steps nt - 1 down to 1, as ``_gradient_shot``: at a checkpoint step the forward field is
+        restored, otherwise rebuilt one step back.
+        """
+        restored = {int(c): chpc for chpc, c in enumerate(self.chp)}
+        t_src = np.int32(self.nt_ext)
+        for t in range(self.nt - 1, 0, -1):
+            if t in restored:
+                self._restore_checkpoint(s, restored[t])
+            self._native_adjoint_step(t not in restored)
+            sample, offset = divmod(t, self.steps_per_sample)
+            if offset == 0 and sample < self.nt_ext:
+                t_src = np.int32(sample)
+            if observe is not None:
+                observe(s, t, t_src)
 
     def _forward_step(self):
         """The four field updates of one time step; arguments set by ``_set_update_args``.
@@ -618,11 +714,18 @@ class PropagationEngine:
         self._set_update_args(np.int32(-1))
         self._set_adjoint_args()
 
+        if self.native_injection:
+            self.backend.set_args(self.knl.advance, self.step_b, np.int32(-1))
         for s in range(self.ns):
             self.backend.call(self.knl.MakeAllZero, self.global_size, *self._field_buffers())
             self.backend.call(self.knl.MakeAllZero, self.global_size,
                               self.avx_b, self.avz_b, self.ataux_b, self.atauz_b, self.atauxz_b)
             self.residual_to_device(res, s)
+            if self.native_injection:
+                self._set_native_residual_args()
+                self._start_native_shot(s, self.nt - 1)
+                self._gradient_shot_native(s, observe)
+                continue
             self._gradient_shot(s, observe)
 
     def _gradient_shot(self, s, observe):

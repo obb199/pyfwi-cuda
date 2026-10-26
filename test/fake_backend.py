@@ -19,10 +19,12 @@ update_tauxz       ``tauxz += c * mu[0]``
 Adj_injSrc         ``a<component>[0] += res_<component>[0]`` (the first receiver)
 Adj_update_*       nothing
 Grad               ``Gmu += vx``, ``Glam += avx``, ``Grho += 1``, ``g_mu_precond += 1``
-inject_and_record  (native, step 3.4) add the four samples at the source cell; then, unless the row
-                   is -1, record every component at the cell of each receiver (``cells``)
-inject_residual    (native) add the residual of each receiver at its cell, receivers sharing a cell
-                   added by the first one (``first``, ``following``)
+inject_and_record  (native, steps 3.4 and 3.6) add the source of the step on the device (``step``) at
+                   the source cell; at a recorded step, record every component at the cell of each
+                   receiver (``cells``)
+inject_residual    (native) at a recorded step, add the residual of each receiver at its cell,
+                   receivers sharing a cell added by the first one (``first``, ``following``)
+advance            (native) ``step += delta``
 update_v           (native, fused, step 3.5) update_velx and update_velz
 update_tau         (native, fused) update_tauz and update_tauxz
 grad_adjoint_v     (native, fused) Grad, then Adj_update_v (nothing)
@@ -180,28 +182,43 @@ def _inject(backend, vx, vz, taux, tauz, tauxz, s_vx, s_vz, s_taux, s_tauz, s_ta
         _write(record, int(t) * nr, field[cell] + np.arange(nr) + 100 * int(srcx))
 
 
+def _recorded_sample(t, dt_scale, rows):
+    """The recorded sample of step ``t``, or -1 (``recorded_sample`` of elastic.cu)."""
+    return t // dt_scale if t % dt_scale == 0 and t // dt_scale < rows else -1
+
+
 def _inject_and_record(backend, vx, vz, taux, tauz, tauxz, s_vx, s_vz, s_taux, s_tauz, s_tauxz, cells,
-                       source_cell, sample_vx, sample_vz, sample_taux, sample_tauz, row):
-    for field, sample in ((vx, sample_vx), (vz, sample_vz), (taux, sample_taux), (tauz, sample_tauz)):
-        field[int(source_cell)] += sample
-    if int(row) < 0:
+                       source_cell, source_steps, step, dt_scale, rows):
+    t, cell = int(step.view(np.int32)[0]), int(source_cell.view(np.int32)[0])
+    for c, field in enumerate((vx, vz, taux, tauz)):
+        field[cell] += source_steps[4 * t + c]
+    row = _recorded_sample(t, int(dt_scale), int(rows))
+    if row < 0:
         return
     table = cells.view(np.int32)
     for field, record in ((vx, s_vx), (vz, s_vz), (taux, s_taux), (tauz, s_tauz), (tauxz, s_tauxz)):
-        _write(record, int(row) * backend.nr, field[table])
+        _write(record, row * backend.nr, field[table])
 
 
 def _inject_residual(backend, avx, avz, ataux, atauz, atauxz, res_vx, res_vz, res_taux, res_tauz, res_tauxz,
-                     cells, first, following):
+                     cells, first, following, step, dt_scale, rows):
+    sample = _recorded_sample(int(step.view(np.int32)[0]), int(dt_scale), int(rows))
+    if sample < 0:
+        return
     table, owner, nxt = cells.view(np.int32), first.view(np.int32), following.view(np.int32)
+    base = sample * backend.nr
     for field, res in ((avx, res_vx), (avz, res_vz), (ataux, res_taux), (atauz, res_tauz), (atauxz, res_tauxz)):
         for r in range(backend.nr):
             if table[r] < 0 or not owner[r]:
                 continue
-            total, q = res[r], nxt[r]
+            total, q = res[base + r], nxt[r]
             while q >= 0:
-                total, q = total + res[q], nxt[q]
+                total, q = total + res[base + q], nxt[q]
             field[table[r]] += total
+
+
+def _advance(backend, step, delta):
+    step.view(np.int32)[0] += int(delta)
 
 
 def _update_v(backend, coeff, vx, vz, taux, tauz, tauxz, rho, vdx, vdz):
@@ -256,4 +273,5 @@ TOY_KERNELS = {"MakeAllZero": _zero, "MakeGradZero": _zero, "injSrc": _inject,
                "update_tauz": _update_tauz, "update_tauxz": _update_tauxz, "Adj_injSrc": _adjoint_inject,
                "Adj_update_tau": _nothing, "Adj_update_v": _nothing, "Grad": _grad,
                "inject_and_record": _inject_and_record, "inject_residual": _inject_residual,
-               "update_v": _update_v, "update_tau": _update_tau, "grad_adjoint_v": _grad_adjoint_v}
+               "update_v": _update_v, "update_tau": _update_tau, "grad_adjoint_v": _grad_adjoint_v,
+               "advance": _advance}

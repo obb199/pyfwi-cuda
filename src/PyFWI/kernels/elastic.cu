@@ -355,22 +355,38 @@ extern "C" __global__ void grad_adjoint_v(const float *vx, const float *vz, cons
 // Step 3.4: one thread per receiver instead of the whole grid. The cell of every receiver comes
 // from a table made on the host (PyFWI.engine.propagation.receiver_table, the loops of the OpenCL
 // kernels); the engine launches these kernels on a grid of 1 row and Nr columns.
+//
+// Step 3.6: the time step is on the device. *step is the internal step t (advance changes it); the
+// source of every step comes from source_steps (4 values per step: vx, vz, taux, tauz), the residual
+// from the residual of the shot, and the recorded sample of a step is t / dt_scale when t is a
+// multiple of dt_scale and that sample exists. Every launch of a step then has the same arguments,
+// which a CUDA graph needs (step 3.7), and the residual is read in place, without copies.
 
-// Add the source samples at its cell (thread 0) and, when row >= 0, record every receiver in that row
-// of the seismograms (thread r for receiver r): what injSrc of the OpenCL files does, in one launch.
+// The recorded sample of internal step t, or -1 when t is not a recorded step (or past the last row).
+__device__ __forceinline__ int recorded_sample(int t, int dt_scale, int rows) {
+    const int sample = t / dt_scale;
+    return (t % dt_scale == 0 && sample < rows) ? sample : -1;
+}
+
+// Add the source of step *step at its cell (thread 0) and, at a recorded step, record every receiver
+// in the row of that sample (thread r for receiver r): what injSrc of the OpenCL files does, in one
+// launch.
 extern "C" __global__ void inject_and_record(float *vx, float *vz, float *taux, float *tauz, const float *tauxz,
                                              float *seismogram_vxi, float *seismogram_vzi,
                                              float *seismogram_tauxi, float *seismogram_tauzi,
-                                             float *seismogram_tauxzi, const int *cells, int source_cell,
-                                             float vsrcx, float vsrcz, float tsrcx, float tsrcz, int row) {
+                                             float *seismogram_tauxzi, const int *cells, const int *source_cell,
+                                             const float *source_steps, const int *step, int dt_scale, int rows) {
     const int r = column_of_thread();
     if (row_of_thread() != 0) return;
+    const int t = *step;
     if (r == 0) {
-        vx[source_cell] += vsrcx;
-        vz[source_cell] += vsrcz;
-        taux[source_cell] += tsrcx;
-        tauz[source_cell] += tsrcz;
+        const int cell = *source_cell;
+        vx[cell] += source_steps[4 * t];
+        vz[cell] += source_steps[4 * t + 1];
+        taux[cell] += source_steps[4 * t + 2];
+        tauz[cell] += source_steps[4 * t + 3];
     }
+    const int row = recorded_sample(t, dt_scale, rows);
     if (row < 0 || r >= Nr || cells[r] < 0) return;
     const int cell = cells[r];
     seismogram_vxi[row * Nr + r] = vx[cell];
@@ -380,24 +396,29 @@ extern "C" __global__ void inject_and_record(float *vx, float *vz, float *taux, 
     seismogram_tauxzi[row * Nr + r] = tauxz[cell];
 }
 
-// Add the residual of every receiver to the adjoint fields at its cell (Adj_injSrc of the OpenCL
-// files). The first receiver of a cell adds those of the receivers that share it, in their order
-// (first, following: PyFWI.engine.propagation.receiver_table), so that no two threads write one
-// cell: deterministic without atomic operations.
+// At a recorded step, add the residual of every receiver (residual of the shot: rows x Nr values per
+// component) to the adjoint fields at its cell (Adj_injSrc of the OpenCL files). The first receiver of
+// a cell adds those of the receivers that share it, in their order (first, following:
+// PyFWI.engine.propagation.receiver_table), so that no two threads write one cell: deterministic
+// without atomic operations.
 extern "C" __global__ void inject_residual(float *Avx, float *Avz, float *Ataux, float *Atauz, float *Atauxz,
                                            const float *res_vx, const float *res_vz, const float *res_taux,
                                            const float *res_tauz, const float *res_tauxz, const int *cells,
-                                           const int *first, const int *following) {
+                                           const int *first, const int *following, const int *step,
+                                           int dt_scale, int rows) {
     const int r = column_of_thread();
     if (row_of_thread() != 0 || r >= Nr || cells[r] < 0 || !first[r]) return;
-    float sum_vx = res_vx[r], sum_vz = res_vz[r], sum_taux = res_taux[r], sum_tauz = res_tauz[r],
-          sum_tauxz = res_tauxz[r];
+    const int sample = recorded_sample(*step, dt_scale, rows);
+    if (sample < 0) return;
+    const int base = sample * Nr;
+    float sum_vx = res_vx[base + r], sum_vz = res_vz[base + r], sum_taux = res_taux[base + r],
+          sum_tauz = res_tauz[base + r], sum_tauxz = res_tauxz[base + r];
     for (int q = following[r]; q >= 0; q = following[q]) {
-        sum_vx += res_vx[q];
-        sum_vz += res_vz[q];
-        sum_taux += res_taux[q];
-        sum_tauz += res_tauz[q];
-        sum_tauxz += res_tauxz[q];
+        sum_vx += res_vx[base + q];
+        sum_vz += res_vz[base + q];
+        sum_taux += res_taux[base + q];
+        sum_tauz += res_tauz[base + q];
+        sum_tauxz += res_tauxz[base + q];
     }
     const int cell = cells[r];
     Avx[cell] += sum_vx;
@@ -405,4 +426,9 @@ extern "C" __global__ void inject_residual(float *Avx, float *Avz, float *Ataux,
     Ataux[cell] += sum_taux;
     Atauz[cell] += sum_tauz;
     Atauxz[cell] += sum_tauxz;
+}
+
+// Move the time step on the device: *step += delta (one thread).
+extern "C" __global__ void advance(int *step, int delta) {
+    if (row_of_thread() == 0 && column_of_thread() == 0) *step += delta;
 }

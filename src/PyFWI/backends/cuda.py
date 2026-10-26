@@ -212,6 +212,7 @@ class CUDABackend:
         self.device.use()
         #: Pinned buffers of the non-blocking copies.
         self._staging = _StagingPool()
+
         properties = cp.cuda.runtime.getDeviceProperties(ordinal)
         name = properties["name"].decode() if isinstance(properties["name"], bytes) else properties["name"]
         self.description = f"{name} (CUDA device {ordinal})"
