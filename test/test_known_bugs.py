@@ -32,8 +32,8 @@ and must pass everywhere else.
 | ``test_lbfgs_iterates_with_physically_scaled_data`` | absolute ``pgtol = 1e-8``: L-BFGS stops at iteration 0 on realistic data | 2.4 |
 | ``test_pml_profile_does_not_depend_on_numpy`` | NumPy 2 type promotion changes the PML profile in the last bit | 1.1 (done) |
 | ``test_source_injection_does_not_excite_grid_noise`` | the source is added once every ``dt_scale`` steps: grid-scale noise at dh of 4-6 m | 2.4 |
-| ``test_crosswell_vz_seismogram_records_vz`` | the crosswell ``vz`` seismogram stores ``vx`` | 2.4 |
-| ``test_crosswell_kernels_assign_vz_to_vz_seismograms`` | same bug, lines 27 and 74 of ``elastic_crosswell.cl`` | 2.4 |
+| ``test_crosswell_vz_seismogram_records_vz`` | the crosswell ``vz`` seismogram stores ``vx`` | 2.4 (``fixed`` mode) |
+| ``test_crosswell_kernels_assign_vz_to_vz_seismograms`` | same bug, lines 27 and 74 of ``elastic_crosswell.cl`` | 2.4 (``fixed`` mode) |
 | ``test_dt_define_is_not_truncated`` | ``#define dt`` keeps only 6 decimals | 2.4 (``fixed`` mode) |
 | ``test_float_constants_have_the_f_suffix`` | literals without ``f`` make the kernels compute in FP64 | 2.4 (``fixed`` mode) |
 | ``test_device_choice_works_with_a_single_device_platform`` | ``inpa['device']`` fails on single-device platforms (PyOpenCL 2022 only) | 1.2 (done) |
@@ -55,12 +55,18 @@ import zipfile
 import numpy as np
 import pytest
 
-from helpers import forward_and_gradient, kernel_sources, pml_matches_0_1_10, running_reference, tiny_case
+from helpers import active_source, forward_and_gradient, kernel_sources, pml_matches_0_1_10, running_reference, tiny_case
 
 #: Absolute path of the repository root.
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 #: True in the reference environment (published 0.1.10): fixed bugs are still expected to fail there.
 REFERENCE = running_reference()
+
+#: The two numeric modes of the fork (step 2.4): the legacy mode keeps the bugs of 0.1.10 on
+#: purpose, the fixed mode corrects them (in the reference environment both are 0.1.10).
+NUMERIC_MODES = [pytest.param("legacy", marks=pytest.mark.xfail(strict=True, reason="legacy mode: as 0.1.10")),
+                 pytest.param("fixed", marks=pytest.mark.xfail(condition=REFERENCE, strict=True,
+                                                               reason="0.1.10 has no fixed mode"))]
 
 
 def _pyopencl_rejects_single_device_answer():
@@ -256,29 +262,26 @@ def test_source_injection_does_not_excite_grid_noise(opencl_platform):
     assert energy[-1] / max(energy) < 1e-6
 
 
-@pytest.mark.xfail(strict=True, reason="elastic_crosswell.cl stores vx in the vz seismogram")
-def test_crosswell_vz_seismogram_records_vz(opencl_platform):
-    # components=2 records vx and vz; with an explosive source in an elastic medium they differ.
-    case = tiny_case(acq_type=0, components=2)
+@pytest.mark.parametrize("numerics", NUMERIC_MODES)
+def test_crosswell_vz_seismogram_records_vz(opencl_platform, numerics):
+    # elastic_crosswell.cl of 0.1.10 stores vx in the vz seismogram. components=2 records vx and vz;
+    # with an explosive source in an elastic medium they differ.
+    case = tiny_case(acq_type=0, components=2, inpa_extra={"numerics": numerics})
     d = case.W.forward_modeling(case.model, False)
     assert np.abs(d["vx"]).max() > 0
     assert not np.array_equal(d["vz"], d["vx"]), "the vz seismogram is a copy of vx"
 
 
-@pytest.mark.xfail(strict=True, reason="lines 27 and 74 of elastic_crosswell.cl assign vx[...] to seismogram_vzi")
-def test_crosswell_kernels_assign_vz_to_vz_seismograms():
-    with open(os.path.join(REPO, "src", "PyFWI", "elastic_crosswell.cl")) as f:
-        source = f.read()
+@pytest.mark.parametrize("numerics", NUMERIC_MODES)
+def test_crosswell_kernels_assign_vz_to_vz_seismograms(numerics):
+    # 0.1.10: lines 27 and 74 of elastic_crosswell.cl assign vx[...] to seismogram_vzi. The fork
+    # keeps them in the legacy branch of #ifdef PYFWI_FIXED blocks (step 2.4).
+    import PyFWI
+    with open(os.path.join(os.path.dirname(PyFWI.__file__), "elastic_crosswell.cl")) as f:
+        source = active_source(f.read(), fixed=numerics == "fixed")
     rhs = re.findall(r"seismogram_vzi\[[^\]]*\]\s*=\s*(\w+)\[", source)  # array read on the right-hand side
     assert len(rhs) == 2
     assert rhs == ["vz", "vz"], f"seismogram_vzi is assigned from {rhs}"
-
-
-#: The two numeric modes of the fork (step 2.4): the legacy mode keeps the bugs of 0.1.10 on
-#: purpose, the fixed mode corrects them (in the reference environment both are 0.1.10).
-NUMERIC_MODES = [pytest.param("legacy", marks=pytest.mark.xfail(strict=True, reason="legacy mode: as 0.1.10")),
-                 pytest.param("fixed", marks=pytest.mark.xfail(condition=REFERENCE, strict=True,
-                                                               reason="0.1.10 has no fixed mode"))]
 
 
 @pytest.mark.parametrize("numerics", NUMERIC_MODES)

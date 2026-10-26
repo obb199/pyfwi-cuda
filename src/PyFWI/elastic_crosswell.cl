@@ -24,7 +24,11 @@ __kernel void injSrc(__global float *vx,__global float *vz,
    if(i%dxr==0 && j == rec_top_right_const){
     int ir =  i/dxr;
       seismogram_vxi[nt * Nr + ir]  =  vx[(i+rec_top_right_var)*Nx + j];
-      seismogram_vzi[nt * Nr + ir]  =  vx[(i+rec_top_right_var)*Nx + j];
+#ifdef PYFWI_FIXED
+      seismogram_vzi[nt * Nr + ir]  =  vz[(i+rec_top_right_var)*Nx + j];
+#else
+      seismogram_vzi[nt * Nr + ir]  =  vx[(i+rec_top_right_var)*Nx + j];  // 0.1.10: vx in the vz seismogram
+#endif
       seismogram_tauxi[nt * Nr + ir]  =  taux[(i+rec_top_right_var)*Nx + j];
       seismogram_tauzi[nt * Nr + ir]  =  tauz[(i+rec_top_right_var)*Nx + j];
       seismogram_tauxzi[nt * Nr + ir]  =  tauxz[(i+rec_top_right_var)*Nx + j];
@@ -71,7 +75,11 @@ __kernel void hessian_seismogram(__global float *vx,__global float *vz,
    if(i%dxr==0 && j == recDepth){
     int ir =  i/dxr;
       seismogram_vxi[ir]  =  vx[(i+first_rec)*Nx + j];
-      seismogram_vzi[ir]  =  vx[(i+first_rec)*Nx + j];
+#ifdef PYFWI_FIXED
+      seismogram_vzi[ir]  =  vz[(i+first_rec)*Nx + j];
+#else
+      seismogram_vzi[ir]  =  vx[(i+first_rec)*Nx + j];  // 0.1.10: vx in the vz seismogram
+#endif
       seismogram_tauxi[ir]  =  taux[(i+first_rec)*Nx + j];
       seismogram_tauzi[ir]  =  tauz[(i+first_rec)*Nx + j];
       seismogram_tauxzi[ir]  =  tauxz[(i+first_rec)*Nx + j];

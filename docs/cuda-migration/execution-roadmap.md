@@ -511,6 +511,11 @@ CUDA comes in as an option; the default stays `opencl`.
   sampled source); FP32 alone: 1e-6 and 5e-5. DES (3 runs): CUDA `fixed` medium 4.5 s / 6.5 s, small
   0.17 s / 0.18 s (CUDA `legacy` 15.2 s / 35.5 s; 0.1.10 47.3 s / 57.3 s); OpenCL `fixed` is not faster
   than `legacy` (18.3 s / 43.6 s). Next: `vz` in the well, loop bounds, source injection.
+- **Result (part 2, `vz` in the well):** `elastic_crosswell.cl` keeps both lines in
+  `#ifdef PYFWI_FIXED` blocks (the `legacy` code after preprocessing is that of 0.1.10: the
+  characterisation stays bit for bit); `test/helpers.py:active_source` lets the static known-bug test
+  read the branch of each mode. With `acq_type=0` the `vz` seismogram was a copy of `vx`; in `fixed` it
+  records `vz`, so it and everything that depends on it (components 2 and 4) change completely.
 
 ### 2.5 API contract on CUDA
 

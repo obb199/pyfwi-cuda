@@ -94,6 +94,42 @@ def kernel_sources(order, dt=0.004 / 7, dh=7.0, numerics="legacy"):
     return WavePreparation.kernel_caller(fake)
 
 
+def active_source(source, fixed):
+    """The lines of a kernel source that the compiler keeps, for the ``#ifdef PYFWI_FIXED`` blocks.
+
+    The kernels of the fork hold the code of both numeric modes (step 2.4): ``#ifdef PYFWI_FIXED``
+    / ``#else`` / ``#endif`` blocks, ``PYFWI_FIXED`` being defined in the fixed mode only. This keeps
+    the branch of one mode, so that static checks of the source can look at what really runs.
+
+    Parameters
+    ----------
+    source : str
+        Kernel source.
+    fixed : bool
+        Keep the fixed branches (True) or the legacy ones (False).
+
+    Returns
+    -------
+    str
+
+    Used by
+    -------
+    ``test_known_bugs.py``.
+    """
+    kept, state = [], None  # state: None outside a block, else "fixed" or "legacy" branch
+    for line in source.splitlines():
+        stripped = line.strip()
+        if stripped == "#ifdef PYFWI_FIXED":
+            state = "fixed"
+        elif stripped == "#else" and state is not None:
+            state = "legacy"
+        elif stripped == "#endif" and state is not None:
+            state = None
+        elif state is None or (state == "fixed") == fixed:
+            kept.append(line)
+    return "\n".join(kept)
+
+
 def grid_cell(loc, dh):
     """Grid cell ``(ix, iz)`` of each position, as PyFWI computes it (``int(x / dh)``, ``int(z / dh)``).
 

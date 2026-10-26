@@ -51,6 +51,9 @@ how much and in which numeric mode.
   full `dt`: 0.1.10 samples the source with the true step but propagates with a step truncated to
   6 decimals (0.075 % shorter for a user `dt` of 4 ms). FP32 arithmetic alone changes results by
   rounding (1e-6 on seismograms, 5e-5 on gradients).
+- In the `fixed` mode the crosswell kernels record `vz` in the `vz` seismogram; 0.1.10 (and the
+  `legacy` mode) recorded `vx` there, so with `acq_type=0` the `vz` data, and the misfit and
+  gradient of components 2 and 4, are a different quantity in `fixed`.
 
 ## [0.1.11] - 2026-10-25
 
