@@ -31,6 +31,8 @@ the user's code.
   0.1.10, why CUDA (through CuPy) helps, the target architecture and the risks.
 - [Execution and verification roadmap](docs/cuda-migration/execution-roadmap.md): every step from
   the current state to version 0.4, with the tests and checks of each step.
+- [Overview of release 0.3.0](docs/cuda-migration/overview.md): what the fork changed and what it
+  gained so far, explained with figures.
 
 **Status:** release 0.3.0, the end of Phase 3 ([gate G3](docs/cuda-migration/gates/G3.md)): on an NVIDIA
 GPU the CUDA backend runs kernels written for CUDA, in the `fixed` numeric mode that corrects the numerical

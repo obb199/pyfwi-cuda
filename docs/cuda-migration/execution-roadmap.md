@@ -933,7 +933,8 @@ Each optimisation is a separate commit, with a benchmark before and after, so th
   inside CUDA graphs: checked). EST: the real medium scenario (8 shots, 18.6 GB of checkpoints) runs in
   batches of 4 with 4 shots of checkpoints on the GPU, at most 9.6 GB of the 12.3 GB used. PKG, EXA and FWI:
   the suites (wheel and extras, every example on both backends, the inversions of the golden masters on
-  both backends). OpenCL keeps `legacy` as its default numeric mode ([G3](gates/G3.md)).
+  both backends). OpenCL keeps `legacy` as its default numeric mode ([G3](gates/G3.md)). An overview of
+  the project with figures: [overview.md](overview.md).
 
 ### Gate G3
 
