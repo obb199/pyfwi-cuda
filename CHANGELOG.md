@@ -9,6 +9,13 @@ how much and in which numeric mode.
 
 ## [Unreleased]
 
+### Changed
+
+- Every OpenCL call of `PyFWI.wave_propagation` goes through a backend object (step 2.1):
+  `PyFWI.backends.opencl.OpenCLBackend` (allocate with margins, copy, compile, set arguments,
+  launch, synchronise), the interface that the CUDA backend will also implement. No change in what
+  runs; `W.ctx`, `W.queue`, `W.prg`, `W.knl` and the buffer attributes are unchanged.
+
 ### Numerical changes
 
 - None.

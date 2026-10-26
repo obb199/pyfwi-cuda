@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter
 
 import PyFWI.fwi_tools as tools
-from PyFWI._opencl_device import choose_devices, shared_context
+from PyFWI.backends.opencl import OpenCLBackend
 import PyFWI._info as _info
 from PyFWI.fwi_tools import expand_model
 import PyFWI.acquisition as acq
@@ -181,29 +181,19 @@ class WavePreparation:
         self.components = components
 
         # To call openCl
-        # The OpenCL device: inpa['platform'] and inpa['device'] (0 when missing), otherwise the
-        # PYOPENCL_CTX environment variable, otherwise the first device of the first platform.
-        # PyFWI._opencl_device.choose_devices replaces pyopencl.create_some_context(), which
-        # failed on single-device platforms with PyOpenCL 2022 and could ask the user.
-        platform = inpa.get("platform")
-        device = inpa.get("device")
-        devices = choose_devices(platform, device)
-        if device is not None:
-            # As in 0.1.10, the choice is also written to the environment, so that a later
-            # WavePropagator created without inpa['device'] runs on the same device.
-            os.environ['PYOPENCL_CTX'] = str(0 if platform is None else platform) + ':' + str(device)
-            os.environ['PYOPENCL_COMPILER_OUTPUT'] = '1'
+        # Every OpenCL call goes through the backend (step 2.1 of the fork, PyFWI.backends.opencl).
+        # The device: inpa['platform'] and inpa['device'] (0 when missing), otherwise the
+        # PYOPENCL_CTX environment variable, otherwise the first device of the first platform; one
+        # context per device for the whole process, one queue per propagator.
+        self._backend = OpenCLBackend(inpa.get("platform"), inpa.get("device"))
+        self.ctx = self._backend.context
+        self.queue = self._backend.queue
 
-        # One context per set of devices for the whole process (see shared_context: releasing
-        # contexts makes the NVIDIA driver fail after a few propagators); one queue per propagator.
-        self.ctx = shared_context(devices)
-        self.queue = cl.CommandQueue(self.ctx)
-        
         kernel, kernel_crosswell, kernel_surface = self.kernel_caller()
 
-        self.prg_cw = cl.Program(self.ctx, kernel_crosswell).build()
-        self.prg = cl.Program(self.ctx, kernel).build()
-        self.prg_surf = cl.Program(self.ctx, kernel_surface).build()
+        self.prg_cw = self._backend.build(kernel_crosswell)
+        self.prg = self._backend.build(kernel)
+        self.prg_surf = self._backend.build(kernel_surface)
 
         if self.acq_type == 0:
             self.prg.injSrc = self.prg_cw.injSrc
@@ -217,7 +207,7 @@ class WavePreparation:
         # created a new kernel object (clCreateKernel), several times per time step; PyOpenCL
         # 2026 also warns about it (RepeatedKernelRetrieval). injSrc and Adj_injSrc come from the
         # program of the acquisition (assigned to self.prg just above for acq_type 0 and 1).
-        self.knl = SimpleNamespace(**{name: getattr(self.prg, name) for name in KERNELS})
+        self.knl = SimpleNamespace(**{name: self._backend.kernel(self.prg, name) for name in KERNELS})
         # Global size of every launch: one work item per grid point, absorbing boundary included.
         self.global_size = (int(self.tnz), int(self.tnx))
 
@@ -230,7 +220,7 @@ class WavePreparation:
         # those accesses hit whatever lay next to the buffer (garbage, NaN on POCL, or a
         # CL_OUT_OF_RESOURCES crash); now they hit margins of MARGIN_FILL inside the allocation.
         # Sub-buffers must start at a multiple of the base-address alignment of the device.
-        align = max(max(d.mem_base_addr_align for d in self.ctx.devices) // 8, 4)
+        align = self._backend.alignment
         needed = max(MIN_MARGIN_BYTES, (int(self.rec_top_right_var) + 8) * int(self.tnx) * 4,
                      (int(self.tnz) + 8) * 4)
         self.margin_bytes = -(-needed // align) * align
@@ -292,19 +282,8 @@ class WavePreparation:
         host : numpy.ndarray
             Initial content (float32 in PyFWI), copied to the device.
         """
-        host = np.ascontiguousarray(host)
-        margin = self.margin_bytes
-        whole = np.full((2 * margin + host.nbytes) // host.itemsize, MARGIN_FILL, dtype=host.dtype)
-        whole.view(np.uint8)[margin:margin + host.nbytes] = host.reshape(-1).view(np.uint8)
-        # Allocated first, then written whole by an explicit copy. With COPY_HOST_PTR the NVIDIA
-        # driver places on the device only the region of the sub-buffer the kernels use, and the
-        # margins there hold whatever the device memory held. (Without hostbuf the buffer is also
-        # never wrapped by the guard bands of the tests, test/oob_guard.py: nesting their
-        # sub-buffers in this one would make overlapping sub-buffers, which crash the driver.)
-        allocation = cl.Buffer(self.ctx, self.mf.READ_WRITE, whole.nbytes)
-        cl.enqueue_copy(self.queue, allocation, whole)
-        self._allocations[name] = allocation
-        setattr(self, name, allocation.get_sub_region(margin, host.nbytes))
+        buffer, self._allocations[name] = self._backend.allocate(host, self.margin_bytes, MARGIN_FILL)
+        setattr(self, name, buffer)
 
     def margins_changed(self):
         """Names of the device buffers whose margins no longer hold ``MARGIN_FILL`` (step 1.7).
@@ -315,9 +294,9 @@ class WavePreparation:
         changed = []
         margin = self.margin_bytes
         for name, allocation in self._allocations.items():
-            whole = np.empty(allocation.size // 4, np.float32)
-            cl.enqueue_copy(self.queue, whole, allocation)
-            data_bytes = getattr(self, name).size
+            whole = np.empty(self._backend.nbytes(allocation) // 4, np.float32)
+            self._backend.to_host(whole, allocation)
+            data_bytes = self._backend.nbytes(getattr(self, name))
             margins = np.concatenate([whole[:margin // 4], whole[(margin + data_bytes) // 4:]])
             intact = np.isnan(margins).all() if np.isnan(MARGIN_FILL) else (margins == np.float32(MARGIN_FILL)).all()
             if not intact:
@@ -380,18 +359,18 @@ class WavePreparation:
 
         g_rho = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
 
-        cl.enqueue_copy(self.queue, g_mu, self.Gmu_b)
-        cl.enqueue_copy(self.queue, g_lam, self.Glam_b)
-        cl.enqueue_copy(self.queue, g_rho, self.Grho_b)
+        self._backend.to_host(g_mu, self.Gmu_b)
+        self._backend.to_host(g_lam, self.Glam_b)
+        self._backend.to_host(g_rho, self.Grho_b)
 
         if self.energy_balancing:
             g_mu_precond = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
             g_lam_precond = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
             g_rho_precond = np.zeros((self.tnz, self.tnx)).astype(np.float32, order='C')
 
-            cl.enqueue_copy(self.queue, g_mu_precond, self.g_mu_precond_b)
-            cl.enqueue_copy(self.queue, g_lam_precond, self.g_lam_precond_b)
-            cl.enqueue_copy(self.queue, g_rho_precond, self.g_rho_precond_b)
+            self._backend.to_host(g_mu_precond, self.g_mu_precond_b)
+            self._backend.to_host(g_lam_precond, self.g_lam_precond_b)
+            self._backend.to_host(g_rho_precond, self.g_rho_precond_b)
         else:
             g_mu_precond = np.ones((self.tnz, self.tnx)).astype(np.float32, order='C')
             g_lam_precond = np.ones((self.tnz, self.tnx)).astype(np.float32, order='C')
@@ -447,9 +426,9 @@ class WavePreparation:
         buffers = (self.seismogramid_vx_b, self.seismogramid_vz_b, self.seismogramid_taux_b,
                    self.seismogramid_tauz_b, self.seismogramid_tauxz_b)
         host = {par: np.empty((self.nt_ext, self.nr), np.float32) for par in COMPONENTS}
-        events = [cl.enqueue_copy(self.queue, host[par], buffer, is_blocking=False)
+        events = [self._backend.to_host(host[par], buffer, blocking=False)
                   for par, buffer in zip(COMPONENTS, buffers)]
-        cl.wait_for_events(events)
+        self._backend.wait(events)
         for par in COMPONENTS:
             self.seismogram[par][:, :, s] = host[par]
 
@@ -471,19 +450,19 @@ class WavePreparation:
         """
         # Injection data into opencl
         res_src_vx = (res['vx'][np.int32(t - 1), s * self.nr:(s + 1) * self.nr]).astype(np.float32, order='C')
-        cl.enqueue_copy(self.queue, self.res_vx_b, res_src_vx)
+        self._backend.to_device(self.res_vx_b, res_src_vx)
 
         res_src_vz = (res['vz'][np.int32(t - 1), s * self.nr:(s + 1) * self.nr]).astype(np.float32, order='C')
-        cl.enqueue_copy(self.queue, self.res_vz_b, res_src_vz)
+        self._backend.to_device(self.res_vz_b, res_src_vz)
 
         res_src_taux = (res['taux'][np.int32(t - 1), s * self.nr:(s + 1) * self.nr]).astype(np.float32, order='C')
-        cl.enqueue_copy(self.queue, self.res_taux_b, res_src_taux)
+        self._backend.to_device(self.res_taux_b, res_src_taux)
 
         res_src_tauz = (res['tauz'][np.int32(t - 1), s * self.nr:(s + 1) * self.nr]).astype(np.float32, order='C')
-        cl.enqueue_copy(self.queue, self.res_tauz_b, res_src_tauz)
+        self._backend.to_device(self.res_tauz_b, res_src_tauz)
 
         res_src_tauxz = (res['tauxz'][np.int32(t - 1), s * self.nr:(s + 1) * self.nr]).astype(np.float32, order='C')
-        cl.enqueue_copy(self.queue, self.res_tauxz_b, res_src_tauxz)
+        self._backend.to_device(self.res_tauxz_b, res_src_tauxz)
 
     def residual_to_device(self, res, s):
         """Copy the residual of shot ``s``, all time samples, to the device (step 1.4 of the fork).
@@ -504,9 +483,9 @@ class WavePreparation:
         for par in COMPONENTS:
             # Columns s*nr to (s+1)*nr, as float32 and contiguous: the same values make_residual sent.
             shot = np.ascontiguousarray(res[par][:, s * self.nr:(s + 1) * self.nr], dtype=np.float32)
-            if self.res_shot_b.get(par) is None or self.res_shot_b[par].size != shot.nbytes:
-                self.res_shot_b[par] = cl.Buffer(self.ctx, self.mf.READ_ONLY, shot.nbytes)
-            cl.enqueue_copy(self.queue, self.res_shot_b[par], shot)
+            if self.res_shot_b.get(par) is None or self._backend.nbytes(self.res_shot_b[par]) != shot.nbytes:
+                self.res_shot_b[par] = self._backend.allocate_empty(shot.nbytes)
+            self._backend.to_device(self.res_shot_b[par], shot)
 
     def residual_sample(self, t):
         """Copy time sample ``t - 1`` of the shot's residual into the buffers that Adj_injSrc reads.
@@ -523,11 +502,10 @@ class WavePreparation:
         row = int(self.nr) * 4  # bytes of one time sample of one component
         sample = int(t) - 1
         if sample < 0:  # as NumPy indexing in make_residual: -1 is the last sample
-            sample += self.res_shot_b["vx"].size // row
+            sample += self._backend.nbytes(self.res_shot_b["vx"]) // row
         targets = (self.res_vx_b, self.res_vz_b, self.res_taux_b, self.res_tauz_b, self.res_tauxz_b)
         for par, target in zip(COMPONENTS, targets):
-            cl.enqueue_copy(self.queue, target, self.res_shot_b[par], byte_count=row,
-                            src_offset=sample * row)
+            self._backend.copy(target, self.res_shot_b[par], row, sample * row)
 
     def pml_preparation(self, v_max):
 
@@ -766,16 +744,15 @@ class WavePropagator(WavePreparation):
         # The arguments that do not change during the time loop are set once (step 1.3).
         self._set_update_args(coeff)
         for s in range(self.ns):
-            self.knl.MakeAllZero(self.queue, self.global_size, None,
-                                 self.vx_b, self.vz_b,
-                                 self.taux_b, self.tauz_b, self.tauxz_b
-                                 )
+            self._backend.call(self.knl.MakeAllZero, self.global_size,
+                               self.vx_b, self.vz_b,
+                               self.taux_b, self.tauz_b, self.tauxz_b)
             self._set_injection_args(s)
 
             self.__kernel(s, coeff)
 
         # The checkpoint copies did not block: wait for them before W can be read.
-        self.queue.finish()
+        self._backend.finish()
 
         if self.acq_type == 2:
             for par in self.seismogram:
@@ -793,7 +770,7 @@ class WavePropagator(WavePreparation):
         (``kernel(queue, size, None, *args)``) also sets every argument again. Used for the
         launches of the time loops (step 1.3 of the fork).
         """
-        cl.enqueue_nd_range_kernel(self.queue, kernel, self.global_size, None)
+        self._backend.launch(kernel, self.global_size)
 
     def _set_update_args(self, coeff):
         """Set the arguments of the four update kernels of the elastic fields.
@@ -808,14 +785,14 @@ class WavePropagator(WavePreparation):
         PML buffers of that call exist (``elastic_buffers`` and ``pml_preparation`` create new
         ones at every forward modelling).
         """
-        self.knl.update_velx.set_args(coeff, self.vx_b, self.taux_b, self.tauxz_b, self.rho_b,
-                                      self.vdx_pml_b, self.vdz_pml_b)
-        self.knl.update_velz.set_args(coeff, self.vz_b, self.tauz_b, self.tauxz_b, self.rho_b,
-                                      self.vdx_pml_b, self.vdz_pml_b)
-        self.knl.update_tauz.set_args(coeff, self.vx_b, self.vz_b, self.taux_b, self.tauz_b,
-                                      self.lam_b, self.mu_b, self.vdx_pml_b, self.vdz_pml_b)
-        self.knl.update_tauxz.set_args(coeff, self.vx_b, self.vz_b, self.tauxz_b, self.mu_b,
-                                       self.vdx_pml_b, self.vdz_pml_b)
+        self._backend.set_args(self.knl.update_velx, coeff, self.vx_b, self.taux_b, self.tauxz_b, self.rho_b,
+                               self.vdx_pml_b, self.vdz_pml_b)
+        self._backend.set_args(self.knl.update_velz, coeff, self.vz_b, self.tauz_b, self.tauxz_b, self.rho_b,
+                               self.vdx_pml_b, self.vdz_pml_b)
+        self._backend.set_args(self.knl.update_tauz, coeff, self.vx_b, self.vz_b, self.taux_b, self.tauz_b,
+                               self.lam_b, self.mu_b, self.vdx_pml_b, self.vdz_pml_b)
+        self._backend.set_args(self.knl.update_tauxz, coeff, self.vx_b, self.vz_b, self.tauxz_b, self.mu_b,
+                               self.vdx_pml_b, self.vdz_pml_b)
 
     def _set_injection_args(self, s):
         """Set the arguments of injSrc that stay the same for every time step of source ``s``.
@@ -824,13 +801,13 @@ class WavePropagator(WavePreparation):
         injection and are set by ``__injSrc``; zeros are placeholders until then.
         """
         zero = np.float32(0)
-        self.knl.injSrc.set_args(self.vx_b, self.vz_b,
-                                 self.taux_b, self.tauz_b, self.tauxz_b,
-                                 self.seismogramid_vx_b, self.seismogramid_vz_b,
-                                 self.seismogramid_taux_b, self.seismogramid_tauz_b, self.seismogramid_tauxz_b,
-                                 self.dxr,
-                                 self.srcx[s], self.srcz[s],
-                                 zero, zero, zero, zero, np.int32(0))
+        self._backend.set_args(self.knl.injSrc, self.vx_b, self.vz_b,
+                               self.taux_b, self.tauz_b, self.tauxz_b,
+                               self.seismogramid_vx_b, self.seismogramid_vz_b,
+                               self.seismogramid_taux_b, self.seismogramid_tauz_b, self.seismogramid_tauxz_b,
+                               self.dxr,
+                               self.srcx[s], self.srcz[s],
+                               zero, zero, zero, zero, np.int32(0))
 
     def __injSrc(self, t, s):
         src_kv_x, src_kv_z, src_kt_x, src_kt_z, src_kt_xz = np.float32(self.src(t))
@@ -838,7 +815,7 @@ class WavePropagator(WavePreparation):
         # Arguments 13 to 17: the source samples and the time index t (the others are set once
         # per source by _set_injection_args). src_kt_xz is not used by the kernel, as in 0.1.10.
         for index, value in enumerate((src_kv_x, src_kv_z, src_kt_x, src_kt_z, t), start=13):
-            self.knl.injSrc.set_arg(index, value)
+            self._backend.set_arg(self.knl.injSrc, index, value)
         self._launch(self.knl.injSrc)
 
     def __update_fwd(self, coeff):
@@ -864,20 +841,20 @@ class WavePropagator(WavePreparation):
                 # The queue runs in order, so the next updates start after the copies; the host
                 # waits once, at the end of forward_propagator.
                 for par, buffer in zip(COMPONENTS, self._field_buffers()):
-                    cl.enqueue_copy(self.queue, self._checkpoints[par][s, chpc], buffer, is_blocking=False)
+                    self._backend.to_host(self._checkpoints[par][s, chpc], buffer, blocking=False)
 
                 chpc += 1
 
 
             if self.forward_show and np.remainder(t, 20) == 0:
-                cl.enqueue_copy(self.queue, showpurose, self.vx_b)
+                self._backend.to_host(showpurose, self.vx_b)
                 self.plot_propagation(showpurose, t)
         self.make_seismogram(s, t)
         
     def __adjoint_modelling_per_source(self, res):
-        self.knl.MakeGradZero(self.queue, self.global_size, None,
-                              self.Gmu_b, self.Glam_b, self.Grho_b,
-                              self.g_mu_precond_b, self.g_lam_precond_b, self.g_rho_precond_b)
+        self._backend.call(self.knl.MakeGradZero, self.global_size,
+                           self.Gmu_b, self.Glam_b, self.Grho_b,
+                           self.g_mu_precond_b, self.g_lam_precond_b, self.g_rho_precond_b)
 
         # The arguments of the time loop do not change during the gradient: set them once
         # (step 1.3). The update kernels rebuild the forward field backwards (coeff = -1).
@@ -885,13 +862,13 @@ class WavePropagator(WavePreparation):
         self._set_adjoint_args()
 
         for s in range(self.ns):
-            self.knl.MakeAllZero(self.queue, self.global_size, None,
-                                 self.vx_b, self.vz_b,
-                                 self.taux_b, self.tauz_b, self.tauxz_b)
+            self._backend.call(self.knl.MakeAllZero, self.global_size,
+                               self.vx_b, self.vz_b,
+                               self.taux_b, self.tauz_b, self.tauxz_b)
 
-            self.knl.MakeAllZero(self.queue, self.global_size, None,
-                                 self.avx_b, self.avz_b,
-                                 self.ataux_b, self.atauz_b, self.atauxz_b)
+            self._backend.call(self.knl.MakeAllZero, self.global_size,
+                               self.avx_b, self.avz_b,
+                               self.ataux_b, self.atauz_b, self.atauxz_b)
             self.residual_to_device(res, s)
 
             self.__kernel_gradient(res, s)
@@ -903,20 +880,20 @@ class WavePropagator(WavePreparation):
         adjoint and gradient buffers. The residual buffers keep their identity; only their content
         changes (``make_residual``).
         """
-        self.knl.Adj_injSrc.set_args(self.avx_b, self.avz_b,
-                                     self.ataux_b, self.atauz_b, self.atauxz_b,
-                                     self.res_vx_b, self.res_vz_b,
-                                     self.res_taux_b, self.res_tauz_b, self.res_tauxz_b,
-                                     self.dxr)
-        self.knl.Adj_update_tau.set_args(self.avx_b, self.avz_b,
-                                         self.ataux_b, self.atauz_b, self.atauxz_b,
-                                         self.rho_b,
-                                         self.vdx_pml_b, self.vdz_pml_b)
-        self.knl.Adj_update_v.set_args(self.avx_b, self.avz_b,
-                                       self.ataux_b, self.atauz_b, self.atauxz_b,
-                                       self.lam_b, self.mu_b,
-                                       self.vdx_pml_b, self.vdz_pml_b)
-        self.knl.Grad.set_args(self.vx_b, self.vz_b,
+        self._backend.set_args(self.knl.Adj_injSrc, self.avx_b, self.avz_b,
+                               self.ataux_b, self.atauz_b, self.atauxz_b,
+                               self.res_vx_b, self.res_vz_b,
+                               self.res_taux_b, self.res_tauz_b, self.res_tauxz_b,
+                               self.dxr)
+        self._backend.set_args(self.knl.Adj_update_tau, self.avx_b, self.avz_b,
+                               self.ataux_b, self.atauz_b, self.atauxz_b,
+                               self.rho_b,
+                               self.vdx_pml_b, self.vdz_pml_b)
+        self._backend.set_args(self.knl.Adj_update_v, self.avx_b, self.avz_b,
+                               self.ataux_b, self.atauz_b, self.atauxz_b,
+                               self.lam_b, self.mu_b,
+                               self.vdx_pml_b, self.vdz_pml_b)
+        self._backend.set_args(self.knl.Grad, self.vx_b, self.vz_b,
                                self.taux_b, self.tauz_b, self.tauxz_b,
                                self.avx_b, self.avz_b,
                                self.ataux_b, self.atauz_b, self.atauxz_b,
@@ -940,7 +917,7 @@ class WavePropagator(WavePreparation):
                 # Straight from the contiguous checkpoint storage, without blocking (step 1.5):
                 # the checkpoints do not change during the gradient.
                 for par, buffer in zip(COMPONENTS, self._field_buffers()):
-                    cl.enqueue_copy(self.queue, buffer, self._checkpoints[par][s, chpc], is_blocking=False)
+                    self._backend.to_device(buffer, self._checkpoints[par][s, chpc], blocking=False)
 
                 chpc -= 1
 
@@ -966,9 +943,9 @@ class WavePropagator(WavePreparation):
 
             # Plotting wave propagation
             if self.backward_show and (np.remainder(t, 20) == 0 or t == self.nt_ext - 2):
-                cl.enqueue_copy(self.queue, vx_show, self.taux_b)
+                self._backend.to_host(vx_show, self.taux_b)
 
-                cl.enqueue_copy(self.queue, adj_vx_show, self.ataux_b)
+                self._backend.to_host(adj_vx_show, self.ataux_b)
 
                 self.plot_propagation(vx_show, t_src, adj_vx_show)
 
