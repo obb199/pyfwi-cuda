@@ -3,12 +3,16 @@
 The golden masters check that results do not *change*; this script checks how *right*
 they are, with four metrics computed on small homogeneous or inclusion models:
 
-``gradient_fd``
+``gradient_fd`` (vp) and ``gradient_fd_vs`` (vs)
     The adjoint-state gradient against centred finite differences of the misfit
-    J(m) = 1/2 ||d(m) - d_obs||^2. For six smooth random perturbations dm of vp,
+    J(m) = 1/2 ||d(m) - d_obs||^2. For six smooth random perturbations dm of vp (or vs),
     limited to the interior of the model, the ratio
     [J(m + eps dm) - J(m - eps dm)] / (2 eps) / <g, dm> should be 1. Metric: the median
-    of |ratio - 1| (and the six ratios).
+    of |ratio - 1| (and the six ratios). PyFWI sizes its absorbing layer with the
+    largest vp of the model, which the perturbations of vp would change; a corner cell of
+    the starting model, outside the perturbations, holds the largest vp, so that the
+    finite differences see the model and not a moving boundary (without it, 0.1.10
+    measured 31 % instead of 7 %).
 ``analytic``
     A homogeneous acoustic medium (vs = 0, rho = 1) against the 2D Green's function
     convolved with the time derivative of the Ricker wavelet, at 100 to 400 m from the
@@ -148,8 +152,14 @@ def metric_late_energy():
     return {"end_over_peak": energy[-1] / max(energy)}
 
 
-def metric_gradient_fd():
-    """Ratios of finite-difference directional derivatives to <gradient, direction> (should be 1)."""
+def metric_gradient_fd(parameter="vp"):
+    """Ratios of finite-difference directional derivatives to <gradient, direction> (should be 1).
+
+    Parameters
+    ----------
+    parameter : str, optional
+        The model parameter perturbed and the gradient compared: ``"vp"`` or ``"vs"``.
+    """
     import PyFWI.fwi_tools as tools
     import PyFWI.processing as process
     from helpers import tiny_case
@@ -158,13 +168,17 @@ def metric_gradient_fd():
     with zero_guard_bands():
         case = tiny_case(ns=2, nz=40, nx=40, chpr=100, t=0.3)
         observed = process.prepare_residual(case.W.forward_modeling(case.model, False), 1)
+        # The absorbing layer depends on max(vp) (WavePropagator.pml_preparation): pin it with the
+        # bottom-right cell, outside the perturbations, so that it is the same in every run.
+        m0 = {**case.m0, "vp": case.m0["vp"].copy()}
+        m0["vp"][-1, -1] = m0["vp"].max() + 100.0
 
         def misfit(model):
             predicted = process.prepare_residual(case.W.forward_modeling(model, False), 1)
             return tools.cost_seismic(predicted, observed, fun=cost)
 
-        _, adjoint_source = misfit(case.m0)
-        gradient = case.W.gradient(adjoint_source, False)["vp"].astype(np.float64)
+        _, adjoint_source = misfit(m0)
+        gradient = case.W.gradient(adjoint_source, False)[parameter].astype(np.float64)
         rng = np.random.default_rng(0)
         interior = np.zeros((40, 40))
         interior[12:34, 6:34] = 1.0  # away from the edges and the surface, where PyFWI masks the gradient
@@ -172,8 +186,8 @@ def metric_gradient_fd():
         for _ in range(6):
             direction = gaussian_filter(rng.standard_normal((40, 40)), 3) * interior
             direction = (direction / np.abs(direction).max()).astype(np.float32)
-            plus = {**case.m0, "vp": (case.m0["vp"] + eps * direction).astype(np.float32)}
-            minus = {**case.m0, "vp": (case.m0["vp"] - eps * direction).astype(np.float32)}
+            plus = {**m0, parameter: (m0[parameter] + eps * direction).astype(np.float32)}
+            minus = {**m0, parameter: (m0[parameter] - eps * direction).astype(np.float32)}
             fd = (misfit(plus)[0] - misfit(minus)[0]) / (2 * eps)
             ratios.append(float(fd / np.sum(gradient * direction)))
     return {"median_abs_error": float(np.median(np.abs(np.array(ratios) - 1))), "ratios": ratios}
@@ -181,8 +195,9 @@ def metric_gradient_fd():
 
 def measure():
     """All metrics, as a JSON-serialisable dict."""
-    return {"gradient_fd": metric_gradient_fd(), "analytic": metric_analytic(),
-            "pml_reflection": metric_pml_reflection(), "late_energy": metric_late_energy()}
+    return {"gradient_fd": metric_gradient_fd("vp"), "gradient_fd_vs": metric_gradient_fd("vs"),
+            "analytic": metric_analytic(), "pml_reflection": metric_pml_reflection(),
+            "late_energy": metric_late_energy()}
 
 
 def main():

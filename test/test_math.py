@@ -11,8 +11,7 @@ The tests also state the absolute quality reached by 0.1.10, so a reader knows w
 the numbers mean: the propagation agrees with the analytic solution to a correlation
 above 0.998 with no time shift, the boundary reflects about 1 %, the wavefield decays
 to 1e-8 of its peak, and the gradient is only approximate (its directional derivatives
-differ from finite differences by about 30 % in the median, sometimes with the wrong
-sign).
+differ from finite differences by about 7 % in the median for vp, and by 60 % for vs).
 """
 import json
 import os
@@ -58,6 +57,10 @@ def measured():
 
 def test_gradient_agrees_with_finite_differences_at_least_as_well(baseline, measured):
     assert measured["gradient_fd"]["median_abs_error"] <= baseline["gradient_fd"]["median_abs_error"] + 0.02
+
+
+def test_vs_gradient_agrees_with_finite_differences_at_least_as_well(baseline, measured):
+    assert measured["gradient_fd_vs"]["median_abs_error"] <= baseline["gradient_fd_vs"]["median_abs_error"] + 0.02
 
 
 def test_propagation_agrees_with_the_analytic_solution(baseline, measured):
