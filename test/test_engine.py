@@ -210,7 +210,10 @@ def test_gradient_rebuilds_the_forward_field_from_the_checkpoints():
 
 @pytest.mark.parametrize("numerics", ["legacy", "fixed"])
 def test_gradient_injects_the_residual_backwards_in_time(numerics):
-    # Here nt_ext is the number of recorded steps: both modes inject the same samples.
+    # Here nt_ext is the number of recorded steps: both modes inject the same samples, at the same
+    # steps. Grad adds the adjoint field: in the legacy mode after the injection of the step, in the
+    # fixed mode before it (the residual of step t goes into the adjoint field of step t, which
+    # the gradient of step t - 1 uses).
     engine = make_engine(numerics=numerics)
     engine.forward()
     engine.prepare_gradient()
@@ -221,10 +224,13 @@ def test_gradient_injects_the_residual_backwards_in_time(numerics):
     for s in range(NS):
         adjoint, t_src = 0.0, NT_EXT
         for t in range(NT - 1, 0, -1):
+            if numerics == "fixed":
+                expected += adjoint
             if t % DT_SCALE == 0:
                 adjoint += res["vx"][t_src - 1, s * NR]  # the first receiver of the shot
                 t_src -= 1
-            expected += adjoint
+            if numerics == "legacy":
+                expected += adjoint
     assert g_lam[0, 0] == pytest.approx(expected)
 
 
@@ -240,7 +246,11 @@ def test_gradient_launch_sequence(numerics):
     for t in range(NT - 1, 0, -1):
         if t not in (4, 9):  # checkpoint steps restore the field instead of updating it
             per_shot += ["update_tauxz", "update_tauz", "update_velz", "update_velx"]
-        per_shot += (["Adj_injSrc"] if t % DT_SCALE == 0 else []) + ["Adj_update_tau", "Adj_update_v", "Grad"]
+        injection = ["Adj_injSrc"] if t % DT_SCALE == 0 else []
+        if numerics == "legacy":
+            per_shot += injection + ["Adj_update_tau", "Adj_update_v", "Grad"]
+        else:  # the exact adjoint of the forward step (PropagationEngine._adjoint_step)
+            per_shot += ["Grad", "Adj_update_v", "Adj_update_tau"] + injection
     assert names == ["MakeGradZero"] + per_shot * NS
     restores = [entry for entry in engine.backend.log if entry == ("to_device", False)]
     assert len(restores) == NS * 5 * 2  # checkpoints 9 and 4 of each shot, without blocking

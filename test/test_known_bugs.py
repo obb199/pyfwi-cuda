@@ -35,6 +35,8 @@ and must pass everywhere else.
 | ``test_source_injection_does_not_excite_grid_noise`` | the source is added once every ``dt_scale`` steps: grid-scale noise at dh of 4-6 m | 2.4 (``fixed`` mode) |
 | ``test_seismograms_do_not_depend_on_the_source_sampling`` | same bug, seen in the seismograms: 3 to 6 % off at dh = 10 m, several times the signal at 5 m | 2.4 (``fixed`` mode) |
 | ``test_residual_is_injected_where_it_was_recorded`` | the residual is injected one recorded sample off when rounding makes ``nt_ext`` differ from the recorded steps | 2.4 (``fixed`` mode) |
+| ``test_adjoint_step_is_the_transpose_of_the_forward_step`` | the adjoint updates run in the wrong order (fork only: needs the engine) | 2.4 (``fixed`` mode) |
+| ``test_vp_gradient_agrees_with_finite_differences`` | ``Grad`` pairs the forward field with the adjoint field of two steps earlier: 7 % off | 2.4 (``fixed`` mode) |
 | ``test_receivers_are_recorded_inside_the_seismograms`` | the same rounding records the last sample one row past the seismograms (``dt`` = 5 ms) | 2.4 (``fixed`` mode) |
 | ``test_crosswell_vz_seismogram_records_vz`` | the crosswell ``vz`` seismogram stores ``vx`` | 2.4 (``fixed`` mode) |
 | ``test_crosswell_kernels_assign_vz_to_vz_seismograms`` | same bug, lines 27 and 74 of ``elastic_crosswell.cl`` | 2.4 (``fixed`` mode) |
@@ -325,6 +327,69 @@ def test_residual_is_injected_where_it_was_recorded(opencl_platform, numerics):
         difference = np.linalg.norm(gradients[1][key] - short) / np.linalg.norm(short)
         # Measured on vp: 0.54 in 0.1.10 and in the legacy mode; 0 (bit for bit) in the fixed mode.
         assert difference < 1e-5, f"{key}: relative difference {difference:.1e}"
+
+
+@pytest.mark.parametrize("numerics", NUMERIC_MODES)
+def test_adjoint_step_is_the_transpose_of_the_forward_step(opencl_platform, numerics):
+    # The dot-product test of one time step: <(A - I) u, v> = <u, (A^T - I) v> for random fields u
+    # and v, A being the forward step (PropagationEngine._forward_step) and A^T the adjoint updates
+    # of the gradient loop (_adjoint_updates). The forward step updates the velocities, then the
+    # stresses; its transpose updates the adjoint velocities, then the adjoint stresses. 0.1.10 runs
+    # the adjoint stresses first. The fields are zero near the edges and the absorbing layer is
+    # off, so that only the interior operators are compared; the stresses are scaled by an
+    # impedance (and the adjoint stresses by its inverse) so that no block of the step dominates.
+    if REFERENCE:
+        pytest.skip("needs the propagation engine of the fork")
+    case = tiny_case(inpa_extra={"numerics": numerics})
+    case.W.forward_modeling(case.model, False)  # the model and the arguments of the kernels
+    engine = case.W._engine
+    engine.prepare_gradient()
+    zero = np.zeros((engine.tnz, engine.tnx), np.float32)
+    engine.set_pml(zero, zero)
+    rng = np.random.default_rng(3)
+    scale = {"vx": 1.0, "vz": 1.0, "taux": 5.5e6, "tauz": 5.5e6, "tauxz": 5.5e6}  # 2,200 kg/m3 x 2,500 m/s
+
+    def random_fields(power):
+        fields = {}
+        for par in ("vx", "vz", "taux", "tauz", "tauxz"):
+            field = zero.copy()
+            field[12:-12, 12:-12] = rng.standard_normal((engine.tnz - 24, engine.tnx - 24)) * scale[par] ** power
+            fields[par] = field
+        return fields
+
+    def apply(buffers, fields, steps):
+        for buffer, par in zip(buffers, fields):
+            engine.backend.to_device(buffer, fields[par])
+        steps()
+        out = {par: np.empty_like(zero) for par in fields}
+        for buffer, par in zip(buffers, fields):
+            engine.backend.to_host(out[par], buffer)
+        return out
+
+    u, v = random_fields(1), random_fields(-1)
+    engine._set_update_args(np.int32(1))
+    au = apply(engine._field_buffers(), u, engine._forward_step)
+    engine._set_adjoint_args()
+    adjoint = (engine.avx_b, engine.avz_b, engine.ataux_b, engine.atauz_b, engine.atauxz_b)
+    atv = apply(adjoint, v, engine._adjoint_updates)
+    left = sum(np.sum((au[p].astype(np.float64) - u[p]) * v[p]) for p in u)
+    right = sum(np.sum(u[p].astype(np.float64) * (atv[p].astype(np.float64) - v[p])) for p in u)
+    # Measured: 4.3e-3 in the legacy mode, 1.1e-7 (FP32 rounding) in the fixed mode.
+    assert abs(left - right) / abs(left) < 1e-5
+
+
+@pytest.mark.parametrize("numerics", NUMERIC_MODES)
+def test_vp_gradient_agrees_with_finite_differences(opencl_platform, monkeypatch, numerics):
+    # The mathematical-baseline check (tools/math_baseline.py): six smooth interior perturbations of
+    # vp, the absorbing layer pinned. 0.1.10 injects the residual of step t, updates the adjoint
+    # field and only then runs Grad, pairing the forward field after step t with the adjoint field
+    # of about two steps earlier; the fixed mode runs Grad first (PropagationEngine._adjoint_step).
+    from tools.math_baseline import metric_gradient_fd
+
+    monkeypatch.setenv("PYFWI_NUMERICS", numerics)
+    error = metric_gradient_fd("vp")["median_abs_error"]
+    # Measured: 6.9 % in 0.1.10 and in the legacy mode; 1.9 % in the fixed mode.
+    assert error < 0.03, f"median |ratio - 1| = {error:.3f}"
 
 
 @pytest.mark.parametrize("numerics", NUMERIC_MODES)

@@ -576,7 +576,18 @@ CUDA comes in as an option; the default stays `opencl`.
   0.1.10 differs from finite differences by 6.9 % for vp. The check now pins it, also checks vs
   (60.2 % in 0.1.10), and the baseline was regenerated with the published 0.1.10
   (`tools/math_baseline.py --write`; the other metrics are unchanged, and the `legacy` mode gives
-  the same numbers bit for bit). Next: the corrections of the gradient in `fixed`.
+  the same numbers bit for bit). The prototype then measured, correction by correction (`fixed`;
+  one-step dot product, median error against finite differences for vp, vs and density): current
+  4.3e-3, 6.9 %, 60 %, 135 %; adjoint updates in the transpose order 1.1e-7; Grad paired with the
+  adjoint field of the same step 1.9 % for vp; adjoint absorbing terms equal to the forward ones
+  0.6 % for vp; the shear strain of Grad taken from vx 0.27 % for vs and 1.4 % for density.
+  Each goes in with its known-bug test.
+- **Correction 1 (adjoint order and pairing, engine):** in `fixed`, `PropagationEngine._adjoint_step`
+  runs Grad, then `_adjoint_updates` (Adj_update_v, then Adj_update_tau: the transpose of
+  `_forward_step`), then the residual of the step. 0.1.10 injects the residual, updates the adjoint
+  stresses first and runs Grad last. Known-bug tests: the one-step dot product (4.3e-3 → 1.1e-7,
+  fork only) and the vp gradient against finite differences (6.9 % → 1.9 %). Density 135 % → 51 %,
+  vs 60 % → 58 %. `fixed` × `legacy`: raw gradients up to 20 % (density), seismograms unchanged.
 
 ### 2.5 API contract on CUDA
 

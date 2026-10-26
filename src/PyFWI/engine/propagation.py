@@ -12,7 +12,8 @@ owns everything that lives on the device or follows the time loop:
   checkpoints of the forward field (stored as ``(ns, nchp, tnz, tnx)`` per component, step 1.5),
   and the seismograms read at the end of each shot (step 1.4);
 * the gradient loop: the forward field rebuilt backwards from the checkpoints, the residual
-  injected from a copy on the device (step 1.4), the adjoint updates and the gradient kernel.
+  injected from a copy on the device (step 1.4), the adjoint updates and the gradient kernel (in
+  the ``fixed`` mode in the order of the exact adjoint of the forward step, see ``_adjoint_step``).
 
 ``PyFWI.wave_propagation.WavePropagator`` is the public face: it prepares the inputs (time steps,
 geometry, absorbing boundary, model), turns the results into seismic sections and gradients, and
@@ -400,11 +401,7 @@ class PropagationEngine:
                 self._inject(self.src(t_src), t_src)
                 t_src += 1
 
-            # The four field updates; arguments set by _set_update_args.
-            self._launch(self.knl.update_velx)
-            self._launch(self.knl.update_velz)
-            self._launch(self.knl.update_tauz)
-            self._launch(self.knl.update_tauxz)
+            self._forward_step()
 
             if t in self.chp:
                 # Straight into the contiguous checkpoint storage, without blocking (step 1.5). The
@@ -416,6 +413,18 @@ class PropagationEngine:
             if observe is not None:
                 observe(s, t)
         self.make_seismogram(s)
+
+    def _forward_step(self):
+        """The four field updates of one time step; arguments set by ``_set_update_args``.
+
+        The velocities from the stresses (V: update_velx, update_velz), then the stresses from the
+        new velocities (T: update_tauz, update_tauxz): with the source added before, the step is
+        u(t + 1) = T(V(u(t) + source(t))).
+        """
+        self._launch(self.knl.update_velx)
+        self._launch(self.knl.update_velz)
+        self._launch(self.knl.update_tauz)
+        self._launch(self.knl.update_tauxz)
 
     def make_seismogram(self, s):
         """Read the seismograms of shot ``s`` from the device into ``self.seismogram[...][:, :, s]``.
@@ -479,26 +488,74 @@ class PropagationEngine:
 
             # Adjoint modelling; arguments set by _set_adjoint_args.
             if self.fixed:
-                # Residual sample k at step k * dt_scale, where sample k was recorded. 0.1.10 counts
-                # the samples down from nt_ext - 1 at the last multiple of dt_scale: one sample off
-                # when rounding makes nt_ext one more (dt = 4 ms, t = 0.4 s) or one less (dt = 5 ms,
-                # t = 0.25 s) than the recorded steps.
-                sample, offset = divmod(t, self.steps_per_sample)
-                if offset == 0 and sample < self.nt_ext:
-                    self.residual_sample(sample + 1)
+                t_src = self._adjoint_step(t, t_src)
+            else:
+                # As in 0.1.10: the residual, the adjoint updates, then the gradient.
+                if t % self.dt_scale == 0:
+                    self.residual_sample(t_src)
                     self._launch(self.knl.Adj_injSrc)
-                    t_src = np.int32(sample)
-            elif t % self.dt_scale == 0:
-                self.residual_sample(t_src)
-                self._launch(self.knl.Adj_injSrc)
-                t_src -= 1
-
-            self._launch(self.knl.Adj_update_tau)
-            self._launch(self.knl.Adj_update_v)
-            self._launch(self.knl.Grad)
+                    t_src -= 1
+                self._adjoint_updates()
+                self._launch(self.knl.Grad)
 
             if observe is not None:
                 observe(s, t, t_src)
+
+    def _adjoint_updates(self):
+        """The adjoint field one step back in time; arguments set by ``_set_adjoint_args``.
+
+        The transpose of the forward step T(V(...)) of ``_forward_step`` is V^T(T^T(...)): first the
+        adjoint velocities from the adjoint stresses (Adj_update_v, the transpose of T), then the
+        adjoint stresses from the new adjoint velocities (Adj_update_tau, the transpose of V). The
+        fixed mode runs them in that order. 0.1.10 (the legacy mode) runs Adj_update_tau first: its
+        adjoint step is not the transpose of the forward one (measured on random fields, one step:
+        <A u, v> and <u, A^T v> differ by 4e-3 in relative terms, against 1e-7 in that order).
+        """
+        if self.fixed:
+            self._launch(self.knl.Adj_update_v)
+            self._launch(self.knl.Adj_update_tau)
+        else:
+            self._launch(self.knl.Adj_update_tau)
+            self._launch(self.knl.Adj_update_v)
+
+    def _adjoint_step(self, t, t_src):
+        """Step ``t`` of the adjoint modelling in the fixed numeric mode (step 2.4); returns ``t_src``.
+
+        The forward modelling computes u(t + 1) = A(u(t) + source(t)), A = T V (``_forward_step``),
+        and records the receivers R u(t) at the recorded steps. The adjoint field of the misfit then
+        obeys lambda(t) = A^T lambda(t + 1) + R^T residual(t), and the gradient adds, for every step,
+        lambda(t + 1) times the derivative of A with respect to the model, taken at u(t). When this
+        runs, the forward field has been rebuilt to u(t + 1) and the adjoint field holds
+        lambda(t + 1), so:
+
+        * Grad first: lambda(t + 1) with u(t + 1), whose velocities are those that updated the
+          stresses at step t (the terms of the Lame parameters are those of the exact gradient;
+          the density term pairs the stresses one step later than exact);
+        * then A^T (``_adjoint_updates``);
+        * then the residual recorded at step t: residual sample k at step k * dt_scale. 0.1.10
+          counts the samples down from nt_ext - 1 at the last multiple of dt_scale: one sample off
+          when rounding makes nt_ext one more (dt = 4 ms, t = 0.4 s) or one less (dt = 5 ms,
+          t = 0.25 s) than the recorded steps.
+
+        0.1.10 injects the residual first and runs Grad last: it pairs u(t + 1) with the adjoint
+        field of about two steps earlier. Measured (``tools/math_baseline.py``, vp): directional
+        derivatives 6.9 % from finite differences in 0.1.10, 1.9 % with this order.
+
+        Parameters
+        ----------
+        t : int
+            Internal step, from nt - 1 down to 1.
+        t_src : numpy.int32
+            The last recorded sample injected (``nt_ext`` before the first).
+        """
+        self._launch(self.knl.Grad)
+        self._adjoint_updates()
+        sample, offset = divmod(t, self.steps_per_sample)
+        if offset == 0 and sample < self.nt_ext:
+            self.residual_sample(sample + 1)
+            self._launch(self.knl.Adj_injSrc)
+            t_src = np.int32(sample)
+        return t_src
 
     def residual_to_device(self, res, s):
         """Copy the residual of shot ``s``, all time samples, to the device (step 1.4).

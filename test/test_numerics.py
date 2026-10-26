@@ -18,7 +18,11 @@ so far:
 * the source is resampled to the internal step and injected at every step (0.1.10 added one
   sample every ``dt_scale`` steps, an impulse train whose images alias into the recorded band:
   3 to 6 % of the seismograms at a 10 m grid), the receivers are recorded only in rows that
-  exist, and the residual is injected at the very step where it was recorded.
+  exist, and the residual is injected at the very step where it was recorded;
+* the gradient loop is the adjoint of the forward step: the adjoint velocities are updated
+  before the adjoint stresses, and Grad pairs the forward field with the adjoint field of the
+  same step (0.1.10: about two steps earlier). The gradients change by up to 30 %, mostly the
+  density one (cosine 0.96 or more with 0.1.10).
 """
 import numpy as np
 import pytest
@@ -76,8 +80,8 @@ def _depends_on_the_well_vz(case, key):
 @pytest.mark.parametrize("backend", ["opencl", pytest.param("cuda", marks=pytest.mark.gpu)])
 def test_fixed_against_legacy_on_the_propagation_cases(opencl_platform, monkeypatch, request, backend):
     # The differences published in the CHANGELOG: up to 6 % on seismograms (the source injection,
-    # about 2 % from the full dt) and on gradients; the bounds catch a fixed mode that would change
-    # much more, or nothing. The outputs that depend on the vz seismogram of the wells are a
+    # about 2 % from the full dt), 20 % on raw gradients (the adjoint order, mostly on density);
+    # the bounds catch a fixed mode that would change much more, or nothing. The outputs that depend on the vz seismogram of the wells are a
     # different quantity in the fixed mode: there the test checks the correction itself.
     if backend == "cuda":
         request.getfixturevalue("cuda_device")  # skips without CuPy or without a GPU
@@ -95,4 +99,4 @@ def test_fixed_against_legacy_on_the_propagation_cases(opencl_platform, monkeypa
             layer = key.split("/")[0]
             e, a = np.asarray(golden[key], np.float64), np.asarray(fixed[key], np.float64)
             worst[layer] = max(worst.get(layer, 0), np.linalg.norm(a - e) / max(np.linalg.norm(e), 1e-300))
-    assert 5e-3 < worst["raw_seismogram"] < 0.1 and 5e-3 < worst["raw_gradient"] < 0.15, worst
+    assert 5e-3 < worst["raw_seismogram"] < 0.1 and 5e-3 < worst["raw_gradient"] < 0.3, worst

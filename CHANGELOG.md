@@ -67,6 +67,14 @@ how much and in which numeric mode.
   directional derivatives then differed from finite differences by 88 % instead of 32 %). The same
   rounding the other way (`dt` = 5 ms, `t` = 0.25 s, for example) recorded the last sample one row
   past the seismograms; `fixed` does not record it.
+- In the `fixed` mode the gradient loop is the adjoint of the forward step. A forward step
+  updates the velocities, then the stresses; 0.1.10 updates the adjoint stresses first, injects the
+  residual of a step before the adjoint updates and accumulates the gradient after them, pairing
+  the forward field with the adjoint field of about two steps earlier. `fixed` accumulates the
+  gradient first, then updates the adjoint velocities and stresses, then injects the residual. On
+  the check against finite differences of `tools/math_baseline.py` the vp gradient goes from 6.9 %
+  to 1.9 % (median error) and the density gradient from 135 % to 51 %; gradients change by up to
+  30 % (mostly density; cosine 0.96 or more with `legacy`).
 - In the `fixed` mode order 8 uses the Taylor coefficients of the staggered first derivative
   (1225/1024, -245/3072, 49/5120, -5/7168). 0.1.10 uses them multiplied by 1434 and rounded to
   integers, so that `c1 + 3 c2 + 5 c3 + 7 c4` is 1436/1434 instead of 1: every order-8 wave travels
