@@ -11,6 +11,8 @@ so far:
 * ``dt`` keeps 9 significant digits instead of 6 decimals (0.000571428... instead of 0.000571).
   0.1.10 samples the source with the true step but propagates with the truncated one, 0.075 %
   shorter; correcting it changes seismograms by about 2 % and gradients by about 6 %;
+* the order-8 coefficients are the Taylor ones: 0.1.10 rounds them (times 1434) to integers, and
+  its order-8 waves travel 0.14 % too fast;
 * the crosswell kernels record vz in the vz seismogram (0.1.10 recorded vx there);
 * the kernels stay inside their buffers (bounded receiver loops, no zero-coefficient reads);
 * the source is resampled to the internal step and injected at every step (0.1.10 added one
@@ -36,7 +38,7 @@ def test_fixed_mode_writes_float_constants_and_the_full_time_step():
     legacy, fixed = kernel_sources(8)[0], kernel_sources(8, numerics="fixed")[0]
     assert "#define dt     0.000571\n" in legacy and "#define PYFWI_FIXED" not in legacy
     assert "#define dt     5.714285714e-04f\n" in fixed and "#define PYFWI_FIXED 1" in fixed
-    assert "#define c4     -6.973500697e-04f\n" in fixed
+    assert "#define c4     -6.975446429e-04f\n" in fixed  # -5 / 7168: the Taylor coefficient
 
 
 @pytest.mark.gpu

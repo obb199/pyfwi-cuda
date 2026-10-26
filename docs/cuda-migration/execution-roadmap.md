@@ -100,6 +100,7 @@ What the preparation step delivered and verified (`babbc0e`, `ad049b8`, `f0ee2d2
 | Model library: `ModelGenerator(..., smoothing=1)` returns the homogeneous background (no anomalies) for `louboutin`, `yang`, `perturbation_dv`, `hu_circles` and `hu_laminar`, not a filtered model; density is in g/cm³ for `louboutin` and in kg/m³ for `yang`; `dupuy` fails with `FileNotFoundError` when PyFWI is installed from the PyPI wheel (no `data/` folder). | Documented in `example/scripts/models.py` and its test; the wheel content is fixed in step 1.1. | 0.3, 1.1 |
 | The source wavelet is sampled at the user `dt` and added once every `dt_scale` internal steps, i.e. as a train of impulses. At grid spacings of 4 to 6 m (15 Hz wavelet, `dt` = 4 ms) this excites a grid-scale checkerboard mode that never leaves the model: 2 to 5 % of the peak energy remains after 1.2 s, against 4e-9 at 10 m, and seismograms show a strong spurious ringing. Injecting the source at every internal step (`dt` = 0.5 ms, `dt_scale` = 1) removes it (2e-9). The adjoint injection of residuals works the same way. | Known-bug test; the `fixed` mode resamples the source to the internal step (step 2.4, part 4). The residual is not interpolated: measured, its injection as an impulse at the recorded step (the transpose of the recording) gives the better gradient. | 0.2, 0.6, 2.4 (done) |
 | `nt` and `nt_ext` are rounded down separately, and 0.1.10 counts the residual samples down from row `nt_ext - 1`. When the recording has one row more than recorded steps (`dt` = 4 ms, `t` = 0.2 or 0.4 s) every residual sample is injected one recorded sample early: the gradient changes by 54 % and its error against finite differences goes from 32 % to 88 % (t = 0.4 s). One row less (`dt` = 5 ms, 178 of 5,950 lengths from 0.05 to 6 s; no other `dt` of 0.5 to 10 ms) records the last sample one row past the seismograms. | Known-bug tests; the `fixed` mode injects each residual sample at the step where it was recorded and records only rows that exist. | 2.4 (done) |
+| The order-8 coefficients of 0.1.10 (`1715/1434`, `-114/1434`, `14/1434`, `-1/1434`) are the Taylor coefficients times 1434 rounded to integers: `c1 + 3c2 + 5c3 + 7c4` = 1436/1434, so every order-8 wave travels 0.14 % too fast (measured: arrivals 0.16 ms early after 300 m with the full `dt`). The truncated `dt` (0.075 % slower clock) hid about half of it. | Known-bug test; the `fixed` mode uses the Taylor coefficients (step 2.4, part 5). | 2.4 (done) |
 | The gradient of 0.1.10 is approximate: its directional derivatives differ from finite differences of the misfit by 31 % in the median (one of six directions even has the wrong sign). The forward propagation itself agrees with the analytic solution to a correlation of 0.9987. | Recorded as the mathematical baseline; the `fixed` mode and the CUDA kernels must not be worse, and are expected to improve it. | 0.6, 2.4 |
 | `RmProfilingAdminOnly: 1`: Nsight Compute cannot read GPU counters without root. | Depends on the project owner (see [Pending actions](#pending-actions-for-the-project-owner)). | 0.8 |
 | The inherited workflows (`pr.yml`, `publish.yml`) test Python 3.8 to 3.10 on three operating systems with the old versions and would publish to PyPI as `PyFWI`. | They must be replaced before any PR or release. | 0.1 |
@@ -551,10 +552,23 @@ CUDA comes in as an option; the default stays `opencl`.
   not change it. Measured per trace, both modes arrive about 0.3 ms early (half a time step) at
   every distance; in order 4 `fixed` keeps that offset from 100 to 400 m (the wave speed is right)
   while `legacy` drifts by 0.12 ms, the 0.075 % of the truncated `dt`; in order 8 `fixed` drifts
-  0.16 ms early over 300 m, which the truncated `dt` of `legacy` partly hid. That drift of the
-  order-8 scheme is left to the convergence-order measurement. DES: CUDA `fixed` medium 4.5 s /
+  0.16 ms early over 300 m, which the truncated `dt` of `legacy` partly hid (explained in part 5). DES: CUDA `fixed` medium 4.5 s /
   6.2 s (unchanged), small 0.19 s / 0.17 s (forward +0.02 s: one more launch per step, until the
-  fusion of step 3.5). Next: L-BFGS tolerance and MAT in `fixed`.
+  fusion of step 3.5).
+- **Result (part 5, order-8 coefficients):** the theoretical phase velocity of the order-8 scheme
+  (staggered Taylor operator, leapfrog in time, the 10 m / 0.57 ms of the analytic metric) is 0.01
+  to 0.06 % fast between 15 and 35 Hz, not the 0.13 % measured. The coefficients of 0.1.10 explain
+  the rest: they are the Taylor ones times 1434 rounded to integers, and their consistency sum
+  `c1 + 3c2 + 5c3 + 7c4` is 1436/1434 (0.14 % fast at every frequency). The `fixed` mode uses the
+  Taylor coefficients (1225/1024, -245/3072, 49/5120, -5/7168; order 4 was already right), and a
+  static known-bug test checks the sum in both orders. Measured in `fixed`: the order-8 drift
+  against the analytic solution goes from 0.16 ms to 0.04 ms over 300 m (0.03 %, the temporal
+  dispersion of the theory); analytic correlation 0.9979 → 0.9990, above the 0.9987 of 0.1.10. MAT
+  in `fixed` is now not worse than 0.1.10 on every metric: gradient 31.2 % (31.2 %), analytic
+  0.9990 (0.9987), reflection 1.09 % (1.08 %, within the 5 % margin), late energy 6.9e-9 (4.3e-9,
+  within the 10× margin). `fixed` × `legacy` on the propagation cases: 6.0 % (seismograms), 6.3 %
+  (gradients): short records, where 0.14 % of speed matters little. Next: MAT in `fixed` as a
+  test, L-BFGS tolerance.
 
 ### 2.5 API contract on CUDA
 

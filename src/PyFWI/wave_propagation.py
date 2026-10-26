@@ -300,23 +300,33 @@ class WavePreparation:
                 kernel_source : str
                     macro plus the openCl's source.
         '''
+        # The numeric mode of the fork (step 2.4): "fixed" corrects the numerical bugs of 0.1.10.
+        fixed = getattr(self, "numerics", "legacy") == "fixed"
         if self.sdo == 2:  # For O4
             c1 = 9 / 8
             c2 = -1 / 24
             c3 = 0
             c4 = 0
+        elif self.sdo == 4 and fixed:  # For O8, fixed mode
+            # The Taylor coefficients of the order-8 staggered first derivative. 0.1.10 (below) uses
+            # them multiplied by 1434 and rounded to integers: then c1 + 3 c2 + 5 c3 + 7 c4, which
+            # must be 1 for the derivative of a linear function to be exact, is 1436 / 1434, and
+            # every wave of order 8 travels 0.14 % too fast.
+            c1 = 1225 / 1024
+            c2 = -245 / 3072
+            c3 = 49 / 5120
+            c4 = -5 / 7168
         elif self.sdo == 4:  # For O8
             c1 = 1715 / 1434  #1.2257  #
             c2 = -114 / 1434  # - 0.099537  #
             c3 = 14 / 1434  # 0.018063  #
             c4 = -1 / 1434  # - 0.0026274  #
 
-        # The fixed numeric mode (step 2.4 of the fork) writes the floating-point constants as float
-        # literals (suffix f) with 9 significant digits, so that the kernels compute in FP32 only
-        # and dt is not truncated: 0.1.10 wrote them with "%f", 6 decimals and no suffix, i.e. as
-        # doubles (FP64 arithmetic, 1/64 of the FP32 rate on GeForce) and dt = 0.000571 instead of
-        # 0.000571428... The legacy text below is exactly that of 0.1.10.
-        fixed = getattr(self, "numerics", "legacy") == "fixed"
+        # The fixed numeric mode writes the floating-point constants as float literals (suffix f)
+        # with 9 significant digits, so that the kernels compute in FP32 only and dt is not
+        # truncated: 0.1.10 wrote them with "%f", 6 decimals and no suffix, i.e. as doubles (FP64
+        # arithmetic, 1/64 of the FP32 rate on GeForce) and dt = 0.000571 instead of 0.000571428...
+        # The legacy text below is exactly that of 0.1.10.
         real = "%.9ef" if fixed else "%f"
         macro = ("""
             #define Nz	   %d

@@ -39,6 +39,7 @@ and must pass everywhere else.
 | ``test_crosswell_vz_seismogram_records_vz`` | the crosswell ``vz`` seismogram stores ``vx`` | 2.4 (``fixed`` mode) |
 | ``test_crosswell_kernels_assign_vz_to_vz_seismograms`` | same bug, lines 27 and 74 of ``elastic_crosswell.cl`` | 2.4 (``fixed`` mode) |
 | ``test_dt_define_is_not_truncated`` | ``#define dt`` keeps only 6 decimals | 2.4 (``fixed`` mode) |
+| ``test_finite_difference_coefficients_are_consistent`` | the order-8 coefficients sum to 1436/1434: waves 0.14 % too fast | 2.4 (``fixed`` mode) |
 | ``test_float_constants_have_the_f_suffix`` | literals without ``f`` make the kernels compute in FP64 | 2.4 (``fixed`` mode) |
 | ``test_device_choice_works_with_a_single_device_platform`` | ``inpa['device']`` fails on single-device platforms (PyOpenCL 2022 only) | 1.2 (done) |
 | ``test_optimizer_modules_import`` | ``MemoizeJac`` no longer exported by SciPy | 1.1 (done) |
@@ -357,6 +358,20 @@ def test_crosswell_kernels_assign_vz_to_vz_seismograms(numerics):
     rhs = re.findall(r"seismogram_vzi\[[^\]]*\]\s*=\s*(\w+)\[", source)  # array read on the right-hand side
     assert len(rhs) == 2
     assert rhs == ["vz", "vz"], f"seismogram_vzi is assigned from {rhs}"
+
+
+@pytest.mark.parametrize("numerics", NUMERIC_MODES)
+def test_finite_difference_coefficients_are_consistent(numerics):
+    # A staggered first derivative sum_m c_m (f(x + (m - 1/2) h) - f(x - (m - 1/2) h)) / h is exact
+    # for a linear f only when c1 + 3 c2 + 5 c3 + 7 c4 = 1; otherwise every wave travels that much
+    # too fast or too slow. Order 4 (9/8, -1/24) is right. Order 8 in 0.1.10 uses 1715/1434,
+    # -114/1434, 14/1434 and -1/1434, the Taylor coefficients times 1434 rounded to integers: the
+    # sum is 1436/1434, waves 0.14 % too fast (measured against the analytic solution: arrivals
+    # 0.16 ms early after 300 m).
+    for order in (4, 8):
+        defines = _defines(kernel_sources(order, numerics=numerics)[0])
+        c1, c2, c3, c4 = (float(defines[f"c{m}"].rstrip("f")) for m in (1, 2, 3, 4))
+        assert abs(c1 + 3 * c2 + 5 * c3 + 7 * c4 - 1) < 1e-7, f"order {order}: {c1 + 3 * c2 + 5 * c3 + 7 * c4}"
 
 
 @pytest.mark.parametrize("numerics", NUMERIC_MODES)
