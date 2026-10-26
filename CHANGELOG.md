@@ -79,6 +79,12 @@ how much and in which numeric mode.
   absorbing layer, as the forward kernels do. 0.1.10 damps `Ataux` with `dxpml` alone, `Atauz` with
   `dzpml` alone, `Avx` with `2 dxpml + dzpml` and `Avz` with `dxpml + 2 dzpml`, so that part of the
   adjoint field comes back from the boundary. vp gradient against finite differences: 1.9 % → 0.6 %.
+- In the `fixed` mode `Grad` takes the shear strain from the z derivative of `vx` and the x
+  derivative of `vz`, as `update_tauxz` does; 0.1.10 used the z derivative of `vz` in place of that
+  of `vx`, so the `mu` gradient, and with it the `vs` and density gradients, was wrong. Against
+  finite differences, with the two corrections above: vs 60 % → 0.27 %, density 135 % → 1.4 %, vp
+  6.9 % → 0.6 % (median error; `tools/math_baseline.py`). The raw gradients of `fixed` differ from
+  those of `legacy` by up to 45 % (`mu`; cosine 0.89 or more) on the propagation cases.
 - In the `fixed` mode order 8 uses the Taylor coefficients of the staggered first derivative
   (1225/1024, -245/3072, 49/5120, -5/7168). 0.1.10 uses them multiplied by 1434 and rounded to
   integers, so that `c1 + 3 c2 + 5 c3 + 7 c4` is 1436/1434 instead of 1: every order-8 wave travels

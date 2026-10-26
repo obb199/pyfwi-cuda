@@ -522,8 +522,15 @@ __kernel void Grad(__global float *vx, __global float *vz,
 
   if(i>Nz-sdo - npml || j>Nx-sdo - npml){return;}
 
+#ifdef PYFWI_FIXED
+  // Fixed mode (step 2.4): the z derivative of vx, as in update_tauxz (shear strain DzpVx + DxmVz).
+  float DzpVx= (c1*(vx[below]-vx[center]) + c2*(vx[below2]-vx[above])+
+               HIGH_ORDER(c3*(vx[below3]-vx[above2])) + HIGH_ORDER(c4*(vx[below4]-vx[above3])))/dz;
+#else
+  // 0.1.10: the z derivative of vz under the name DzpVx.
   float DzpVx= (c1*(vz[below]-vz[center]) + c2*(vz[below2]-vz[above])+
                HIGH_ORDER(c3*(vz[below3]-vz[above2])) + HIGH_ORDER(c4*(vz[below4]-vz[above3])))/dz;
+#endif
 
   float DxmVz= (c1*(vz[center]-vz[left]) + c2*(vz[right]-vz[left2])+
                HIGH_ORDER(c3*(vz[right2]-vz[left3])) + HIGH_ORDER(c4*(vz[right3]-vz[left4])))/dx;

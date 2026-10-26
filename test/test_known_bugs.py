@@ -38,6 +38,8 @@ and must pass everywhere else.
 | ``test_adjoint_step_is_the_transpose_of_the_forward_step`` | the adjoint updates run in the wrong order (fork only: needs the engine) | 2.4 (``fixed`` mode) |
 | ``test_adjoint_fields_are_damped_as_the_forward_ones`` | the adjoint kernels damp the adjoint fields with other combinations of the absorbing profiles | 2.4 (``fixed`` mode) |
 | ``test_vp_gradient_agrees_with_finite_differences`` | ``Grad`` pairs the forward field with the adjoint field of two steps earlier, and the adjoint absorbing layer differs: 7 % off | 2.4 (``fixed`` mode) |
+| ``test_gradient_shear_strain_is_that_of_the_forward_kernels`` | ``Grad`` computes the shear strain from ``vz`` twice, never from ``vx`` | 2.4 (``fixed`` mode) |
+| ``test_vs_and_density_gradients_agree_with_finite_differences`` | same bug (and the two above): vs 60 % and density 135 % off | 2.4 (``fixed`` mode) |
 | ``test_receivers_are_recorded_inside_the_seismograms`` | the same rounding records the last sample one row past the seismograms (``dt`` = 5 ms) | 2.4 (``fixed`` mode) |
 | ``test_crosswell_vz_seismogram_records_vz`` | the crosswell ``vz`` seismogram stores ``vx`` | 2.4 (``fixed`` mode) |
 | ``test_crosswell_kernels_assign_vz_to_vz_seismograms`` | same bug, lines 27 and 74 of ``elastic_crosswell.cl`` | 2.4 (``fixed`` mode) |
@@ -411,6 +413,40 @@ def test_vp_gradient_agrees_with_finite_differences(opencl_platform, monkeypatch
     # Measured: 6.9 % in 0.1.10 and in the legacy mode; in the fixed mode 1.9 % with the adjoint
     # order alone, 0.6 % with the adjoint damping too.
     assert error < 0.015, f"median |ratio - 1| = {error:.3f}"
+
+
+@pytest.mark.parametrize("numerics", NUMERIC_MODES)
+def test_gradient_shear_strain_is_that_of_the_forward_kernels(numerics):
+    # update_tauxz updates tauxz with mu (DxmVz + DzpVx), DzpVx being the z derivative of vx. Grad
+    # correlates the adjoint of tauxz with DzpVx + DxmVz too, but its DzpVx is the z derivative of
+    # vz (0.1.10): the gradient with respect to mu, hence vs and density, is wrong.
+    import PyFWI
+    with open(os.path.join(os.path.dirname(PyFWI.__file__), "elastic.cl")) as f:
+        source = active_source(f.read(), fixed=numerics == "fixed")
+
+    def strain(kernel):
+        body = source[source.index(f"__kernel void {kernel}("):]
+        definition = body[body.index("float DzpVx="):]
+        return definition[:definition.index(";")]
+
+    assert "vx[below]" in strain("update_tauxz")
+    assert strain("Grad") == strain("update_tauxz"), strain("Grad")
+
+
+@pytest.mark.parametrize("parameter, largest", [("vs", 0.01), ("rho", 0.03)])
+@pytest.mark.parametrize("numerics", NUMERIC_MODES)
+def test_vs_and_density_gradients_agree_with_finite_differences(opencl_platform, monkeypatch, numerics, parameter,
+                                                                 largest):
+    # The check of test_vp_gradient_agrees_with_finite_differences for vs and density. Their
+    # gradients take the mu gradient of Grad, whose shear strain was that of vz (and density the
+    # other terms of Grad too).
+    from tools.math_baseline import metric_gradient_fd
+
+    monkeypatch.setenv("PYFWI_NUMERICS", numerics)
+    error = metric_gradient_fd(parameter)["median_abs_error"]
+    # Measured: vs 60 % and density 135 % in 0.1.10 and in the legacy mode; 0.27 % and 1.4 % in
+    # the fixed mode (with its adjoint order and absorbing layer).
+    assert error < largest, f"median |ratio - 1| = {error:.3f}"
 
 
 @pytest.mark.parametrize("numerics", NUMERIC_MODES)

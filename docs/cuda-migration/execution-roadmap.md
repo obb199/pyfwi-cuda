@@ -598,6 +598,12 @@ CUDA comes in as an option; the default stays `opencl`.
   0.99999 in `fixed` against 0.999997 in `legacy` (the backward rebuild through the absorbing layer
   meets a different adjoint field there; `chpr = 1` improves, 0.990 against 0.986): its bound goes
   from 0.99999 to 0.9999.
+- **Correction 3 (shear strain of Grad, kernel):** in `fixed`, `Grad` computes `DzpVx` from `vx`, as
+  `update_tauxz` does; 0.1.10 computed it from `vz`. Static known-bug test (the definition must be
+  that of `update_tauxz`) and finite-difference known-bug tests for vs (< 1 %) and density (< 3 %).
+  Measured in `fixed`: vp 0.61 %, vs 0.27 %, density 1.4 % (0.1.10: 6.9 %, 60 %, 135 %); the
+  remaining density error is the one-step offset of its term in `_adjoint_step`. `fixed` ×
+  `legacy`: raw gradients up to 45 % (`mu`), cosines 0.955 (lambda), 0.89 (mu), 0.93 (density).
 
 ### 2.5 API contract on CUDA
 
