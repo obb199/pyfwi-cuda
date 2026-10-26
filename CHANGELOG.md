@@ -89,8 +89,11 @@ how much and in which numeric mode.
   (1225/1024, -245/3072, 49/5120, -5/7168). 0.1.10 uses them multiplied by 1434 and rounded to
   integers, so that `c1 + 3 c2 + 5 c3 + 7 c4` is 1436/1434 instead of 1: every order-8 wave travels
   0.14 % too fast (arrivals 0.16 ms early after 300 m at 2,500 m/s, 2.8 ms after a 2 s record).
-  The truncated `dt` of 0.1.10 hid about half of it. With the correction the order-8 traces of a
-  homogeneous model agree with the analytic solution to a correlation of 0.9990 (0.9987 in 0.1.10).
+  The truncated `dt` of 0.1.10 hid about half of it. The rounding also leaves a second-order error
+  term: on grid refinement the order-8 scheme of 0.1.10 converges at order 2.2 to 2.7, against 7.5
+  with the Taylor coefficients (order 4 converges at order 4.1 in both modes). With the correction
+  the order-8 traces of a homogeneous model agree with the analytic solution to a correlation of
+  0.9990 (0.9987 in 0.1.10).
 - In the `fixed` mode the crosswell kernels record `vz` in the `vz` seismogram; 0.1.10 (and the
   `legacy` mode) recorded `vx` there, so with `acq_type=0` the `vz` data, and the misfit and
   gradient of components 2 and 4, are a different quantity in `fixed`.

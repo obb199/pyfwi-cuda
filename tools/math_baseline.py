@@ -25,6 +25,16 @@ they are, with four metrics computed on small homogeneous or inclusion models:
 ``late_energy``
     Energy of the wavefield at the end of a 1.2 s run divided by its peak, in a 600 m
     homogeneous model (the wave should have left through the absorbing boundary).
+``convergence``
+    The observed order of accuracy in space, orders 4 and 8, by self-convergence: the
+    pressure 100 m from a source in a homogeneous 800 m model at grid spacings of 20, 10 and
+    5 m, against the same run at 2.5 m, with the same time step (0.2 ms, so ``dt_scale`` is
+    1 and the time error is the same in every run), before any boundary reflection arrives.
+    A source added to one cell is a moment proportional to the cell area, so traces are
+    divided by dh^2. The wavelet is a Ricker over +-1.5 / fdom: the default one (+-1 / fdom)
+    starts and ends with a jump of 1e-3 of its peak, whose broadband content no grid
+    resolves, a floor of 1e-3 for the differences. Metric: the relative L2 differences and
+    their ratios as orders, log2(e(2h) / e(h)). FP32 rounding sets a floor of about 1e-6.
 ``adjoint_dot``
     The dot-product test of one time step: |<(A - I) u, v> - <u, (A^T - I) v>| divided by
     |<(A - I) u, v>|, A being the forward step of the propagation engine and A^T the adjoint
@@ -38,10 +48,6 @@ The script prints the metrics as JSON. With ``--write`` (only with the published
 ``test/golden/math_baseline.json``; ``test/test_math.py`` then requires every later
 version not to be worse.
 
-Not measured on 0.1.10, and why (see the roadmap): the convergence order (at grid
-spacings of 4 to 6 m the source injection of 0.1.10 excites a spurious grid-scale
-oscillation, a known bug, fixed in the ``fixed`` numeric mode of the fork).
-
 The numeric mode is that of ``PYFWI_NUMERICS`` (``test/test_math.py`` measures both).
 
 Usage::
@@ -54,6 +60,7 @@ Used by
 ``test/test_math.py``.
 """
 import argparse
+import itertools
 import json
 import os
 import sys
@@ -72,11 +79,14 @@ BASELINE_PATH = os.path.join(REPO, "test", "golden", "math_baseline.json")
 #: Velocity (m/s), recording sampling (s) and Ricker frequency (Hz) of the homogeneous tests.
 VELOCITY, DT, FDOM = 2500.0, 0.004, 15
 
+#: Grid spacings (m) of the convergence study, the last one being the reference, and its time step (s).
+CONVERGENCE_SPACINGS, CONVERGENCE_DT = (20.0, 10.0, 5.0, 2.5), 0.0002
+
 #: The five wavefield components, in the order of the engine's field buffers.
 COMPONENTS = ("vx", "vz", "taux", "tauz", "tauxz")
 
 
-def homogeneous_run(size, dh, order, src_xz, rec_xz, t, npml=20, chpr=0):
+def homogeneous_run(size, dh, order, src_xz, rec_xz, t, npml=20, chpr=0, dt=DT, half_width=1.0):
     """Forward modelling in a homogeneous acoustic square model; returns ``(pressure traces, propagator)``.
 
     Parameters
@@ -97,6 +107,10 @@ def homogeneous_run(size, dh, order, src_xz, rec_xz, t, npml=20, chpr=0):
         Thickness of the absorbing boundary in grid points.
     chpr : int, optional
         Checkpoint percentage (``late_energy`` reads the stored snapshots).
+    dt : float, optional
+        Time step of the recording and of the source wavelet in seconds.
+    half_width : float, optional
+        The Ricker wavelet spans +-half_width / fdom (``Source.Ricker``: 1).
     """
     import PyFWI.acquisition as acq
     import PyFWI.wave_propagation as wave
@@ -106,10 +120,13 @@ def homogeneous_run(size, dh, order, src_xz, rec_xz, t, npml=20, chpr=0):
              "rho": np.ones((n, n), np.float32)}
     rec_loc = np.asarray(rec_xz, np.float32)
     rec_dis = float(rec_loc[1, 0] - rec_loc[0, 0]) if len(rec_loc) > 1 else dh
-    inpa = {"ns": 1, "sdo": order, "fdom": FDOM, "dh": dh, "dt": DT, "acq_type": 1, "t": t, "npml": npml,
+    inpa = {"ns": 1, "sdo": order, "fdom": FDOM, "dh": dh, "dt": dt, "acq_type": 1, "t": t, "npml": npml,
             "pmlR": 1e-5, "pml_dir": 2, "rec_dis": rec_dis}
-    src = acq.Source(np.asarray([src_xz], np.float32), dh, DT)
+    src = acq.Source(np.asarray([src_xz], np.float32), dh, dt)
     src.Ricker(FDOM)
+    if half_width != 1.0:  # the same Ricker over a longer support
+        tw = np.arange(-half_width / FDOM, half_width / FDOM + dt / 3, dt)
+        src.w = np.float32((1.0 - 2.0 * (np.pi * FDOM * tw) ** 2) * np.exp(-(np.pi * FDOM * tw) ** 2))
     with zero_guard_bands():
         W = wave.WavePropagator(inpa, src, rec_loc, (n, n), components=0, chpr=chpr)
         traces = W.forward_modeling(model, show=False)["taux"]
@@ -204,6 +221,23 @@ def metric_gradient_fd(parameter="vp"):
     return {"median_abs_error": float(np.median(np.abs(np.array(ratios) - 1))), "ratios": ratios}
 
 
+def metric_convergence():
+    """Observed orders of accuracy in space, orders 4 and 8 (self-convergence, see the module docstring)."""
+    result = {}
+    for order in (4, 8):
+        traces = {}
+        for dh in CONVERGENCE_SPACINGS:
+            pressure, _ = homogeneous_run(800.0, dh, order, (400.0, 400.0), [(500.0, 400.0), (600.0, 400.0)],
+                                          t=0.26, dt=CONVERGENCE_DT, half_width=1.5)
+            traces[dh] = pressure[:, 0] / dh ** 2
+        reference = traces[CONVERGENCE_SPACINGS[-1]]
+        errors = [float(np.linalg.norm(traces[dh] - reference) / np.linalg.norm(reference))
+                  for dh in CONVERGENCE_SPACINGS[:-1]]
+        result[f"order_{order}"] = {"errors": errors,
+                                    "orders": [float(np.log2(a / b)) for a, b in itertools.pairwise(errors)]}
+    return result
+
+
 def metric_adjoint_dot():
     """Relative mismatch of the dot-product test of one time step (``None`` without the fork's engine)."""
     from helpers import tiny_case
@@ -254,7 +288,7 @@ def measure():
     return {"gradient_fd": metric_gradient_fd("vp"), "gradient_fd_vs": metric_gradient_fd("vs"),
             "gradient_fd_rho": metric_gradient_fd("rho"), "analytic": metric_analytic(),
             "pml_reflection": metric_pml_reflection(), "late_energy": metric_late_energy(),
-            "adjoint_dot": metric_adjoint_dot()}
+            "convergence": metric_convergence(), "adjoint_dot": metric_adjoint_dot()}
 
 
 def main():

@@ -460,7 +460,8 @@ def test_finite_difference_coefficients_are_consistent(numerics):
     # too fast or too slow. Order 4 (9/8, -1/24) is right. Order 8 in 0.1.10 uses 1715/1434,
     # -114/1434, 14/1434 and -1/1434, the Taylor coefficients times 1434 rounded to integers: the
     # sum is 1436/1434, waves 0.14 % too fast (measured against the analytic solution: arrivals
-    # 0.16 ms early after 300 m).
+    # 0.16 ms early after 300 m), and the rounding leaves a second-order error term: order 8
+    # converges at order 2.2 to 2.7 instead of 7.5 (tools/math_baseline.py:metric_convergence).
     for order in (4, 8):
         defines = _defines(kernel_sources(order, numerics=numerics)[0])
         c1, c2, c3, c4 = (float(defines[f"c{m}"].rstrip("f")) for m in (1, 2, 3, 4))

@@ -18,8 +18,10 @@ Both numeric modes of the fork are measured (``PYFWI_NUMERICS``). ``legacy`` run
 of 0.1.10 and gives the baseline values; ``fixed`` (step 2.4) must not be worse, and the tests
 below also state what it reaches: the gradient within 1.5 % of finite differences for vp, vs and
 density, an adjoint step that is the transpose of the forward one, and the analytic agreement of
-order 8 restored by its corrected coefficients. The dot-product test needs the engine of the
-fork: the baseline of 0.1.10 has none, and the legacy mode measures the kernels of 0.1.10.
+order 8 restored by its corrected coefficients, which also make order 8 converge at order 7.5
+(0.1.10: about 2, its rounded coefficients leave a second-order error term). The dot-product
+test needs the engine of the fork: the baseline of 0.1.10 has none, and the legacy mode
+measures the kernels of 0.1.10.
 """
 import json
 import os
@@ -97,6 +99,18 @@ def test_fixed_mode_gradient_agrees_with_finite_differences(numerics, measured):
         pytest.skip("the legacy mode keeps the gradient of 0.1.10")
     for metric in ("gradient_fd", "gradient_fd_vs", "gradient_fd_rho"):
         assert measured[metric]["median_abs_error"] < 0.03, (metric, measured[metric])
+
+
+def test_spatial_convergence_order(baseline, numerics, measured):
+    # Observed orders between 20, 10 and 5 m (tools/math_baseline.py:metric_convergence). Measured:
+    # order 4 converges at order 4.1 in both modes; order 8 at 2.7 then 2.2 in 0.1.10 (its rounded
+    # coefficients), at 7.5 in the fixed mode, then 5 when the differences reach the FP32 floor.
+    for order in ("order_4", "order_8"):
+        rates, before = measured["convergence"][order]["orders"], baseline["convergence"][order]["orders"]
+        assert all(a >= b - 0.1 for a, b in zip(rates, before)), (order, rates, before)
+    assert min(measured["convergence"]["order_4"]["orders"]) > 3.8
+    if numerics == "fixed":
+        assert measured["convergence"]["order_8"]["orders"][0] > 7
 
 
 def test_adjoint_step_is_the_transpose_of_the_forward_step(numerics, measured):
