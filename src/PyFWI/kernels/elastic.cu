@@ -24,6 +24,30 @@
 // limited by memory bandwidth, lambda + 2 mu is not stored: the kernels that use it also need
 // lambda, so a precomputed field would not save a read.
 
+// ------------------------------------------------------------------ storage of the fields (step 4.3)
+//
+// The fields and adjoint fields (and their checkpoints and stored bands) are arrays of `real`. In the
+// default float32 storage `real` is float, and every kernel below is exactly the float32 code of Phase 3.
+// In the FP16 mode (PYFWI_FP16 in the #define block: PropagationEngine with fp16) a `real` is a half-
+// precision number, 2 bytes, read as a float and written from a float: the arithmetic stays float32, the
+// fields take half the memory and half the bandwidth. The engine scales the fields so that their values
+// suit half precision (see PropagationEngine, step 4.3).
+#ifdef PYFWI_FP16
+#include <cuda_fp16.h>
+struct real {
+    __half value;
+    __device__ __forceinline__ operator float() const { return __half2float(value); }
+    __device__ __forceinline__ real &operator=(float x) {
+        value = __float2half(x);
+        return *this;
+    }
+    __device__ __forceinline__ real &operator+=(float x) { return *this = float(*this) + x; }
+    __device__ __forceinline__ real &operator-=(float x) { return *this = float(*this) - x; }
+};
+#else
+typedef float real;
+#endif
+
 // ------------------------------------------------------------------ indices and derivatives
 
 // The row and column of the work item running this thread.
@@ -81,16 +105,16 @@ __device__ __forceinline__ float damping(const float *dxpml, const float *dzpml,
     return (i >= z0 && i <= z1 && j >= x0 && j <= x1) ? 0.0f : dxpml[k] + dzpml[k];
 }
 
-// A field as a callable for the derivatives: field(p)(k) is p[k].
+// A field as a callable for the derivatives: field(p)(k) is p[k], as a float.
 struct Field {
-    const float *p;
+    const real *p;
     __device__ __forceinline__ float operator()(int k) const { return p[k]; }
 };
-__device__ __forceinline__ Field field(const float *p) { return Field{p}; }
+__device__ __forceinline__ Field field(const real *p) { return Field{p}; }
 
 // ------------------------------------------------------------------ zeroing
 
-extern "C" __global__ void MakeAllZero(float *vx, float *vz, float *taux, float *tauz, float *tauxz) {
+extern "C" __global__ void MakeAllZero(real *vx, real *vz, real *taux, real *tauz, real *tauxz) {
     const int i = row_of_thread(), j = column_of_thread();
     if (i >= Nz || j >= Nx) return;
     const long long k = slot_values() + i * Nx + j;  // batched
@@ -121,7 +145,7 @@ extern "C" __global__ void MakeGradZero(float *Gmu, float *Glam, float *Grho,
 // step (the gradient rebuilds the forward field backwards). The cells updated are rows and columns
 // sdo to N - sdo; rho_b holds 1 / density, dxpml and dzpml the damping of the absorbing layer.
 
-extern "C" __global__ void update_velx(int coeff, float *vx, const float *taux, const float *tauxz,
+extern "C" __global__ void update_velx(int coeff, real *vx, const real *taux, const real *tauxz,
                                        const float *rho_b, const float *dxpml, const float *dzpml) {
     const long long f = slot_values();  // batched
     vx += f, taux += f, tauxz += f;
@@ -139,7 +163,7 @@ extern "C" __global__ void update_velx(int coeff, float *vx, const float *taux, 
     }
 }
 
-extern "C" __global__ void update_velz(int coeff, float *vz, const float *tauz, const float *tauxz,
+extern "C" __global__ void update_velz(int coeff, real *vz, const real *tauz, const real *tauxz,
                                        const float *rho_b, const float *dxpml, const float *dzpml) {
     const long long f = slot_values();  // batched
     vz += f, tauz += f, tauxz += f;
@@ -157,7 +181,7 @@ extern "C" __global__ void update_velz(int coeff, float *vz, const float *tauz, 
     }
 }
 
-extern "C" __global__ void update_tauz(int coeff, const float *vx, const float *vz, float *taux, float *tauz,
+extern "C" __global__ void update_tauz(int coeff, const real *vx, const real *vz, real *taux, real *tauz,
                                        const float *lambda, const float *mu, const float *dxpml,
                                        const float *dzpml) {
     const long long f = slot_values();  // batched
@@ -180,7 +204,7 @@ extern "C" __global__ void update_tauz(int coeff, const float *vx, const float *
     }
 }
 
-extern "C" __global__ void update_tauxz(int coeff, const float *vx, const float *vz, float *tauxz,
+extern "C" __global__ void update_tauxz(int coeff, const real *vx, const real *vz, real *tauxz,
                                         const float *mu, const float *dxpml, const float *dzpml) {
     const long long f = slot_values();  // batched
     vx += f, vz += f, tauxz += f;
@@ -204,8 +228,8 @@ extern "C" __global__ void update_tauxz(int coeff, const float *vx, const float 
 // Adj_update_tau): each adjoint field damped by dxpml + dzpml in the absorbing layer, as its forward
 // field.
 
-extern "C" __global__ void Adj_update_tau(const float *Avx, const float *Avz, float *Ataux, float *Atauz,
-                                          float *Atauxz, const float *rho_b, const float *dxpml,
+extern "C" __global__ void Adj_update_tau(const real *Avx, const real *Avz, real *Ataux, real *Atauz,
+                                          real *Atauxz, const float *rho_b, const float *dxpml,
                                           const float *dzpml, int z0, int z1, int x0, int x1) {
     const long long f = slot_values();  // batched
     Avx += f, Avz += f, Ataux += f, Atauz += f, Atauxz += f;
@@ -224,8 +248,8 @@ extern "C" __global__ void Adj_update_tau(const float *Avx, const float *Avz, fl
     Atauxz[k] += -dt * ((d * Atauxz[k]) + (DzpAvx + DxmAvz));
 }
 
-extern "C" __global__ void Adj_update_v(float *Avx, float *Avz, const float *Ataux, const float *Atauz,
-                                        const float *Atauxz, const float *lam, const float *mu,
+extern "C" __global__ void Adj_update_v(real *Avx, real *Avz, const real *Ataux, const real *Atauz,
+                                        const real *Atauxz, const float *lam, const float *mu,
                                         const float *dxpml, const float *dzpml) {
     const long long f = slot_values();  // batched
     Avx += f, Avz += f, Ataux += f, Atauz += f, Atauxz += f;
@@ -253,9 +277,9 @@ extern "C" __global__ void Adj_update_v(float *Avx, float *Avz, const float *Ata
 // gradient with respect to mu, lambda and 1 / density) and the energy of the forward field (the
 // preconditioners), outside the absorbing layer.
 
-extern "C" __global__ void Grad(const float *vx, const float *vz, const float *taux, const float *tauz,
-                                const float *tauxz, const float *Avx, const float *Avz, const float *Ataux,
-                                const float *Atauz, const float *Atauxz, const float *lambda, const float *mu,
+extern "C" __global__ void Grad(const real *vx, const real *vz, const real *taux, const real *tauz,
+                                const real *tauxz, const real *Avx, const real *Avz, const real *Ataux,
+                                const real *Atauz, const real *Atauxz, const float *lambda, const float *mu,
                                 const float *rho_b, float *Gmu, float *Gmu_precond, float *Glam,
                                 float *Glam_precond, float *Grho, float *Grho_precond) {
     const long long f = slot_values();  // batched
@@ -292,8 +316,8 @@ extern "C" __global__ void Grad(const float *vx, const float *vz, const float *t
 // changes them (no thread reads the adjoint velocities of another cell there). Fewer launches, and
 // every field read once per kernel instead of once per half (a forward step moves 29 % less data).
 
-extern "C" __global__ void update_v(int coeff, float *vx, float *vz, const float *taux, const float *tauz,
-                                    const float *tauxz, const float *rho_b, const float *dxpml,
+extern "C" __global__ void update_v(int coeff, real *vx, real *vz, const real *taux, const real *tauz,
+                                    const real *tauxz, const float *rho_b, const float *dxpml,
                                     const float *dzpml, int z0, int z1, int x0, int x1) {
     const long long f = slot_values();  // batched
     vx += f, vz += f, taux += f, tauz += f, tauxz += f;
@@ -318,8 +342,8 @@ extern "C" __global__ void update_v(int coeff, float *vx, float *vz, const float
     }
 }
 
-extern "C" __global__ void update_tau(int coeff, const float *vx, const float *vz, float *taux, float *tauz,
-                                      float *tauxz, const float *lambda, const float *mu, const float *dxpml,
+extern "C" __global__ void update_tau(int coeff, const real *vx, const real *vz, real *taux, real *tauz,
+                                      real *tauxz, const float *lambda, const float *mu, const float *dxpml,
                                       const float *dzpml, int z0, int z1, int x0, int x1) {
     const long long f = slot_values();  // batched
     vx += f, vz += f, taux += f, tauz += f, tauxz += f;
@@ -349,9 +373,9 @@ extern "C" __global__ void update_tau(int coeff, const float *vx, const float *v
 }
 
 // Grad on the cells outside the absorbing layer, then Adj_update_v on every updated cell.
-extern "C" __global__ void grad_adjoint_v(const float *vx, const float *vz, const float *taux, const float *tauz,
-                                          const float *tauxz, float *Avx, float *Avz, const float *Ataux,
-                                          const float *Atauz, const float *Atauxz, const float *lambda,
+extern "C" __global__ void grad_adjoint_v(const real *vx, const real *vz, const real *taux, const real *tauz,
+                                          const real *tauxz, real *Avx, real *Avz, const real *Ataux,
+                                          const real *Atauz, const real *Atauxz, const float *lambda,
                                           const float *mu, const float *rho_b, const float *dxpml,
                                           const float *dzpml, float *Gmu, float *Gmu_precond, float *Glam,
                                           float *Glam_precond, float *Grho, float *Grho_precond, int z0,
@@ -418,7 +442,7 @@ __device__ __forceinline__ int recorded_sample(int t, int dt_scale, int rows) {
 // Add the source of step *step at its cell (thread 0) and, at a recorded step, record every receiver
 // in the row of that sample (thread r for receiver r): what injSrc of the OpenCL files does, in one
 // launch.
-extern "C" __global__ void inject_and_record(float *vx, float *vz, float *taux, float *tauz, const float *tauxz,
+extern "C" __global__ void inject_and_record(real *vx, real *vz, real *taux, real *tauz, const real *tauxz,
                                              float *seismogram_vxi, float *seismogram_vzi,
                                              float *seismogram_tauxi, float *seismogram_tauzi,
                                              float *seismogram_tauxzi, const int *cells, const int *source_cell,
@@ -452,7 +476,7 @@ extern "C" __global__ void inject_and_record(float *vx, float *vz, float *taux, 
 // a cell adds those of the receivers that share it, in their order (first, following:
 // PyFWI.engine.propagation.receiver_table), so that no two threads write one cell: deterministic
 // without atomic operations.
-extern "C" __global__ void inject_residual(float *Avx, float *Avz, float *Ataux, float *Atauz, float *Atauxz,
+extern "C" __global__ void inject_residual(real *Avx, real *Avz, real *Ataux, real *Atauz, real *Atauxz,
                                            const float *res_vx, const float *res_vz, const float *res_taux,
                                            const float *res_tauz, const float *res_tauxz, const int *cells,
                                            const int *first, const int *following, const int *step,
@@ -510,14 +534,14 @@ extern "C" __global__ void sum_slots(float *Gmu, float *Gmu_precond, float *Glam
 // of the shots kept on the device are one buffer of (5 components, shots, checkpoints, Nz * Nx)
 // values (PropagationEngine._device_checkpoints): slot b's checkpoint of component c starts
 // c * component_pitch + offset + b * shot_pitch values into it, offset being that of the first slot.
-extern "C" __global__ void copy_checkpoint(float *vx, float *vz, float *taux, float *tauz, float *tauxz,
-                                           float *checkpoints, long long offset, long long shot_pitch,
+extern "C" __global__ void copy_checkpoint(real *vx, real *vz, real *taux, real *tauz, real *tauxz,
+                                           real *checkpoints, long long offset, long long shot_pitch,
                                            long long component_pitch, int restore) {
     const int i = row_of_thread(), j = column_of_thread();
     if (i >= Nz || j >= Nx) return;
     const long long k = i * Nx + j, f = slot_values() + k;  // batched
-    float *stored = checkpoints + offset + blockIdx.z * shot_pitch + k;
-    float *fields[5] = {vx, vz, taux, tauz, tauxz};
+    real *stored = checkpoints + offset + blockIdx.z * shot_pitch + k;
+    real *fields[5] = {vx, vz, taux, tauz, tauxz};
     for (int c = 0; c < 5; c++) {
         if (restore) {
             fields[c][f] = stored[c * component_pitch];
@@ -539,13 +563,13 @@ extern "C" __global__ void copy_checkpoint(float *vx, float *vz, float *taux, fl
 // store of a shot holds nt steps of 5 x n_band values (vx, vz, taux, tauz, tauxz); band_shot[slot] is the
 // shot of every slot of a batch. Launched on a grid of 1 row and n_band columns per slot.
 
-extern "C" __global__ void save_band(const float *vx, const float *vz, const float *taux, const float *tauz,
-                                     const float *tauxz, float *store, const int *band, const int *band_shot,
+extern "C" __global__ void save_band(const real *vx, const real *vz, const real *taux, const real *tauz,
+                                     const real *tauxz, real *store, const int *band, const int *band_shot,
                                      const int *step, int n_band, long long shot_values) {
     const int b = column_of_thread();
     if (row_of_thread() != 0 || b >= n_band) return;
     const long long cell = slot_values() + band[b];  // batched
-    float *stored = store + band_shot[blockIdx.z] * shot_values + (long long)(*step) * 5 * n_band;
+    real *stored = store + band_shot[blockIdx.z] * shot_values + (long long)(*step) * 5 * n_band;
     stored[b] = vx[cell];
     stored[n_band + b] = vz[cell];
     stored[2 * n_band + b] = taux[cell];
@@ -554,13 +578,13 @@ extern "C" __global__ void save_band(const float *vx, const float *vz, const flo
 }
 
 // Write back the band stored at step *step + delta: the stresses when `stresses` is 1, else the velocities.
-extern "C" __global__ void restore_band(float *vx, float *vz, float *taux, float *tauz, float *tauxz,
-                                        const float *store, const int *band, const int *band_shot, const int *step,
+extern "C" __global__ void restore_band(real *vx, real *vz, real *taux, real *tauz, real *tauxz,
+                                        const real *store, const int *band, const int *band_shot, const int *step,
                                         int delta, int stresses, int n_band, long long shot_values) {
     const int b = column_of_thread();
     if (row_of_thread() != 0 || b >= n_band) return;
     const long long cell = slot_values() + band[b];  // batched
-    const float *stored = store + band_shot[blockIdx.z] * shot_values + (long long)(*step + delta) * 5 * n_band;
+    const real *stored = store + band_shot[blockIdx.z] * shot_values + (long long)(*step + delta) * 5 * n_band;
     if (stresses) {
         taux[cell] = stored[2 * n_band + b];
         tauz[cell] = stored[3 * n_band + b];
@@ -572,7 +596,7 @@ extern "C" __global__ void restore_band(float *vx, float *vz, float *taux, float
 }
 
 // Remove the source of step *step + delta from its cell: the inverse of the injection of inject_and_record.
-extern "C" __global__ void remove_source(float *vx, float *vz, float *taux, float *tauz, const int *source_cell,
+extern "C" __global__ void remove_source(real *vx, real *vz, real *taux, real *tauz, const int *source_cell,
                                          const float *source_steps, const int *step, int delta) {
     if (row_of_thread() != 0 || column_of_thread() != 0) return;
     const long long cell = slot_values() + source_cell[blockIdx.z];  // batched

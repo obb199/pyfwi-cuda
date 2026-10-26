@@ -322,7 +322,22 @@ def count_fp64(ptx):
     return counts
 
 
-def compile_ptx(source, arch="sm_86"):
+def cuda_include_dir():
+    """The folder of the CUDA headers installed by pip (``nvidia/cu*/include``, with ``cuda_fp16.h``), or None.
+
+    CuPy finds them by itself; NVRTC called through ``cuda.core`` (``compile_ptx``) needs the path to compile
+    the half-precision storage of the native kernels (step 4.3).
+    """
+    import glob
+    import site
+    for root in site.getsitepackages():
+        found = sorted(glob.glob(os.path.join(root, "nvidia", "cu*", "include", "cuda_fp16.h")))
+        if found:
+            return os.path.dirname(found[-1])
+    return None
+
+
+def compile_ptx(source, arch="sm_86", include_path=None):
     """Compile one PyFWI OpenCL source as CUDA with NVRTC and return the PTX text.
 
     Parameters
@@ -334,6 +349,8 @@ def compile_ptx(source, arch="sm_86"):
     arch : str, optional
         Target GPU architecture. ``sm_86`` is Ampere (RTX 30 series), the GPU
         of the development machine.
+    include_path : str, optional
+        Folder of headers that the source includes (``cuda_include_dir()`` for ``cuda_fp16.h``).
 
     Returns
     -------
@@ -355,7 +372,7 @@ def compile_ptx(source, arch="sm_86"):
     Device(0).set_current()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
-        ptx = Program(CUDA_PORT_HEADER + source, "c++", ProgramOptions(arch=arch)).compile("ptx")
+        ptx = Program(CUDA_PORT_HEADER + source, "c++", ProgramOptions(arch=arch, include_path=include_path)).compile("ptx")
     return ptx.code.decode() if isinstance(ptx.code, bytes) else ptx.code
 
 

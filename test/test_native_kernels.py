@@ -232,6 +232,18 @@ def test_native_kernels_have_no_fp64_instruction(cuda_device, order):
 
 
 @pytest.mark.gpu
+@pytest.mark.parametrize("order", [4, 8])
+def test_the_half_precision_storage_compiles_without_fp64(cuda_device, order):
+    # Step 4.3: with PYFWI_FP16 the fields are stored as half-precision numbers (``real`` of elastic.cu),
+    # read as float32 and written from it; every kernel still compiles, with no FP64 instruction. In the
+    # default storage ``real`` is float: the outputs of the native kernels kept their bits (checked when
+    # the type was introduced, on 40 outputs of five cases).
+    from tools.check_env import compile_ptx, count_fp64, cuda_include_dir
+    counts = count_fp64(compile_ptx("#define PYFWI_FP16\n" + native_kernel_source(order), include_path=cuda_include_dir()))
+    assert set(NATIVE) <= set(counts) and not any(counts.values()), counts
+
+
+@pytest.mark.gpu
 def test_order_4_reads_fewer_cells_than_order_8(cuda_device):
     # The order is a template parameter: order 4 has no term of c3 and c4 (zero), so each derivative
     # reads 4 cells instead of 8 (loads in the PTX of update_velx: two derivatives and five fields).
