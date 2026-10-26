@@ -764,6 +764,20 @@ Each optimisation is a separate commit, with a benchmark before and after, so th
   64×4, 128×1, 16×2, 8×8) gives the same bits on a 61 × 67 grid, and a whole forward + gradient the
   same bits with 64×4 and 16×8 in both modes; wrong values of the variable are explained. DES
   unchanged (the default block did not change).
+- **3.2 (native kernels, order as a template):** the CUDA backend gets kernels of its own,
+  `PyFWI/kernels/elastic.cu`, compiled after the same `#define` block: the stencil kernels (zeroing,
+  the four updates, the two adjoint updates and `Grad`) with the names and arguments of `elastic.cl`,
+  so that the engine launches either set the same way (`PropagationEngine` takes a `"native"` source;
+  the injection kernels still come from the OpenCL files until step 3.4). In the `fixed` mode the CUDA
+  backend runs them (`W.cuda_kernels == "native"`), unless `PYFWI_CUDA_KERNELS=parity`; `legacy` keeps
+  the OpenCL files, the only ones with its arithmetic. The staggered derivatives are templates on the
+  half order: order 4 has no term of the zero `c3` and `c4` (the `fixed` OpenCL files already dropped
+  them with `HIGH_ORDER` in step 2.4; the PTX of `update_velx` has 8 fewer loads in order 4). The
+  bounds are those of the parity kernels (the read of the row past the field edge stays until the halo
+  cells of a later step). Written in the order of operations of `elastic.cl`, the native kernels give
+  the same bits as the parity kernels on the 16 propagation cases (OTM, `test/test_native_kernels.py`,
+  whose tolerance is that of the roadmap: 1e-5 and 1e-4); no FP64 instruction in orders 4 and 8 (PRE).
+  DES (5 runs, `fixed`): small 0.20 s / 0.19 s and medium 3.06 s / 5.86 s with either set.
 
 ### 3.11 `auto` default and release 0.3.0
 

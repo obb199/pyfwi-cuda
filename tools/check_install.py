@@ -36,7 +36,7 @@ DISTRIBUTION = "pyfwi-cuda"
 
 #: Files of the ``PyFWI`` package that are not Python modules, relative to the package folder.
 DATA_FILES = ("elastic.cl", "elastic_crosswell.cl", "elastic_surface.cl", "data/Dupuy2011_Moduli_data.mat",
-              "kernels/opencl_on_cuda.h")
+              "kernels/opencl_on_cuda.h", "kernels/elastic.cu")
 
 #: Optional dependency (import name) that each module needs, for modules that need one.
 OPTIONAL = {"PyFWI.torchfwi": "torch", "PyFWI.torch.wave_propagation": "torch", "PyFWI.backends.cuda": "cupy"}

@@ -308,6 +308,13 @@ class CUDABackend:
         module.compile()
         return CUDAProgram(module)
 
+    def build_native(self, source):
+        """Compile CUDA C++ source as it is: the native kernels of Phase 3 (``PyFWI/kernels/elastic.cu``
+        after the ``#define`` block), which need neither the portability header nor the guard."""
+        module = cp.RawModule(code=source, options=(f"--gpu-architecture={self.architecture}",))
+        module.compile()
+        return CUDAProgram(module)
+
     @staticmethod
     def kernel(program, name):
         """The kernel ``name`` of ``program``. Retrieve each kernel once and reuse it."""

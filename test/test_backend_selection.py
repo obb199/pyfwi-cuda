@@ -235,3 +235,13 @@ def test_every_branch_is_covered_without_a_gpu(tmp_path):
     report = subprocess.run([sys.executable, "-m", "coverage", "report", "-m", "--fail-under=100"],
                             cwd=os.path.dirname(here), env=env, capture_output=True, text=True, check=False)
     assert report.returncode == 0, report.stdout
+
+
+def test_kernel_set_selection():
+    # The kernels of the CUDA backend (Phase 3): native in the fixed mode, unless PYFWI_CUDA_KERNELS=parity.
+    from PyFWI.backends.selection import select_cuda_kernels
+    assert select_cuda_kernels("fixed", {}) == "native"
+    assert select_cuda_kernels("fixed", {"PYFWI_CUDA_KERNELS": "Parity "}) == "parity"
+    assert select_cuda_kernels("legacy", {}) == "parity"  # the native kernels have the fixed arithmetic
+    with pytest.raises(ValueError, match="Unknown PYFWI_CUDA_KERNELS"):
+        select_cuda_kernels("fixed", {"PYFWI_CUDA_KERNELS": "fast"})

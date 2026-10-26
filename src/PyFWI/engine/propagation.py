@@ -37,6 +37,10 @@ COMPONENTS = ("vx", "vz", "taux", "tauz", "tauxz")
 KERNELS = ("MakeAllZero", "MakeGradZero", "injSrc", "Adj_injSrc", "update_velx", "update_velz",
            "update_tauz", "update_tauxz", "Adj_update_tau", "Adj_update_v", "Grad")
 
+#: The kernels of the native CUDA program (``PyFWI/kernels/elastic.cu``, Phase 3) when the sources
+#: include one: every kernel but the injection ones, which still come from the OpenCL files.
+NATIVE_KERNELS = tuple(name for name in KERNELS if name not in ("injSrc", "Adj_injSrc"))
+
 #: Value of the margins around every device buffer (step 1.7): what the out-of-bounds reads of the
 #: kernels of 0.1.10 return. 0 reproduces the golden masters, which 0.1.10 computed inside zero
 #: guard bands; the tests set NaN or 1.0 to see where the kernels read and write.
@@ -150,7 +154,9 @@ class PropagationEngine:
     backend : object
         A backend of ``PyFWI.backends`` (``OpenCLBackend``, or a fake one in the tests).
     sources : dict
-        Kernel sources with their ``#define`` block: ``"elastic"``, ``"crosswell"`` and ``"surface"``.
+        Kernel sources with their ``#define`` block: ``"elastic"``, ``"crosswell"`` and ``"surface"``
+        (the OpenCL files), and optionally ``"native"`` (the native CUDA kernels of Phase 3, whose
+        kernels then replace those of ``NATIVE_KERNELS``; CUDA backend only).
     injection : str
         Source of injSrc and Adj_injSrc: ``"crosswell"`` (``acq_type`` 0), ``"surface"`` (1) or
         ``"elastic"`` (2).
@@ -205,6 +211,12 @@ class PropagationEngine:
         # The kernel objects, retrieved once and reused at every launch (step 1.3); injSrc and
         # Adj_injSrc are those assigned to self.prg just above.
         self.knl = SimpleNamespace(**{name: backend.kernel(self.prg, name) for name in KERNELS})
+        #: The native CUDA program (step 3.2), or None: its kernels have the names and arguments of
+        #: those of elastic.cl, so that the time loops launch either set the same way.
+        self.prg_native = backend.build_native(sources["native"]) if "native" in sources else None
+        if self.prg_native is not None:
+            for name in NATIVE_KERNELS:
+                setattr(self.knl, name, backend.kernel(self.prg_native, name))
 
         self.margin_bytes = margin_bytes(tnz, tnx, rec_top_right_var, backend.alignment)
         # The allocation (margins included) of every device buffer, by attribute name.

@@ -94,6 +94,23 @@ def kernel_sources(order, dt=0.004 / 7, dh=7.0, numerics="legacy"):
     return WavePreparation.kernel_caller(fake)
 
 
+def native_kernel_source(order):
+    """The native CUDA kernels of Phase 3 (``PyFWI/kernels/elastic.cu``) after the fixed ``#define`` block.
+
+    The same plausible inputs as ``kernel_sources``; the native kernels exist in the fixed mode only.
+
+    Used by
+    -------
+    ``test_native_kernels.py`` (compiles them to PTX).
+    """
+    from PyFWI.wave_propagation import WavePreparation
+    fake = SimpleNamespace(sdo=order // 2, tnz=140, tnx=140, ns=4, nr=100, dt=0.004 / 7, dh=7.0,
+                           npml=20, n_surface_rec=100, n_well_rec=0, src_cts=25,
+                           rec_top_left_const=0, rec_top_left_var=0, rec_top_right_const=0,
+                           rec_top_right_var=0, rec_surface_const=22, rec_surface_var=0, numerics="fixed")
+    return WavePreparation.native_kernel_source(fake)
+
+
 def active_source(source, fixed):
     """The lines of a kernel source that the compiler keeps, for the ``#ifdef PYFWI_FIXED`` blocks.
 

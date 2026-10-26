@@ -112,6 +112,23 @@ def test_kernels_come_from_the_program_of_the_acquisition_and_are_retrieved_once
     assert "injSrc" not in vars(elastic.prg)
 
 
+def test_a_native_program_provides_every_kernel_but_the_injection():
+    # Phase 3: with a "native" source (the CUDA kernels of PyFWI/kernels/elastic.cu) the stencil
+    # kernels come from it; injSrc and Adj_injSrc still come from the program of the acquisition.
+    from PyFWI.engine.propagation import NATIVE_KERNELS, PropagationEngine, checkpoint_steps
+    backend = FakeBackend(nr=NR, tnx=TNX)
+    sources = {"elastic": "elastic", "crosswell": "crosswell", "surface": "surface", "native": "native"}
+    engine = PropagationEngine(backend, sources, "surface", tnz=TNZ, tnx=TNX, ns=NS, nr=NR, nt=NT, nt_ext=NT_EXT,
+                               dt_scale=DT_SCALE, chp=checkpoint_steps(30, NT), dxr=np.int32(1), srcx=SRCX,
+                               srcz=SRCZ, source=source, rec_top_right_var=0)
+    assert engine.prg_native.source == "native" and ("build_native",) in backend.log
+    assert "injSrc" not in NATIVE_KERNELS and "Grad" in NATIVE_KERNELS
+    for name in NATIVE_KERNELS:
+        assert getattr(engine.knl, name) is not getattr(engine.prg, name)
+    assert engine.knl.injSrc is engine.prg.injSrc and engine.prg_surf.source == "surface"
+    assert make_engine().prg_native is None
+
+
 def test_buffers_live_inside_allocations_with_margins():
     engine = make_engine()
     assert engine.margins_changed() == []

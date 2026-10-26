@@ -268,3 +268,38 @@ def select_numerics(inpa, backend, environ=None):
     if value not in NUMERICS:
         raise ValueError(f"Unknown numeric mode {value!r}; choose one of {', '.join(NUMERICS)}.")
     return value
+
+
+#: Kernel sets of the CUDA backend (Phase 3): ``native``, the CUDA kernels of ``PyFWI/kernels/elastic.cu``
+#: (fixed mode only), and ``parity``, the OpenCL files compiled for CUDA (step 2.3).
+CUDA_KERNELS = ("native", "parity")
+
+
+def select_cuda_kernels(numerics, environ=None):
+    """The kernel set of a propagator on the CUDA backend.
+
+    In the fixed numeric mode the native kernels, unless ``PYFWI_CUDA_KERNELS`` is ``parity`` (the
+    tests compare both sets); in the legacy mode the parity kernels, the only ones with its arithmetic.
+
+    Parameters
+    ----------
+    numerics : str
+        The numeric mode of the propagator (``select_numerics``).
+    environ : mapping, optional
+        Where ``PYFWI_CUDA_KERNELS`` is read; ``os.environ`` by default.
+
+    Returns
+    -------
+    str
+        ``"native"`` or ``"parity"``.
+
+    Raises
+    ------
+    ValueError
+        A value of ``PYFWI_CUDA_KERNELS`` that is not one of ``CUDA_KERNELS``.
+    """
+    environ = os.environ if environ is None else environ
+    value = str(environ.get("PYFWI_CUDA_KERNELS") or "native").strip().lower()
+    if value not in CUDA_KERNELS:
+        raise ValueError(f"Unknown PYFWI_CUDA_KERNELS {value!r}; choose one of {', '.join(CUDA_KERNELS)}.")
+    return "native" if numerics == "fixed" and value == "native" else "parity"

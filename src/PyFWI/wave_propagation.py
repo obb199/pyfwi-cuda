@@ -7,7 +7,7 @@ from scipy.ndimage import gaussian_filter
 
 import PyFWI.fwi_tools as tools
 from PyFWI.backends.opencl import OpenCLBackend
-from PyFWI.backends.selection import select_backend, select_numerics
+from PyFWI.backends.selection import select_backend, select_cuda_kernels, select_numerics
 from PyFWI.engine.propagation import PropagationEngine, checkpoint_steps
 import PyFWI._info as _info
 from PyFWI.fwi_tools import expand_model
@@ -173,14 +173,21 @@ class WavePreparation:
         self.ctx = self._backend.context
         self.queue = self._backend.queue
         self.mf = cl.mem_flags
+        # The kernels of the CUDA backend (Phase 3 of the fork): the native CUDA kernels of
+        # PyFWI/kernels/elastic.cu in the fixed mode, unless PYFWI_CUDA_KERNELS=parity; the OpenCL
+        # files otherwise. None on OpenCL.
+        self.cuda_kernels = select_cuda_kernels(self.numerics) if self.backend_selection.backend == "cuda" else None
 
         # The time loops, the device buffers (with margins), the kernels and the checkpoints live in
         # the engine (step 2.1 of the fork, PyFWI.engine.propagation); its attributes (W.vx_b,
         # W.knl, W.prg...) are shown as attributes of the propagator (__getattr__ below).
         kernel, kernel_crosswell, kernel_surface = self.kernel_caller()
+        sources = {"elastic": kernel, "crosswell": kernel_crosswell, "surface": kernel_surface}
+        if self.cuda_kernels == "native":
+            sources["native"] = self.native_kernel_source()
         injection = {0: "crosswell", 1: "surface"}.get(self.acq_type, "elastic")
         self._engine = PropagationEngine(
-            self._backend, {"elastic": kernel, "crosswell": kernel_crosswell, "surface": kernel_surface},
+            self._backend, sources,
             injection, tnz=self.tnz, tnx=self.tnx, ns=self.ns, nr=self.nr, nt=self.nt, nt_ext=self.nt_ext,
             dt_scale=self.dt_scale, chp=self.chp, dxr=self.dxr, srcx=self.srcx, srcz=self.srcz, source=self.src,
             rec_top_right_var=self.rec_top_right_var, numerics=self.numerics)
@@ -286,6 +293,14 @@ class WavePreparation:
         vdz_pml = self.dz_pml * v_max
         self._engine.set_pml(vdx_pml, vdz_pml)
 
+    def native_kernel_source(self):
+        """The native CUDA kernels of Phase 3 (``PyFWI/kernels/elastic.cu``) after the ``#define`` block.
+
+        Used by ``__init__`` when the CUDA backend runs the fixed mode (``self.cuda_kernels``).
+        """
+        with open(os.path.join(os.path.dirname(__file__), "kernels", "elastic.cu")) as f:
+            return WavePreparation.kernel_defines(self) + f.read()
+
     def kernel_caller(self):
         '''
             This function is used to specify the constants for use in openCl's
@@ -300,6 +315,35 @@ class WavePreparation:
                 kernel_source : str
                     macro plus the openCl's source.
         '''
+        # The #define block of the kernels (kernel_defines, the same for every source of the fork).
+        macro = WavePreparation.kernel_defines(self)
+
+        # Decide on openCl file based on medium type
+        cl_file_name = "elastic.cl"
+
+        # Call the openCl file (closed after reading: 0.1.10 left the three files open)
+        path = os.path.dirname(__file__) + "/"
+        with open(path + cl_file_name, 'r') as f:
+            fstr = f.read()
+        with open(path + 'elastic_crosswell.cl', 'r') as f_cw:
+            fstr_cw = f_cw.read()
+        with open(path + 'elastic_surface.cl', 'r') as f_surf:
+            fstr_surf = f_surf.read()
+
+        kernel_source = macro + fstr
+        kernel_src_crosswell = macro + fstr_cw
+        kernel_surface = macro + fstr_surf
+
+        return kernel_source , kernel_src_crosswell, kernel_surface
+
+    def kernel_defines(self):
+        """The ``#define`` block of the kernels: grid, time step, spacing, coefficients, acquisition.
+
+        It was the first part of ``kernel_caller`` in 0.1.10 (the text of the legacy mode is exactly
+        that of 0.1.10); the native CUDA kernels of Phase 3 are compiled after the same block.
+
+        Used by ``kernel_caller`` and ``native_kernel_source``.
+        """
         # The numeric mode of the fork (step 2.4): "fixed" corrects the numerical bugs of 0.1.10.
         fixed = getattr(self, "numerics", "legacy") == "fixed"
         if self.sdo == 2:  # For O4
@@ -387,24 +431,7 @@ class WavePreparation:
                self.rec_surface_const, self.rec_surface_var)
         if fixed:
             macro += "\n            #define PYFWI_FIXED 1\n"
-
-        # Decide on openCl file based on medium type
-        cl_file_name = "elastic.cl"
-
-        # Call the openCl file (closed after reading: 0.1.10 left the three files open)
-        path = os.path.dirname(__file__) + "/"
-        with open(path + cl_file_name, 'r') as f:
-            fstr = f.read()
-        with open(path + 'elastic_crosswell.cl', 'r') as f_cw:
-            fstr_cw = f_cw.read()
-        with open(path + 'elastic_surface.cl', 'r') as f_surf:
-            fstr_surf = f_surf.read()
-
-        kernel_source = macro + fstr
-        kernel_src_crosswell = macro + fstr_cw
-        kernel_surface = macro + fstr_surf
-
-        return kernel_source , kernel_src_crosswell, kernel_surface
+        return macro
 
     def initial_wavefield_plot(self, model, plot_type="Forward"):
         """

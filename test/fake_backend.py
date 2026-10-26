@@ -114,6 +114,10 @@ class FakeBackend:
         self.log.append(("build",))
         return FakeProgram(self, source)
 
+    def build_native(self, source):
+        self.log.append(("build_native",))
+        return FakeProgram(self, source)
+
     @staticmethod
     def kernel(program, name):
         return getattr(program, name)
