@@ -1286,7 +1286,7 @@ class PropagationEngine:
 
     # ------------------------------------------------------------------ gradient
 
-    def gradient(self, res, observe=None):
+    def gradient(self, res, observe=None, per_shot=False):
         """Adjoint-state gradient of every shot into the gradient buffers (read them with ``read_gradient``).
 
         Parameters
@@ -1296,6 +1296,16 @@ class PropagationEngine:
         observe : callable, optional
             ``observe(s, t, t_src)`` is called after every internal step ``t`` of shot ``s``
             (``t_src``: the last recorded sample injected, ``nt_ext`` before the first).
+        per_shot : bool, optional
+            Step 4.4 (``PyFWI.engine.distributed``): the gradient buffers are zeroed before every
+            batch and the gradient of every shot is read from its slot. Returns the list, in the
+            order of the shots, of their ``read_gradient()`` tuples, which do not depend on the
+            batches: the processes of a distributed run add them in the order of the shots.
+
+        Returns
+        -------
+        list or None
+            With ``per_shot``, the gradient of every shot; else None (``read_gradient``).
         """
         if self.fp16:  # the scales of the adjoint fields, from the residual of every shot (step 4.3)
             velocity = max(float(np.abs(np.asarray(res[par])).max()) for par in ("vx", "vz"))
@@ -1315,8 +1325,13 @@ class PropagationEngine:
             self.backend.set_args(self.knl.advance, self.step_b, np.int32(-1))
             if self.boundary_width:
                 self._set_rebuild_args()
+        every_shot = [] if per_shot else None
         for shots in self._batches(observe):
             self.slots, self._last_slot = len(shots), len(shots) - 1
+            if per_shot and shots[0] > 0:  # step 4.4: the gradient of these shots alone
+                self.backend.call(self.knl.MakeGradZero, self._size(self.global_size, self.batch),
+                                  self.Gmu_b, self.Glam_b, self.Grho_b,
+                                  self.g_mu_precond_b, self.g_lam_precond_b, self.g_rho_precond_b)
             self.backend.call(self.knl.MakeAllZero, self._size(self.global_size), *self._field_buffers())
             self.backend.call(self.knl.MakeAllZero, self._size(self.global_size),
                               self.avx_b, self.avz_b, self.ataux_b, self.atauz_b, self.atauxz_b)
@@ -1325,8 +1340,12 @@ class PropagationEngine:
                 self._set_native_residual_args()
                 self._start_native_batch(shots, self.nt - 1)
                 self._gradient_batch_native(shots, observe)
-                continue
-            self._gradient_shot(shots[0], observe)  # one shot per batch without native injection
+            else:
+                self._gradient_shot(shots[0], observe)  # one shot per batch without native injection
+            if per_shot:
+                every_shot += [self.read_gradient(slot=slot) for slot in range(len(shots))]
+        if per_shot:
+            return every_shot
         if self.batch > 1:
             # Step 3.9: every slot accumulated the gradient of its shots; slot 0 gets the sum, added in
             # the order of the slots (the same bits at every run).
@@ -1481,8 +1500,9 @@ class PropagationEngine:
             sample = res[par][np.int32(t - 1), s * self.nr:(s + 1) * self.nr].astype(np.float32, order='C')
             self.backend.to_device(target, sample)
 
-    def read_gradient(self, preconditioners=True):
-        """Copy the gradient buffers to the host.
+    def read_gradient(self, preconditioners=True, slot=0):
+        """Copy the gradient buffers to the host: those of ``slot`` (0, the sum of every slot after
+        ``gradient``; another one for the gradient of one shot, step 4.4).
 
         Returns
         -------
@@ -1492,18 +1512,18 @@ class PropagationEngine:
         """
         shape = (self.tnz, self.tnx)
         g_mu, g_lam, g_rho = (np.zeros(shape, np.float32) for _ in range(3))
-        # Slot 0, which holds the sum of the shots of every slot (step 3.9).
-        self.backend.to_host(g_mu, self._slot(self.Gmu_b, 0, 4))
-        self.backend.to_host(g_lam, self._slot(self.Glam_b, 0, 4))
-        self.backend.to_host(g_rho, self._slot(self.Grho_b, 0, 4))
+        # Slot 0 holds the sum of the shots of every slot (step 3.9).
+        self.backend.to_host(g_mu, self._slot(self.Gmu_b, slot, 4))
+        self.backend.to_host(g_lam, self._slot(self.Glam_b, slot, 4))
+        self.backend.to_host(g_rho, self._slot(self.Grho_b, slot, 4))
         factors = self._gradient_factors()
         g_mu, g_lam, g_rho = (g * np.float32(f) for g, f in zip((g_mu, g_lam, g_rho), factors[:3]))
         if not preconditioners:
             return g_mu, g_lam, g_rho, np.ones(shape, np.float32), np.ones(shape, np.float32), np.ones(shape, np.float32)
         precond = [np.zeros(shape, np.float32) for _ in range(3)]
-        self.backend.to_host(precond[0], self._slot(self.g_mu_precond_b, 0, 4))
-        self.backend.to_host(precond[1], self._slot(self.g_lam_precond_b, 0, 4))
-        self.backend.to_host(precond[2], self._slot(self.g_rho_precond_b, 0, 4))
+        self.backend.to_host(precond[0], self._slot(self.g_mu_precond_b, slot, 4))
+        self.backend.to_host(precond[1], self._slot(self.g_lam_precond_b, slot, 4))
+        self.backend.to_host(precond[2], self._slot(self.g_rho_precond_b, slot, 4))
         precond = [p * np.float32(f) for p, f in zip(precond, factors[3:])]
         return (g_mu, g_lam, g_rho, *precond)
 

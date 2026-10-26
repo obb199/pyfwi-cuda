@@ -210,6 +210,18 @@ class FakeBackend:
         self.launch(kernel, global_size)
 
 
+class FakeBackendFactory:
+    """Builds a ``FakeBackend`` in a worker process of ``DistributedEngine`` (step 4.4): picklable."""
+
+    def __init__(self, nr, tnz, tnx, budget=0, fail_on=None):
+        self.nr, self.tnz, self.tnx, self.budget, self.fail_on = nr, tnz, tnx, budget, fail_on
+
+    def __call__(self, ordinal):
+        if ordinal == self.fail_on:
+            raise RuntimeError(f"no device {ordinal}")
+        return FakeBackend(self.nr, self.tnz, self.tnx, self.budget)
+
+
 # ---------------------------------------------------------------------------- toy kernels
 
 def _write(buffer, start, values):

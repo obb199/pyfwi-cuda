@@ -30,6 +30,10 @@ how much and in which numeric mode.
   peak of the fields) drowns the late, attenuated part of long recordings and makes the misfit too rough
   for the line search of the optimisers.
 
+- `PYFWI_CUDA_DEVICES` (step 4.4, unset by default): the shots run in one process per listed CUDA device
+  (`0,1`), the gradients of the shots added on the host in their order, so that any number of processes
+  gives the same bits. A failing process raises with its traceback.
+
 ### Changed
 
 - The cost function no longer deep-copies its inputs three times (same values).

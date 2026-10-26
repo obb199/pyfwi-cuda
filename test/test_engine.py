@@ -502,6 +502,85 @@ def test_fp16_storage_and_scales(batch):
     del field
 
 
+def _distributed_kwargs(ns=3):
+    """The arguments of ``PropagationEngine`` (but the backend) of the native fake engine, for ``ns`` shots."""
+    from PyFWI.engine.propagation import checkpoint_steps
+    cells = np.array([1 * TNX + 0, 1 * TNX + 2, 1 * TNX + 0], np.int32)
+    table = (cells, np.array([1, 1, 0], np.int32), np.array([2, -1, -1], np.int32))
+    return {"sources": {"elastic": "e", "crosswell": "c", "surface": "s", "native": "n"}, "injection": "surface",
+            "tnz": TNZ, "tnx": TNX, "ns": ns, "nr": NR, "nt": NT, "nt_ext": NT_EXT, "dt_scale": DT_SCALE,
+            "chp": checkpoint_steps(30, NT), "dxr": np.int32(1), "srcx": np.array([1, 3, 2][:ns], np.int32),
+            "srcz": np.full(ns, 2, np.int32), "source": source, "rec_top_right_var": 0, "numerics": "fixed",
+            "receivers": table}
+
+
+def _distributed_run(devices, **factory):
+    """Forward and gradient of the native fake engine with its shots in processes (step 4.4)."""
+    from fake_backend import FakeBackendFactory
+    from PyFWI.engine.distributed import DistributedEngine
+    engine = DistributedEngine(devices, _distributed_kwargs(), "fake", FakeBackendFactory(NR, TNZ, TNX, **factory))
+    try:
+        field = np.ones((TNZ, TNX), np.float32)
+        engine.set_pml(0 * field, 0 * field)
+        engine.set_model(RHO_INVERSE * field, MU * field, LAM * field)
+        seismogram = {par: s.copy() for par, s in engine.forward().items()}
+        engine.prepare_gradient()
+        engine.gradient(residual(ns=3))
+        return seismogram, engine.read_gradient(), engine.read_gradient(preconditioners=False)
+    finally:
+        engine.close()
+
+
+def test_distributed_shots_give_the_same_bits():
+    # Step 4.4: the shots shared between processes (here on the fake backend): the gradient of every shot
+    # comes back on its own and the shots are added in their order, so one process and two give the same
+    # bits; the seismograms are those of a single engine.
+    one, two = _distributed_run([0]), _distributed_run([0, 0])
+    for par in COMPONENTS:
+        np.testing.assert_array_equal(one[0][par], two[0][par])
+    for a, b in zip(one[1], two[1]):
+        np.testing.assert_array_equal(a, b)
+    assert all((ones == 1).all() for ones in two[2][3:])
+    engine, _ = _native_engine(ns=3)
+    engine.forward()
+    for par in COMPONENTS:
+        np.testing.assert_array_equal(engine.seismogram[par], two[0][par])
+    engine.prepare_gradient()
+    per_shot = engine.gradient(residual(ns=3), per_shot=True)
+    assert len(per_shot) == 3
+    total = per_shot[0]
+    for shot in per_shot[1:]:
+        total = [a + b for a, b in zip(total, shot)]
+    for a, b in zip(total, two[1]):
+        np.testing.assert_array_equal(a, b)
+
+
+def test_distributed_errors_are_reported():
+    from fake_backend import FakeBackendFactory
+    from PyFWI.engine.distributed import DistributedEngine, requested_devices, shot_blocks
+    assert requested_devices({}) is None and requested_devices({"PYFWI_CUDA_DEVICES": " 0, 1 "}) == [0, 1]
+    with pytest.raises(ValueError, match="PYFWI_CUDA_DEVICES must list CUDA device numbers"):
+        requested_devices({"PYFWI_CUDA_DEVICES": "gpu0"})
+    assert shot_blocks(5, 2) == [range(3), range(3, 5)] and shot_blocks(1, 2) == [range(1), range(1, 1)]
+    with pytest.raises(RuntimeError, match=r"worker 1 \(CUDA device 1\) failed:[\s\S]*no device 1"):
+        _distributed_run([0, 1], fail_on=1)
+    engine = DistributedEngine([0, 0], _distributed_kwargs(), "fake", FakeBackendFactory(NR, TNZ, TNX))
+    with pytest.raises(ValueError, match="needs a single process"):
+        engine.forward(lambda s, t: None)
+    with pytest.raises(ValueError, match="needs a single process"):
+        engine.read_field("vx_b", np.empty((TNZ, TNX), np.float32))
+    with pytest.raises(ValueError, match="need a single process"):
+        engine.checkpoints  # noqa: B018 (the property raises)
+    with pytest.raises(RuntimeError, match="failed"):  # an error inside a command: no model yet
+        engine.forward()
+    engine._workers[1][3].kill()
+    engine._workers[1][3].join()
+    with pytest.raises(RuntimeError, match=r"worker 1 \(CUDA device 0\) stopped"):
+        engine.prepare_gradient()
+    engine.close()
+    engine.close()  # twice: nothing left to stop
+
+
 def test_shot_batch():
     from PyFWI.engine.propagation import BATCH_CELLS, shot_batch
 

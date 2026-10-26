@@ -10,6 +10,7 @@ import PyFWI.fwi_tools as tools
 from PyFWI.backends.opencl import OpenCLBackend
 from PyFWI.backends.selection import (select_backend, select_boundary_saving, select_cuda_kernels, select_fp16,
                                       select_numerics)
+from PyFWI.engine.distributed import DistributedEngine, requested_devices
 from PyFWI.engine.propagation import PropagationEngine, checkpoint_steps, receiver_table
 import PyFWI._info as _info
 from PyFWI.fwi_tools import expand_model
@@ -207,12 +208,19 @@ class WavePreparation:
                                        (int(self.rec_top_left_const), int(self.rec_top_left_var)),
                                        (int(self.rec_top_right_const), int(self.rec_top_right_var)))
         injection = {0: "crosswell", 1: "surface"}.get(self.acq_type, "elastic")
-        self._engine = PropagationEngine(
-            self._backend, sources,
-            injection, tnz=self.tnz, tnx=self.tnx, ns=self.ns, nr=self.nr, nt=self.nt, nt_ext=self.nt_ext,
-            dt_scale=self.dt_scale, chp=self.chp, dxr=self.dxr, srcx=self.srcx, srcz=self.srcz, source=self.src,
-            rec_top_right_var=self.rec_top_right_var, numerics=self.numerics, receivers=receivers,
+        engine_arguments = dict(
+            sources=sources, injection=injection, tnz=self.tnz, tnx=self.tnx, ns=self.ns, nr=self.nr, nt=self.nt,
+            nt_ext=self.nt_ext, dt_scale=self.dt_scale, chp=self.chp, dxr=self.dxr, srcx=self.srcx, srcz=self.srcz,
+            source=self.src, rec_top_right_var=self.rec_top_right_var, numerics=self.numerics, receivers=receivers,
             boundary_width=int(self.sdo) if self.boundary_saving else None, fp16=self.fp16)
+        # The shots shared between processes, one per device of PYFWI_CUDA_DEVICES (step 4.4 of the fork).
+        devices = requested_devices()
+        if devices is None:
+            self._engine = PropagationEngine(self._backend, **engine_arguments)
+        elif self.backend_selection.backend != "cuda":
+            raise ValueError("PYFWI_CUDA_DEVICES needs the CUDA backend (PyFWI.info() says what runs)")
+        else:
+            self._engine = DistributedEngine(devices, engine_arguments, self._backend.description)
         if self.boundary_saving:
             self.chp, self.nchp = self._engine.chp, self._engine.nchp  # the last step only: the gradient starts there
 

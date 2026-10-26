@@ -1044,6 +1044,24 @@ Everything here is optional and off by default. Each feature has its own toleran
 - **Goes in:** one process or stream per GPU; gradients summed on the host in a fixed order.
 - **Tests:** with a single RTX, two processes on the same GPU (`CUDA_VISIBLE_DEVICES`) must give a result bit-for-bit equal to one process (DET); a failing process propagates a clear error.
 - **Criterion:** almost linear scaling on a machine with more GPUs, if one is available; otherwise only correctness is checked, and that is recorded at the gate.
+- **Result:** `PYFWI_CUDA_DEVICES` (unset by default) lists CUDA devices, one worker process per entry
+  (`0,1`: two GPUs; `0,0`: two processes on one GPU). `PyFWI/engine/distributed.py`: `DistributedEngine`, with
+  the interface of the engine that `WavePropagator` uses, gives every worker (a `spawn` process) a contiguous
+  block of the shots; each builds its CUDA backend and engine with the arguments of the single-process
+  engine (any kernel set, numeric mode, boundary saving, FP16). The model and the absorbing layer go to every
+  worker, the seismograms come back shot by shot, and the gradient of every shot comes back on its own
+  (`PropagationEngine.gradient(per_shot=True)`: the gradient buffers zeroed before every batch, each slot
+  read): the main process adds them in the order of the shots, whatever worker computed them. A shot's
+  gradient depends neither on its worker nor on the other shots of its batch (in FP16 too, the scales being
+  powers of two), so one process and several give the same bits. An error in a worker is raised with its
+  traceback, a stopped worker named; `show=True`, `W.W` and the device buffers need a single process. Tests:
+  DET, two processes on the RTX give the bits of one process (default, and FP16 with boundary saving), the
+  seismograms of the single-process engine and its gradients within 1e-5 (another order of the additions);
+  a failing worker (an invalid device) and a killed one give clear errors; FWI, the multi-scale inversion of
+  the example in two processes gives the bits of one process; on the fake backend (workers with a fake
+  backend), the same bits, the per-shot gradients, the errors. Scaling: not measurable with one GPU
+  (recorded for G4). Cost on one GPU (medium): one worker +2 % (forward 1.47 → 1.50 s, gradient 3.67 →
+  3.76 s), two workers sharing the GPU +14 % / +12 %.
 
 ### 4.5 `torchfwi` with GPU tensors
 
