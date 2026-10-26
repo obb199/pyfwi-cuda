@@ -20,6 +20,9 @@
 // Step 3.2: the order of the finite differences is a template parameter of the derivatives below,
 // so that order 4 contains no term of the zero coefficients c3 and c4 (they read up to 4 cells
 // away); the expressions keep the order of the operations of elastic.cl.
+// Step 3.3: the derivatives multiply by 1 / dx and 1 / dz instead of dividing. The kernels being
+// limited by memory bandwidth, lambda + 2 mu is not stored: the kernels that use it also need
+// lambda, so a precomputed field would not save a read.
 
 // ------------------------------------------------------------------ indices and derivatives
 
@@ -53,6 +56,11 @@ __device__ __forceinline__ float backward_difference(F f, int k, int step) {
     }
     return sum;
 }
+
+// The inverse grid spacings, computed once by the compiler (step 3.3): the derivatives multiply by
+// them instead of dividing by dx and dz, an IEEE division being several instructions.
+constexpr float inv_dx = 1.0f / dx;
+constexpr float inv_dz = 1.0f / dz;
 
 // A field as a callable for the derivatives: field(p)(k) is p[k].
 struct Field {
@@ -99,8 +107,8 @@ extern "C" __global__ void update_velx(int coeff, float *vx, const float *taux, 
     const int i = row_of_thread() + sdo, j = column_of_thread() + sdo;
     if (i > Nz - sdo || j > Nx - sdo) return;
     const int k = i * Nx + j;
-    const float DxmTx = backward_difference<sdo>(field(taux), k, 1) / dx;
-    const float DzmTxz = backward_difference<sdo>(field(tauxz), k, Nx) / dz;
+    const float DxmTx = backward_difference<sdo>(field(taux), k, 1) * inv_dx;
+    const float DzmTxz = backward_difference<sdo>(field(tauxz), k, Nx) * inv_dz;
     if (coeff == 1) {
         vx[k] += coeff * dt * (rho_b[k] * (DxmTx + DzmTxz));
         vx[k] += coeff * dt * (-(dxpml[k] + dzpml[k]) * vx[k]);
@@ -115,8 +123,8 @@ extern "C" __global__ void update_velz(int coeff, float *vz, const float *tauz, 
     const int i = row_of_thread() + sdo, j = column_of_thread() + sdo;
     if (i > Nz - sdo || j > Nx - sdo) return;
     const int k = i * Nx + j;
-    const float DxpTxz = forward_difference<sdo>(field(tauxz), k, 1) / dx;
-    const float DzpTz = forward_difference<sdo>(field(tauz), k, Nx) / dz;
+    const float DxpTxz = forward_difference<sdo>(field(tauxz), k, 1) * inv_dx;
+    const float DzpTz = forward_difference<sdo>(field(tauz), k, Nx) * inv_dz;
     if (coeff == 1) {
         vz[k] += coeff * dt * (rho_b[k] * (DzpTz + DxpTxz));
         vz[k] += coeff * dt * (-(dzpml[k] + dxpml[k]) * vz[k]);
@@ -132,8 +140,8 @@ extern "C" __global__ void update_tauz(int coeff, const float *vx, const float *
     const int i = row_of_thread() + sdo, j = column_of_thread() + sdo;
     if (i > Nz - sdo || j > Nx - sdo) return;
     const int k = i * Nx + j;
-    const float DxpVx = forward_difference<sdo>(field(vx), k, 1) / dx;
-    const float DzmVz = backward_difference<sdo>(field(vz), k, Nx) / dz;
+    const float DxpVx = forward_difference<sdo>(field(vx), k, 1) * inv_dx;
+    const float DzmVz = backward_difference<sdo>(field(vz), k, Nx) * inv_dz;
     if (coeff == 1) {
         taux[k] += coeff * dt * ((lambda[k] + 2 * mu[k]) * DxpVx + lambda[k] * DzmVz);
         tauz[k] += coeff * dt * ((lambda[k] + 2 * mu[k]) * DzmVz + lambda[k] * DxpVx);
@@ -152,8 +160,8 @@ extern "C" __global__ void update_tauxz(int coeff, const float *vx, const float 
     const int i = row_of_thread() + sdo, j = column_of_thread() + sdo;
     if (i > Nz - sdo || j > Nx - sdo) return;
     const int k = i * Nx + j;
-    const float DxmVz = backward_difference<sdo>(field(vz), k, 1) / dx;
-    const float DzpVx = forward_difference<sdo>(field(vx), k, Nx) / dz;
+    const float DxmVz = backward_difference<sdo>(field(vz), k, 1) * inv_dx;
+    const float DzpVx = forward_difference<sdo>(field(vx), k, Nx) * inv_dz;
     if (coeff == 1) {
         tauxz[k] += coeff * dt * (mu[k] * (DxmVz + DzpVx));
         tauxz[k] += coeff * dt * (-(dxpml[k] + dzpml[k]) * tauxz[k]);
@@ -177,12 +185,12 @@ extern "C" __global__ void Adj_update_tau(const float *Avx, const float *Avz, fl
     const int k = i * Nx + j;
     const auto avx_rho = [=](int n) { return Avx[n] * rho_b[n]; };
     const auto avz_rho = [=](int n) { return Avz[n] * rho_b[n]; };
-    const float DxpAVx = forward_difference<sdo>(avx_rho, k, 1) / dx;
-    const float DzmAVz = backward_difference<sdo>(avz_rho, k, Nx) / dz;
+    const float DxpAVx = forward_difference<sdo>(avx_rho, k, 1) * inv_dx;
+    const float DzmAVz = backward_difference<sdo>(avz_rho, k, Nx) * inv_dz;
     Ataux[k] += -dt * ((dxpml[k] + dzpml[k]) * Ataux[k] + DxpAVx);
     Atauz[k] += -dt * ((dxpml[k] + dzpml[k]) * Atauz[k] + DzmAVz);
-    const float DzpAvx = forward_difference<sdo>(avx_rho, k, Nx) / dz;
-    const float DxmAvz = backward_difference<sdo>(avz_rho, k, 1) / dx;
+    const float DzpAvx = forward_difference<sdo>(avx_rho, k, Nx) * inv_dz;
+    const float DxmAvz = backward_difference<sdo>(avz_rho, k, 1) * inv_dx;
     Atauxz[k] += -dt * (((dxpml[k] + dzpml[k]) * Atauxz[k]) + (DzpAvx + DxmAvz));
 }
 
@@ -197,12 +205,12 @@ extern "C" __global__ void Adj_update_v(float *Avx, float *Avz, const float *Ata
     const auto l_ataux = [=](int n) { return lam[n] * Ataux[n]; };
     const auto l_atauz = [=](int n) { return lam[n] * Atauz[n]; };
     const auto m_atauxz = [=](int n) { return mu[n] * Atauxz[n]; };
-    const float DxmAtaux = backward_difference<sdo>(p_ataux, k, 1) / dx;
-    const float DxmAtauz = backward_difference<sdo>(l_atauz, k, 1) / dx;
-    const float DzmAtauxz = backward_difference<sdo>(m_atauxz, k, Nx) / dz;
-    const float DzpAtauz = forward_difference<sdo>(p_atauz, k, Nx) / dz;
-    const float DzpAtaux = forward_difference<sdo>(l_ataux, k, Nx) / dz;
-    const float DxpAtauxz = forward_difference<sdo>(m_atauxz, k, 1) / dx;
+    const float DxmAtaux = backward_difference<sdo>(p_ataux, k, 1) * inv_dx;
+    const float DxmAtauz = backward_difference<sdo>(l_atauz, k, 1) * inv_dx;
+    const float DzmAtauxz = backward_difference<sdo>(m_atauxz, k, Nx) * inv_dz;
+    const float DzpAtauz = forward_difference<sdo>(p_atauz, k, Nx) * inv_dz;
+    const float DzpAtaux = forward_difference<sdo>(l_ataux, k, Nx) * inv_dz;
+    const float DxpAtauxz = forward_difference<sdo>(m_atauxz, k, 1) * inv_dx;
     Avx[k] += -dt * ((dxpml[k] + dzpml[k]) * Avx[k] + (DxmAtaux + DxmAtauz + DzmAtauxz));
     Avz[k] += -dt * ((dxpml[k] + dzpml[k]) * Avz[k] + (DzpAtaux + DzpAtauz + DxpAtauxz));
 }
@@ -221,14 +229,14 @@ extern "C" __global__ void Grad(const float *vx, const float *vz, const float *t
     const int i = row_of_thread() + npml + sdo, j = column_of_thread() + npml + sdo;
     if (i > Nz - sdo - npml || j > Nx - sdo - npml) return;
     const int k = i * Nx + j;
-    const float DzpVx = forward_difference<sdo>(field(vx), k, Nx) / dz;
-    const float DxmVz = backward_difference<sdo>(field(vz), k, 1) / dx;
-    const float DxpVx = forward_difference<sdo>(field(vx), k, 1) / dx;
-    const float DzmVz = backward_difference<sdo>(field(vz), k, Nx) / dz;
-    const float DzpPz = forward_difference<sdo>(field(tauz), k, Nx) / dz;
-    const float DxmPx = backward_difference<sdo>(field(taux), k, 1) / dx;
-    const float DxpPxz = forward_difference<sdo>(field(tauxz), k, 1) / dx;
-    const float DzmPxz = backward_difference<sdo>(field(tauxz), k, Nx) / dz;
+    const float DzpVx = forward_difference<sdo>(field(vx), k, Nx) * inv_dz;
+    const float DxmVz = backward_difference<sdo>(field(vz), k, 1) * inv_dx;
+    const float DxpVx = forward_difference<sdo>(field(vx), k, 1) * inv_dx;
+    const float DzmVz = backward_difference<sdo>(field(vz), k, Nx) * inv_dz;
+    const float DzpPz = forward_difference<sdo>(field(tauz), k, Nx) * inv_dz;
+    const float DxmPx = backward_difference<sdo>(field(taux), k, 1) * inv_dx;
+    const float DxpPxz = forward_difference<sdo>(field(tauxz), k, 1) * inv_dx;
+    const float DzmPxz = backward_difference<sdo>(field(tauxz), k, Nx) * inv_dz;
     Gmu[k] += 2 * dt * (Ataux[k] * DxpVx + Atauz[k] * DzmVz) + dt * Atauxz[k] * (DzpVx + DxmVz);
     Gmu_precond[k] += 4 * dt * dt * (taux[k] * taux[k] * DxpVx * DxpVx + tauz[k] * tauz[k] * DzmVz * DzmVz)
                       + dt * dt * tauxz[k] * tauxz[k] * (DzpVx * DzpVx + DxmVz * DxmVz);

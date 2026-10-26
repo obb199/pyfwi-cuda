@@ -778,6 +778,16 @@ Each optimisation is a separate commit, with a benchmark before and after, so th
   the same bits as the parity kernels on the 16 propagation cases (OTM, `test/test_native_kernels.py`,
   whose tolerance is that of the roadmap: 1e-5 and 1e-4); no FP64 instruction in orders 4 and 8 (PRE).
   DES (5 runs, `fixed`): small 0.20 s / 0.19 s and medium 3.06 s / 5.86 s with either set.
+- **3.3 (precomputations):** the native derivatives multiply by `1 / dx` and `1 / dz` (compile-time
+  constants) instead of dividing (26 divisions per cell and step over the kernels). Per kernel, medium
+  scenario: `Adj_update_tau` 33.4 → 29.7 µs, `Adj_update_v` 34.1 → 31.7 µs, `Grad` 60.5 → 57.0 µs,
+  the velocity and shear updates −4 %, `update_tauz` unchanged. `λ + 2μ` is **not** precomputed: the
+  two kernels that use it (`update_tauz`, `Adj_update_v`) also read `λ` at the same cells, so a stored
+  `λ + 2μ` replaces the read of `μ` without saving one, and the kernels are limited by memory
+  bandwidth (`Grad` moves about 19 MB in 57 µs, near the 360 GB/s of the RTX 3060); it would save one
+  fused multiply-add per neighbour. OTM: seismograms 9.3e-7, misfit 5.6e-6, gradients 3.8e-5 (within
+  1e-5 and 1e-4). DES (5 runs, `fixed`): medium gradient 5.86 s → 5.57 s, forward 3.06 s → 3.03 s;
+  small unchanged (0.20 s / 0.19 s, limited by the host).
 
 ### 3.11 `auto` default and release 0.3.0
 

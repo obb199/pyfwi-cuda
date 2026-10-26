@@ -6,8 +6,12 @@ OpenCL files). Every step is checked against the *parity* kernels, the OpenCL fi
 in the same mode (``PYFWI_CUDA_KERNELS=parity``), on the 16 propagation cases of the golden masters,
 with the tolerance of the roadmap (OTM: seismograms 1e-5, gradients 1e-4, relative L2).
 
-Measured at step 3.2 (the order as a template parameter, the expressions in the order of elastic.cl):
-bit for bit equal to the parity kernels on every case.
+Measured, the largest difference on the 16 cases:
+
+* step 3.2 (the order as a template parameter, the expressions in the order of elastic.cl): none,
+  bit for bit equal to the parity kernels;
+* step 3.3 (multiplications by 1 / dx and 1 / dz instead of divisions): seismograms 9.3e-7, misfit
+  5.6e-6, gradients 3.8e-5 (rounding).
 """
 import numpy as np
 import pytest
