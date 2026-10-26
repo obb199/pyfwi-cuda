@@ -161,10 +161,11 @@ def test_receiver_table_follows_the_loops_of_the_opencl_kernels():
     assert cells[2] == -1 and first[2] == 0
 
 
-def _native_engine(nt_ext=NT_EXT, batch=1, ns=NS, budget=0):
+def _native_engine(nt_ext=NT_EXT, batch=1, ns=NS, budget=0, chpr=30, boundary_width=None):
     """An engine on the fake backend with a native program and a receiver table (step 3.4), running
     ``batch`` shots at once (step 3.9). A third shot, when ``ns`` is 3, has its source on cell (2, 2);
-    ``budget``: bytes of checkpoints on the device (step 3.8)."""
+    ``budget``: bytes of checkpoints on the device (step 3.8); ``boundary_width``: boundary saving
+    (step 4.2)."""
     from PyFWI.engine.propagation import PropagationEngine, checkpoint_steps
     backend = FakeBackend(nr=NR, tnz=TNZ, tnx=TNX, budget=budget)
     srcx, srcz = np.array([1, 3, 2][:ns], np.int32), np.full(ns, 2, np.int32)
@@ -172,9 +173,9 @@ def _native_engine(nt_ext=NT_EXT, batch=1, ns=NS, budget=0):
     cells = np.array([1 * TNX + 0, 1 * TNX + 2, 1 * TNX + 0], np.int32)  # receivers 0 and 2 share a cell
     table = (cells, np.array([1, 1, 0], np.int32), np.array([2, -1, -1], np.int32))
     engine = PropagationEngine(backend, sources, "surface", tnz=TNZ, tnx=TNX, ns=ns, nr=NR, nt=NT, nt_ext=nt_ext,
-                               dt_scale=DT_SCALE, chp=checkpoint_steps(30, NT), dxr=np.int32(1), srcx=srcx,
+                               dt_scale=DT_SCALE, chp=checkpoint_steps(chpr, NT), dxr=np.int32(1), srcx=srcx,
                                srcz=srcz, source=source, rec_top_right_var=0, numerics="fixed", receivers=table,
-                               batch=batch)
+                               batch=batch, boundary_width=boundary_width)
     field = np.ones((TNZ, TNX), np.float32)
     engine.set_pml(0 * field, 0 * field)
     engine.set_model(RHO_INVERSE * field, MU * field, LAM * field)
@@ -366,6 +367,78 @@ def test_batches_run_one_shot_at_a_time_when_observed():
     _assert_same_runs(observed, _batched_run(2)[0])
     assert [s for kind, s in seen if kind == "forward"] == [0] * NT + [1] * NT
     assert [s for kind, s in seen if kind == "gradient"] == [0] * (NT - 1) + [1] * (NT - 1)
+
+
+def test_band_cells():
+    # Step 4.2: the cells of the undamped rectangle within the width of its edge, row by row.
+    from PyFWI.engine.propagation import band_cells
+    cells = band_cells((1, 4, 1, 5), 1, 10)  # rows 1-4, columns 1-5: a ring of one cell
+    rows, columns = np.divmod(cells, 10)
+    assert len(cells) == 2 * 5 + 2 * 2 and set(rows) == {1, 2, 3, 4}
+    assert all(r in (1, 4) or c in (1, 5) for r, c in zip(rows, columns))
+    assert len(band_cells((0, 9, 0, 9), 2, 10)) == 100 - 6 * 6  # a band of 2 around a 10 x 10 square
+    assert len(band_cells((0, 2, 0, 2), 2, 10)) == 9  # too small for an inside: every cell
+    assert band_cells((0, -1, 0, -1), 2, 10).size == 0
+
+
+def _boundary_run(boundary, batch=1, graphs=True):
+    """Forward and gradient on the native fake engine, with boundary saving (width 1) or with a
+    checkpoint at every step (the exact rebuild); returns the outputs and the engine."""
+    engine, _ = _native_engine(batch=batch, budget=1 << 30, chpr=100, boundary_width=1 if boundary else None)
+    engine.graphs = graphs
+    vdx, vdz = np.zeros((TNZ, TNX), np.float32), np.zeros((TNZ, TNX), np.float32)
+    vdx[:, 0] = vdx[:, -1] = vdz[0] = vdz[-1] = 1  # damping on the outer ring, as PyFWI's profiles
+    engine.set_pml(vdx, vdz)
+    seismogram = engine.forward()
+    outputs = {par: seismogram[par].copy() for par in COMPONENTS}
+    engine.prepare_gradient()
+    engine.gradient(residual())
+    outputs.update({f"g{k}": g for k, g in enumerate(engine.read_gradient())})
+    return outputs, engine
+
+
+@pytest.mark.parametrize("batch, graphs", [(1, True), (2, True), (2, False)])
+def test_boundary_saving_rebuilds_the_forward_field(batch, graphs):
+    # Step 4.2: with the band of the undamped rectangle stored at every step, the gradient rebuilds the
+    # forward field backwards (the toy updates are exactly reversible) and gives the gradient of a
+    # checkpoint at every step, with only the last field stored.
+    exact, _ = _boundary_run(False, batch, graphs)
+    saved, engine = _boundary_run(True, batch, graphs)
+    assert list(engine.chp) == [NT - 1] and engine.nchp == 1
+    assert engine.undamped == (1, TNZ - 2, 1, TNX - 2) and engine.n_band == 2 * 3 + 2 * 2  # rows 1-4, columns 1-3
+    assert engine.backend.nbytes(engine._band_store) == NS * NT * 5 * engine.n_band * 4
+    for key in exact:
+        np.testing.assert_allclose(saved[key], exact[key], rtol=1e-6, err_msg=key)
+
+
+def test_boundary_saving_launches():
+    engine, _ = _native_engine(budget=1 << 30, boundary_width=1)
+    engine.graphs = False
+    engine.forward()
+    names = launches(engine)
+    assert names.count("save_band") == names.count("inject_and_record") == NS * NT
+    engine.prepare_gradient()
+    engine.backend.log.clear()
+    engine.gradient(residual())
+    names = launches(engine)
+    # Every gradient step but the restored last one undoes a forward step: stresses, band, velocities,
+    # band, source.
+    assert names.count("restore_band") == 2 * NS * (NT - 2) and names.count("remove_source") == NS * (NT - 2)
+
+
+def test_boundary_saving_needs_native_kernels_and_memory():
+    with pytest.raises(ValueError, match="native CUDA kernels"):
+        from PyFWI.engine.propagation import PropagationEngine, checkpoint_steps
+        PropagationEngine(FakeBackend(nr=NR, tnz=TNZ, tnx=TNX), {"elastic": "e", "crosswell": "c", "surface": "s"},
+                          "surface", tnz=TNZ, tnx=TNX, ns=NS, nr=NR, nt=NT, nt_ext=NT_EXT, dt_scale=DT_SCALE,
+                          chp=checkpoint_steps(30, NT), dxr=np.int32(1), srcx=SRCX, srcz=SRCZ, source=source,
+                          rec_top_right_var=0, numerics="fixed", boundary_width=1)
+    with pytest.raises(MemoryError, match="boundary saving needs"):
+        _native_engine(budget=100, boundary_width=1)  # its set_pml makes the store
+    engine, _ = _native_engine(budget=1 << 30, boundary_width=1)
+    field = np.ones((TNZ, TNX), np.float32)
+    with pytest.raises(ValueError, match="region without absorbing layer"):
+        engine.set_pml(field, field)
 
 
 def test_shot_batch():

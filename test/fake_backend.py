@@ -30,6 +30,9 @@ update_tau         (native, fused) update_tauz and update_tauxz
 grad_adjoint_v     (native, fused) Grad, then Adj_update_v (nothing)
 sum_slots          (native, step 3.9) add the gradients of slots 1 to ``slots - 1`` to slot 0
 copy_checkpoint    (native, step 3.9) copy the field of every slot into its checkpoint, or back
+save_band          (native, step 4.2) store the 5 fields at the cells of the band, at the step on the device
+restore_band       (native) write back the stored stresses or velocities of the band, step + delta
+remove_source      (native) subtract the source of step + delta at the source cell
 =================  ==============================================================================
 
 A launch over ``(rows, columns, slots)`` runs a batch of shots (step 3.9): the kernels act on the
@@ -298,6 +301,38 @@ def _copy_checkpoint(backend, vx, vz, taux, tauz, tauxz, checkpoints, offset, sh
                 checkpoints[start:start + plane] = field
 
 
+def _band_store(store, band_shot, slot, step, n_band, shot_values):
+    """The 5 x n_band values stored for ``step`` of the shot of ``slot`` (boundary saving)."""
+    start = int(band_shot.view(np.int32)[slot]) * int(shot_values) + step * 5 * int(n_band)
+    return store[start:start + 5 * int(n_band)].reshape(5, int(n_band))
+
+
+def _save_band(backend, vx, vz, taux, tauz, tauxz, store, band, band_shot, step, n_band, shot_values):
+    t, cells = int(step.view(np.int32)[0]), band.view(np.int32)[:int(n_band)]
+    for slot, fields in enumerate(zip(*(_slots(backend, f) for f in (vx, vz, taux, tauz, tauxz)))):
+        stored = _band_store(store, band_shot, slot, t, n_band, shot_values)
+        for c, field in enumerate(fields):
+            stored[c] = field[cells]
+
+
+def _restore_band(backend, vx, vz, taux, tauz, tauxz, store, band, band_shot, step, delta, stresses, n_band,
+                  shot_values):
+    t, cells = int(step.view(np.int32)[0]) + int(delta), band.view(np.int32)[:int(n_band)]
+    components = (2, 3, 4) if int(stresses) else (0, 1)
+    for slot, fields in enumerate(zip(*(_slots(backend, f) for f in (vx, vz, taux, tauz, tauxz)))):
+        stored = _band_store(store, band_shot, slot, t, n_band, shot_values)
+        for c in components:
+            fields[c][cells] = stored[c]
+
+
+def _remove_source(backend, vx, vz, taux, tauz, source_cell, source_steps, step, delta):
+    t = int(step.view(np.int32)[0]) + int(delta)
+    for slot, fields in enumerate(zip(*(_slots(backend, f) for f in (vx, vz, taux, tauz)))):
+        cell = int(source_cell.view(np.int32)[slot])
+        for c, field in enumerate(fields):
+            field[cell] -= source_steps[4 * t + c]
+
+
 def _sum_slots(backend, *buffers_and_slots):
     *buffers, slots = buffers_and_slots
     backend.slots = int(slots)
@@ -363,4 +398,5 @@ TOY_KERNELS = {"MakeAllZero": _zero, "MakeGradZero": _zero, "injSrc": _inject,
                "Adj_update_tau": _nothing, "Adj_update_v": _nothing, "Grad": _grad,
                "inject_and_record": _inject_and_record, "inject_residual": _inject_residual,
                "update_v": _update_v, "update_tau": _update_tau, "grad_adjoint_v": _grad_adjoint_v,
-               "advance": _advance, "sum_slots": _sum_slots, "copy_checkpoint": _copy_checkpoint}
+               "advance": _advance, "sum_slots": _sum_slots, "copy_checkpoint": _copy_checkpoint,
+               "save_band": _save_band, "restore_band": _restore_band, "remove_source": _remove_source}

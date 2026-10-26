@@ -249,6 +249,38 @@ def undamped_rectangle(vdx_pml, vdz_pml):
     return tuple(np.int32(v) for v in (z0, z1, x0, x1))
 
 
+def band_cells(rectangle, width, tnx):
+    """The cells stored by boundary saving (step 4.2): those of ``rectangle`` within ``width`` of its edge.
+
+    Parameters
+    ----------
+    rectangle : tuple of int
+        ``(z0, z1, x0, x1)``, rows and columns (inclusive) where the absorbing layer does not damp
+        (``undamped_rectangle``): undoing a time step is exact there.
+    width : int
+        Width of the band: the half order ``sdo`` of the finite differences, the farthest cell a
+        stencil reads.
+    tnx : int
+        Grid width, for the flat indices.
+
+    Returns
+    -------
+    numpy.ndarray
+        int32 flat indices ``row * tnx + column``, row by row: the rows of the band at the top and the
+        bottom of the rectangle, and its columns at the left and the right in the rows between. Empty
+        for an empty rectangle.
+
+    Used by ``PropagationEngine.set_pml`` with boundary saving: every cell of the rectangle off the band
+    reads only cells of the rectangle, so writing back the stored band makes the rebuilt field exact.
+    """
+    z0, z1, x0, x1 = (int(v) for v in rectangle)
+    if z1 < z0 or x1 < x0:
+        return np.zeros(0, np.int32)
+    rows, columns = np.mgrid[z0:z1 + 1, x0:x1 + 1]
+    inner = (rows >= z0 + width) & (rows <= z1 - width) & (columns >= x0 + width) & (columns <= x1 - width)
+    return (rows[~inner] * int(tnx) + columns[~inner]).astype(np.int32)
+
+
 def shot_batch(ns, tnz, tnx, environ=None):
     """Number of shots that the native loops run at once (step 3.9).
 
@@ -368,10 +400,16 @@ class PropagationEngine:
     batch : int, optional
         With native injection, the shots run at once (step 3.9); ``shot_batch`` when None. Without
         it, the shots run one by one.
+    boundary_width : int, optional
+        Boundary saving (step 4.2, native kernels only): instead of the checkpoints of ``chp``, the
+        fields of a band of this width (the half order ``sdo``) at the edge of the undamped rectangle
+        are stored at every step, and the gradient rebuilds the forward field from the last one
+        (``band_cells``). None or 0: checkpoints.
     """
 
     def __init__(self, backend, sources, injection, *, tnz, tnx, ns, nr, nt, nt_ext, dt_scale, chp, dxr,
-                 srcx, srcz, source, rec_top_right_var, numerics="legacy", receivers=None, batch=None):
+                 srcx, srcz, source, rec_top_right_var, numerics="legacy", receivers=None, batch=None,
+                 boundary_width=None):
         self.backend = backend
         self.tnz, self.tnx, self.ns, self.nr = tnz, tnx, ns, nr
         self.nt, self.nt_ext, self.dt_scale = nt, nt_ext, dt_scale
@@ -432,6 +470,21 @@ class PropagationEngine:
             self.step_b = self._table(np.zeros(1, np.int32))
             self.source_cell_b = self._table(np.zeros(self.batch, np.int32))
             self.source_steps_b = backend.allocate_empty(int(nt) * 4 * 4)
+        #: Step 4.2: boundary saving (``boundary_width`` cells), with the native kernels only. Its kernels,
+        #: the shot of every slot (``band_shot_b``), and only the last field as checkpoint: the gradient
+        #: starts from it. The band and its store come with the absorbing layer (``set_pml``).
+        self.boundary_width = int(boundary_width or 0)
+        if self.boundary_width:
+            if not self.native_injection:
+                raise ValueError("boundary saving needs the native CUDA kernels: the CUDA backend in the fixed numeric mode")
+            for name in ("save_band", "remove_source"):
+                setattr(self.knl, name, backend.kernel(self.prg_native, name))
+            # Two kernel objects, two argument lists: the stresses, then the velocities of the band.
+            self.knl.restore_stresses = backend.kernel(self.prg_native, "restore_band")
+            self.knl.restore_velocities = backend.kernel(self.prg_native, "restore_band")
+            self.band_shot_b = self._table(np.zeros(self.batch, np.int32))
+            self.chp, self.nchp = np.array([int(nt) - 1], np.int32), 1
+        self.band_b, self.n_band, self._band_store, self._band_cells = None, 0, None, None
         #: Step 3.7: the native time loops replay CUDA graphs of several steps (backend ``capture``),
         #: unless ``PYFWI_CUDA_GRAPHS=0`` or a ``show=True`` run observes every step. The graphs are kept
         #: from run to run while the buffers they use stay (``_set_buffer``, step 3.11).
@@ -594,6 +647,35 @@ class PropagationEngine:
         if undamped != getattr(self, "undamped", None):
             self._graph_cache = {}  # an argument of the graphs (_replay)
         self.undamped = undamped
+        if self.boundary_width:
+            self._set_band(band_cells(undamped, self.boundary_width, self.tnx))
+
+    def _set_band(self, cells):
+        """The band of boundary saving and the store of every shot (step 4.2), for the cells ``cells``.
+
+        The store holds, for every shot, ``nt`` steps of the 5 fields at the ``n_band`` cells: memory
+        proportional to the perimeter of the model, not to its area. Kept while the band is the same.
+        """
+        if self._band_cells is not None and np.array_equal(cells, self._band_cells):
+            return
+        if cells.size == 0:
+            raise ValueError("boundary saving needs a region without absorbing layer")
+        nbytes = int(self.ns) * int(self.nt) * 5 * int(cells.size) * 4  # Python ints: no int32 overflow
+        budget = self.backend.checkpoint_budget() if hasattr(self.backend, "checkpoint_budget") else nbytes
+        if nbytes > budget:
+            raise MemoryError(f"boundary saving needs {nbytes / 1e9:.2f} GB on the GPU for the {self.ns} shots, "
+                              f"more than the {budget / 1e9:.2f} GB available (PYFWI_CUDA_CHECKPOINT_BUDGET)")
+        self._band_cells, self.n_band = cells, int(cells.size)
+        self.band_b = self._table(cells)
+        self._band_store = None  # release the old one first
+        self._band_store = self.backend.allocate_empty(nbytes)
+        self.band_size = (1, self.n_band)
+        self._graph_cache = {}  # arguments of the graphs (_replay)
+
+    def _band_args(self):
+        """Arguments of the band kernels that follow the fields: the store, the band, the shot of every
+        slot, the step on the device."""
+        return self._band_store, self.band_b, self.band_shot_b, self.step_b
 
     def set_model(self, rho_inverse, mu, lam):
         """Device buffers of the model (1 / density and the Lame parameters), per forward run."""
@@ -807,12 +889,29 @@ class PropagationEngine:
     # ------------------------------------------------------------------ native time loops (3.6, 3.7)
 
     def _set_native_injection_args(self):
-        """Arguments of inject_and_record for a whole run (step 3.6): the step comes from the device."""
+        """Arguments of inject_and_record for a whole run (step 3.6): the step comes from the device; with
+        boundary saving, of save_band too (step 4.2)."""
         self.backend.set_args(self.knl.inject_and_record, *self._field_buffers(),
                               self.seismogramid_vx_b, self.seismogramid_vz_b, self.seismogramid_taux_b,
                               self.seismogramid_tauz_b, self.seismogramid_tauxz_b, self.receiver_cells_b,
                               self.source_cell_b, self.source_steps_b, self.step_b,
                               np.int32(self.steps_per_sample), np.int32(self.nt_ext))
+        if self.boundary_width:
+            self.backend.set_args(self.knl.save_band, *self._field_buffers(), *self._band_args(),
+                                  np.int32(self.n_band), np.int64(int(self.nt) * 5 * self.n_band))
+
+    def _set_rebuild_args(self):
+        """Arguments of the kernels that rebuild the forward field with boundary saving (step 4.2).
+
+        The gradient step ``t`` undoes the forward step ``t + 1`` (``_gradient_batch_native``): the
+        band and the source of that step (``delta`` 1).
+        """
+        shot_values = np.int64(int(self.nt) * 5 * self.n_band)
+        for kernel, stresses in ((self.knl.restore_stresses, 1), (self.knl.restore_velocities, 0)):
+            self.backend.set_args(kernel, *self._field_buffers(), *self._band_args(), np.int32(1), np.int32(stresses),
+                                  np.int32(self.n_band), shot_values)
+        self.backend.set_args(self.knl.remove_source, self.vx_b, self.vz_b, self.taux_b, self.tauz_b,
+                              self.source_cell_b, self.source_steps_b, self.step_b, np.int32(1))
 
     def _batches(self, observe):
         """The shots in batches of ``batch`` (step 3.9), as ranges: slot b of a batch runs its shot b.
@@ -830,6 +929,10 @@ class PropagationEngine:
         for b, s in enumerate(shots):
             cells[b] = int(self.srcz[s]) * int(self.tnx) + int(self.srcx[s])
         self.backend.to_device(self.source_cell_b, cells)
+        if self.boundary_width:  # the store of every slot's shot (step 4.2)
+            band_shots = np.zeros(self.batch, np.int32)
+            band_shots[:len(shots)] = list(shots)
+            self.backend.to_device(self.band_shot_b, band_shots)
         self.backend.to_device(self.step_b, np.array([step], np.int32))
 
     def _replay(self, kind, step, count):
@@ -855,8 +958,11 @@ class PropagationEngine:
             count -= length
 
     def _native_forward_step(self):
-        """One forward step with the native kernels: source and receivers, the updates, the next step."""
+        """One forward step with the native kernels: source and receivers, the band of boundary saving
+        (step 4.2), the updates, the next step."""
         self.backend.launch(self.knl.inject_and_record, self._size(self.receiver_size))
+        if self.boundary_width:
+            self.backend.launch(self.knl.save_band, self._size(self.band_size))
         self._forward_step()
         self.backend.launch(self.knl.advance, (1, 1))
 
@@ -1025,10 +1131,20 @@ class PropagationEngine:
         self._launch(self.knl.update_tauxz)
 
     def _backward_step(self):
-        """Undo one forward step (``_set_update_args`` with coeff = -1): the stresses, then the velocities."""
+        """Undo one forward step (``_set_update_args`` with coeff = -1): the stresses, then the velocities.
+
+        With boundary saving (step 4.2), the stored band is written back after each half, and the source
+        of the step is removed: the field is then the forward field of the previous step inside the
+        undamped rectangle, but for rounding.
+        """
         if self.fused:
             self._launch(self.knl.update_tau)
+            if self.boundary_width:
+                self.backend.launch(self.knl.restore_stresses, self._size(self.band_size))
             self._launch(self.knl.update_v)
+            if self.boundary_width:
+                self.backend.launch(self.knl.restore_velocities, self._size(self.band_size))
+                self.backend.launch(self.knl.remove_source, self._size((1, 1)))
             return
         self._launch(self.knl.update_tauxz)
         self._launch(self.knl.update_tauz)
@@ -1076,6 +1192,8 @@ class PropagationEngine:
 
         if self.native_injection:
             self.backend.set_args(self.knl.advance, self.step_b, np.int32(-1))
+            if self.boundary_width:
+                self._set_rebuild_args()
         for shots in self._batches(observe):
             self.slots, self._last_slot = len(shots), len(shots) - 1
             self.backend.call(self.knl.MakeAllZero, self._size(self.global_size), *self._field_buffers())

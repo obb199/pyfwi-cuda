@@ -281,3 +281,12 @@ def test_kernel_set_selection():
     assert select_cuda_kernels("legacy", {}) == "parity"  # the native kernels have the fixed arithmetic
     with pytest.raises(ValueError, match="Unknown PYFWI_CUDA_KERNELS"):
         select_cuda_kernels("fixed", {"PYFWI_CUDA_KERNELS": "fast"})
+
+
+def test_boundary_saving_selection():
+    # Step 4.2: PYFWI_BOUNDARY_SAVING, off by default (test_boundary_saving.py tests the feature).
+    from PyFWI.backends.selection import select_boundary_saving
+    assert select_boundary_saving({}) is False and select_boundary_saving({"PYFWI_BOUNDARY_SAVING": "0"}) is False
+    assert select_boundary_saving({"PYFWI_BOUNDARY_SAVING": " 1 "}) is True
+    with pytest.raises(ValueError, match="PYFWI_BOUNDARY_SAVING must be 0 or 1"):
+        select_boundary_saving({"PYFWI_BOUNDARY_SAVING": "on"})

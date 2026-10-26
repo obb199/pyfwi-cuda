@@ -161,7 +161,8 @@ def test_cuda_runs_are_deterministic(cuda_device, monkeypatch):
 
 #: Forward modelling and gradient of the three acquisitions on CUDA, each CuPy array in its own
 #: allocation (no memory pool), so that compute-sanitizer sees the bounds of every allocation; then 3
-#: shots in one batch (step 3.9: the slots, the checkpoint copies of a batch, the sum of the slots).
+#: shots in one batch (step 3.9: the slots, the checkpoint copies of a batch, the sum of the slots), and
+#: the same with boundary saving (step 4.2).
 #: argv: <test folder>.
 SANITIZED = """
 import os, sys
@@ -175,6 +176,10 @@ for acq_type in (0, 1, 2):
 batched = tiny_case(acq_type=2, components=4, ns=3, t=0.1)
 assert batched.W._engine.batch == 3
 forward_and_gradient(batched)
+os.environ["PYFWI_BOUNDARY_SAVING"] = "1"  # step 4.2: the band stored and written back
+saved = tiny_case(acq_type=2, components=4, ns=3, t=0.1)
+assert saved.W.boundary_saving
+forward_and_gradient(saved)
 """
 
 

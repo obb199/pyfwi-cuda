@@ -8,7 +8,7 @@ from PyFWI import _device_arrays as device
 
 import PyFWI.fwi_tools as tools
 from PyFWI.backends.opencl import OpenCLBackend
-from PyFWI.backends.selection import select_backend, select_cuda_kernels, select_numerics
+from PyFWI.backends.selection import select_backend, select_boundary_saving, select_cuda_kernels, select_numerics
 from PyFWI.engine.propagation import PropagationEngine, checkpoint_steps, receiver_table
 import PyFWI._info as _info
 from PyFWI.fwi_tools import expand_model
@@ -178,6 +178,12 @@ class WavePreparation:
         # PyFWI/kernels/elastic.cu in the fixed mode, unless PYFWI_CUDA_KERNELS=parity; the OpenCL
         # files otherwise. None on OpenCL.
         self.cuda_kernels = select_cuda_kernels(self.numerics) if self.backend_selection.backend == "cuda" else None
+        # Boundary saving (step 4.2 of the fork, PYFWI_BOUNDARY_SAVING=1): a band of sdo cells stored at
+        # every step instead of the checkpoints of chpr; with the native kernels only.
+        self.boundary_saving = select_boundary_saving()
+        if self.boundary_saving and self.cuda_kernels != "native":
+            raise ValueError("PYFWI_BOUNDARY_SAVING=1 needs the native CUDA kernels: the CUDA backend in the fixed "
+                             "numeric mode (PyFWI.info() says what runs)")
 
         # The time loops, the device buffers (with margins), the kernels and the checkpoints live in
         # the engine (step 2.1 of the fork, PyFWI.engine.propagation); its attributes (W.vx_b,
@@ -198,7 +204,10 @@ class WavePreparation:
             self._backend, sources,
             injection, tnz=self.tnz, tnx=self.tnx, ns=self.ns, nr=self.nr, nt=self.nt, nt_ext=self.nt_ext,
             dt_scale=self.dt_scale, chp=self.chp, dxr=self.dxr, srcx=self.srcx, srcz=self.srcz, source=self.src,
-            rec_top_right_var=self.rec_top_right_var, numerics=self.numerics, receivers=receivers)
+            rec_top_right_var=self.rec_top_right_var, numerics=self.numerics, receivers=receivers,
+            boundary_width=int(self.sdo) if self.boundary_saving else None)
+        if self.boundary_saving:
+            self.chp, self.nchp = self._engine.chp, self._engine.nchp  # the last step only: the gradient starts there
 
         # Make a list for seismograms (filled by the engine)
         self.seismogram = self._engine.seismogram

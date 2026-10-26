@@ -526,3 +526,59 @@ extern "C" __global__ void copy_checkpoint(float *vx, float *vz, float *taux, fl
         }
     }
 }
+
+// ------------------------------------------------------------------ boundary saving (step 4.2)
+//
+// Instead of checkpoints of the whole field, the forward modelling stores at every step only the fields of
+// a band of cells: those of the undamped rectangle (no absorbing layer: PropagationEngine.undamped) within
+// sdo cells of its edge (`band`, n_band flat indices), right after the source injection. The gradient then
+// rebuilds the forward field backwards from the last field: it undoes the stresses, writes back the stored
+// stresses of the band, undoes the velocities, writes back the stored velocities of the band, and removes
+// the source. Inside the rectangle there is no damping, so undoing a step is exact but for float32
+// rounding, and the cells off the band read only cells of the rectangle (the stencils reach sdo cells). The
+// store of a shot holds nt steps of 5 x n_band values (vx, vz, taux, tauz, tauxz); band_shot[slot] is the
+// shot of every slot of a batch. Launched on a grid of 1 row and n_band columns per slot.
+
+extern "C" __global__ void save_band(const float *vx, const float *vz, const float *taux, const float *tauz,
+                                     const float *tauxz, float *store, const int *band, const int *band_shot,
+                                     const int *step, int n_band, long long shot_values) {
+    const int b = column_of_thread();
+    if (row_of_thread() != 0 || b >= n_band) return;
+    const long long cell = slot_values() + band[b];  // batched
+    float *stored = store + band_shot[blockIdx.z] * shot_values + (long long)(*step) * 5 * n_band;
+    stored[b] = vx[cell];
+    stored[n_band + b] = vz[cell];
+    stored[2 * n_band + b] = taux[cell];
+    stored[3 * n_band + b] = tauz[cell];
+    stored[4 * n_band + b] = tauxz[cell];
+}
+
+// Write back the band stored at step *step + delta: the stresses when `stresses` is 1, else the velocities.
+extern "C" __global__ void restore_band(float *vx, float *vz, float *taux, float *tauz, float *tauxz,
+                                        const float *store, const int *band, const int *band_shot, const int *step,
+                                        int delta, int stresses, int n_band, long long shot_values) {
+    const int b = column_of_thread();
+    if (row_of_thread() != 0 || b >= n_band) return;
+    const long long cell = slot_values() + band[b];  // batched
+    const float *stored = store + band_shot[blockIdx.z] * shot_values + (long long)(*step + delta) * 5 * n_band;
+    if (stresses) {
+        taux[cell] = stored[2 * n_band + b];
+        tauz[cell] = stored[3 * n_band + b];
+        tauxz[cell] = stored[4 * n_band + b];
+    } else {
+        vx[cell] = stored[b];
+        vz[cell] = stored[n_band + b];
+    }
+}
+
+// Remove the source of step *step + delta from its cell: the inverse of the injection of inject_and_record.
+extern "C" __global__ void remove_source(float *vx, float *vz, float *taux, float *tauz, const int *source_cell,
+                                         const float *source_steps, const int *step, int delta) {
+    if (row_of_thread() != 0 || column_of_thread() != 0) return;
+    const long long cell = slot_values() + source_cell[blockIdx.z];  // batched
+    const int t = *step + delta;
+    vx[cell] -= source_steps[4 * t];
+    vz[cell] -= source_steps[4 * t + 1];
+    taux[cell] -= source_steps[4 * t + 2];
+    tauz[cell] -= source_steps[4 * t + 3];
+}

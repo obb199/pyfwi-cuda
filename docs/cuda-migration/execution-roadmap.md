@@ -981,6 +981,28 @@ Everything here is optional and off by default. Each feature has its own toleran
   - MEM: memory proportional to the perimeter, checked on three grid sizes;
   - a long run without reconstruction drift (EST);
   - complete FWI.
+- **Result:** `PYFWI_BOUNDARY_SAVING=1` (off by default; native kernels only, else a clear error). The
+  forward modelling stores, at every step and right after the source injection, the 5 fields of the cells
+  of the undamped rectangle within `sdo` of its edge (`band_cells`; the rectangle where both damping
+  profiles are zero, `undamped_rectangle`), and the last field as the only checkpoint; the gradient
+  rebuilds the forward field backwards: it undoes the stresses, writes back the stored stresses of the
+  band, undoes the velocities, writes back their band and removes the source of the step (kernels
+  `save_band`, `restore_band`, `remove_source`, inside the CUDA graphs, batched). Inside the rectangle there
+  is no damping, so undoing a step is exact but for float32 rounding, and the cells off the band read only
+  cells of the rectangle. The store lives on the GPU (ns × nt × 5 × band cells; a clear error when it does
+  not fit the budget). Tests: the gradient against a checkpoint at every step, the exact rebuild, on three
+  acquisitions, orders 4 and 8 and batches: 4.8e-7 to 1.2e-6 (the usual checkpoints of `chpr=20` differ from
+  it by up to 6.6e-5: the rebuild between two checkpoints crosses the absorbing layer and keeps the source);
+  the seismograms are the same bits; MEM: the store is 5 × band cells per step, about `sdo` cells per cell
+  of the perimeter on 40², 80² and 160² grids; EST: 3,500 steps rebuilt without drift (within 1e-4); FWI:
+  the multi-scale inversion of the example gives the model of the exact rebuild within 1e-4; on the fake
+  backend, the rebuild of the toy kernels, the launches, the errors. Memory per shot: small 17 MB against
+  82 MB of checkpoints (`chpr=20`), medium 192 MB against 2.3 GB, large 648 MB against 3.0 GB (`chpr=5`).
+  DES (same session): forward unchanged or faster (medium −6 %: no checkpoint copies), gradient 3 to 14 %
+  slower (three small launches more per step). The real medium scenario (8 shots), whose checkpoints do
+  not fit on the GPU, gains on every count: forward 2.45 s → 1.34 s, gradient 4.24 s → 3.91 s, GPU memory
+  9.8 GB → 2.4 GB, every shot on the device. Not done: a host tier for the store (problems whose store
+  exceeds the GPU, e.g. the 50 shots of the large scenario: 32 GB, refused with a clear message).
 
 ### 4.3 FP16 mode
 

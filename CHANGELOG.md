@@ -16,6 +16,13 @@ how much and in which numeric mode.
   float32 there). An inversion of the size of the small benchmark scenario spends 3.6 ms instead of
   38.5 ms per evaluation in the cost function (the whole inversion −31 %).
 
+- `PYFWI_BOUNDARY_SAVING=1` (step 4.2, off by default, CUDA `fixed` mode): instead of checkpoints of the
+  whole field, the fields of a band of `sdo` cells around the undamped region are stored at every step,
+  and the gradient rebuilds the forward field exactly from them (within float32 rounding of a checkpoint
+  at every step, where `chpr` checkpoints differ by up to 6.6e-5). Memory per shot 5 to 12 times smaller
+  (medium scenario: 192 MB instead of 2.3 GB); the real medium scenario runs its 8 shots on the GPU in
+  2.4 GB instead of 9.8 GB, with a 1.8× faster forward modelling.
+
 ### Changed
 
 - The cost function no longer deep-copies its inputs three times (same values).

@@ -275,6 +275,36 @@ def select_numerics(inpa, backend, environ=None):
     return value
 
 
+#: Step 4.2: the environment variable of boundary saving, an opt-in feature of Phase 4.
+BOUNDARY_SAVING = "PYFWI_BOUNDARY_SAVING"
+
+
+def select_boundary_saving(environ=None):
+    """True when ``PYFWI_BOUNDARY_SAVING`` is ``1``: the gradient rebuilds the forward field from a band
+    stored at every step instead of from checkpoints (``PyFWI.engine.propagation.band_cells``).
+
+    Parameters
+    ----------
+    environ : mapping, optional
+        Where the variable is read; ``os.environ`` by default.
+
+    Returns
+    -------
+    bool
+        False when the variable is unset, empty or ``0`` (the default: checkpoints).
+
+    Raises
+    ------
+    ValueError
+        Another value.
+    """
+    environ = os.environ if environ is None else environ
+    value = str(environ.get(BOUNDARY_SAVING, "")).strip()
+    if value not in ("", "0", "1"):
+        raise ValueError(f"{BOUNDARY_SAVING} must be 0 or 1, not {value!r}")
+    return value == "1"
+
+
 #: Kernel sets of the CUDA backend (Phase 3): ``native``, the CUDA kernels of ``PyFWI/kernels/elastic.cu``
 #: (fixed mode only), and ``parity``, the OpenCL files compiled for CUDA (step 2.3).
 CUDA_KERNELS = ("native", "parity")
