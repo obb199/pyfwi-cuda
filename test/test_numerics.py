@@ -29,7 +29,7 @@ HOT = ("update_velx", "update_velz", "update_tauz", "update_tauxz", "Adj_update_
 
 def test_fixed_mode_writes_float_constants_and_the_full_time_step():
     legacy, fixed = kernel_sources(8)[0], kernel_sources(8, numerics="fixed")[0]
-    assert "#define dt     0.000571\n" in legacy and "PYFWI_FIXED" not in legacy
+    assert "#define dt     0.000571\n" in legacy and "#define PYFWI_FIXED" not in legacy
     assert "#define dt     5.714285714e-04f\n" in fixed and "#define PYFWI_FIXED 1" in fixed
     assert "#define c4     -6.973500697e-04f\n" in fixed
 

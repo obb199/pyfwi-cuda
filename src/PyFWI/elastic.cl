@@ -5,6 +5,19 @@
       ////////////////////////////////////////////////////////////////////////
       ////////////////////////////////////////////////////////////////////////
 
+// Numeric modes (step 2.4 of the fork): PYFWI_FIXED is defined in the fixed mode only, and every
+// change of that mode sits in an #ifdef PYFWI_FIXED block or behind the macros below, so that the
+// legacy code is, after preprocessing, exactly that of PyFWI 0.1.10.
+//
+// HIGH_ORDER wraps the c3 and c4 terms of the stencils. In order 4 (sdo = 2) their coefficients are
+// zero, but 0.1.10 still evaluates them, which reads up to 4 cells away, outside the buffers near the
+// edges. The fixed mode drops them; in the legacy mode the macro gives back the same tokens.
+#if defined(PYFWI_FIXED) && sdo == 2
+#define HIGH_ORDER(term) 0.0f
+#else
+#define HIGH_ORDER(term) term
+#endif
+
 __kernel void MakeAllZero(__global float *vx, __global float *vz,
                           __global float *taux,__global float *tauz, __global float *tauxz
                           )
@@ -86,7 +99,11 @@ __kernel void injSrc(__global float *vx,__global float *vz,
 
   int startOfThirdRec = n_extera_rec + n_main_rec;
 
-  if(i%dxr==0 && j == rec_top_right_const){
+#ifdef PYFWI_FIXED
+  if(i%dxr==0 && j == rec_top_right_const && i/dxr<n_extera_rec){
+#else
+  if(i%dxr==0 && j == rec_top_right_const){  // 0.1.10: no bound on the receiver index
+#endif
     int ir = i/dxr;
       seismogram_vxi[nt * Nr + startOfThirdRec + ir]  =  vx[(i+ rec_top_right_var)*Nx + j];
       seismogram_vzi[nt * Nr + startOfThirdRec + ir]  =  vz[(i+ rec_top_right_var)*Nx + j];
@@ -112,28 +129,28 @@ __kernel void forward_hessian_src_preparing(__global float *w_vx,__global float 
   int j = get_global_id(1) ;
 
   float DxmTx = (c1*(w_taux[center]-w_taux[left]) + c2*(w_taux[right]-w_taux[left2])+
-               c3*(w_taux[right2]-w_taux[left3]) + c4*(w_taux[right3]-w_taux[left4]))/dx ;
+               HIGH_ORDER(c3*(w_taux[right2]-w_taux[left3])) + HIGH_ORDER(c4*(w_taux[right3]-w_taux[left4])))/dx ;
 
   float DzmTxz = (c1*(w_tauxz[center]-w_tauxz[above]) + c2*(w_tauxz[below]-w_tauxz[above2])+
-               c3*(w_tauxz[below2]-w_tauxz[above3]) + c4*(w_tauxz[below3]-w_tauxz[above4]))/dz;
+               HIGH_ORDER(c3*(w_tauxz[below2]-w_tauxz[above3])) + HIGH_ORDER(c4*(w_tauxz[below3]-w_tauxz[above4])))/dz;
 
   float DzpTz = (c1*(w_tauz[below]-w_tauz[center]) + c2*(w_tauz[below2]-w_tauz[above])+
-               c3*(w_tauz[below3]-w_tauz[above2]) + c4*(w_tauz[below4]-w_tauz[above3]))/dz;
+               HIGH_ORDER(c3*(w_tauz[below3]-w_tauz[above2])) + HIGH_ORDER(c4*(w_tauz[below4]-w_tauz[above3])))/dz;
 
   float DxpTxz = (c1*(w_tauxz[right]-w_tauxz[center]) + c2*(w_tauxz[right2]-w_tauxz[left])+
-               c3*(w_tauxz[right3]-w_tauxz[left2]) + c4*(w_tauxz[right4]-w_tauxz[left3]))/dx;
+               HIGH_ORDER(c3*(w_tauxz[right3]-w_tauxz[left2])) + HIGH_ORDER(c4*(w_tauxz[right4]-w_tauxz[left3])))/dx;
 
   float DzmVz= (c1*(w_vz[center]-w_vz[above]) + c2*(w_vz[below]-w_vz[above2])+
-               c3*(w_vz[below2]-w_vz[above3]) + c4*(w_vz[below3]-w_vz[above4]))/dz; 
+               HIGH_ORDER(c3*(w_vz[below2]-w_vz[above3])) + HIGH_ORDER(c4*(w_vz[below3]-w_vz[above4])))/dz; 
 
   float DxpVx= (c1*(w_vx[right]-w_vx[center]) + c2*(w_vx[right2]-w_vx[left])+
-               c3*(w_vx[right3]-w_vx[left2]) + c4*(w_vx[right4]-w_vx[left3]))/dx;
+               HIGH_ORDER(c3*(w_vx[right3]-w_vx[left2])) + HIGH_ORDER(c4*(w_vx[right4]-w_vx[left3])))/dx;
 
   float DzpVx= (c1*(w_vz[below]-w_vz[center]) + c2*(w_vz[below2]-w_vz[above])+
-               c3*(w_vz[below3]-w_vz[above2]) + c4*(w_vz[below4]-w_vz[above3]))/dz;
+               HIGH_ORDER(c3*(w_vz[below3]-w_vz[above2])) + HIGH_ORDER(c4*(w_vz[below4]-w_vz[above3])))/dz;
 
   float DxmVz= (c1*(w_vz[center]-w_vz[left]) + c2*(w_vz[right]-w_vz[left2])+
-               c3*(w_vz[right2]-w_vz[left3]) + c4*(w_vz[right3]-w_vz[left4]))/dx;
+               HIGH_ORDER(c3*(w_vz[right2]-w_vz[left3])) + HIGH_ORDER(c4*(w_vz[right3]-w_vz[left4])))/dx;
 
 
   vx[center] += - dt * (grho[center] * (rho[center] * rho[center] * rho[center])) * (DxmTx + DzmTxz);
@@ -166,10 +183,10 @@ __kernel void update_velx(int coeff,
   if(i>Nz-sdo || j>Nx-sdo){return;}
 
   float DxmTx = (c1*(taux[center]-taux[left]) + c2*(taux[right]-taux[left2])+
-               c3*(taux[right2]-taux[left3]) + c4*(taux[right3]-taux[left4]))/dx ;
+               HIGH_ORDER(c3*(taux[right2]-taux[left3])) + HIGH_ORDER(c4*(taux[right3]-taux[left4])))/dx ;
 
   float DzmTxz = (c1*(tauxz[center]-tauxz[above]) + c2*(tauxz[below]-tauxz[above2])+
-               c3*(tauxz[below2]-tauxz[above3]) + c4*(tauxz[below3]-tauxz[above4]))/dz;
+               HIGH_ORDER(c3*(tauxz[below2]-tauxz[above3])) + HIGH_ORDER(c4*(tauxz[below3]-tauxz[above4])))/dz;
 
 
     if (coeff==1){
@@ -206,11 +223,11 @@ __kernel void update_velz(int coeff,
 
 
   float DxpTxz= (c1*(tauxz[right]-tauxz[center]) + c2*(tauxz[right2]-tauxz[left])+
-               c3*(tauxz[right3]-tauxz[left2]) + c4*(tauxz[right4]-tauxz[left3]))/dx;
+               HIGH_ORDER(c3*(tauxz[right3]-tauxz[left2])) + HIGH_ORDER(c4*(tauxz[right4]-tauxz[left3])))/dx;
 
 
   float DzpTz= (c1*(tauz[below]-tauz[center]) + c2*(tauz[below2]-tauz[above])+
-               c3*(tauz[below3]-tauz[above2]) + c4*(tauz[below4]-tauz[above3]))/dz;
+               HIGH_ORDER(c3*(tauz[below3]-tauz[above2])) + HIGH_ORDER(c4*(tauz[below4]-tauz[above3])))/dz;
 
 
 if (coeff==1){
@@ -246,10 +263,10 @@ __kernel void update_tauz(int coeff,
   if(i>Nz-sdo || j>Nx-sdo){return;}
 
   float DxpVx= (c1*(vx[right]-vx[center]) + c2*(vx[right2]-vx[left])+
-               c3*(vx[right3]-vx[left2]) + c4*(vx[right4]-vx[left3]))/dx;
+               HIGH_ORDER(c3*(vx[right3]-vx[left2])) + HIGH_ORDER(c4*(vx[right4]-vx[left3])))/dx;
 
   float DzmVz= (c1*(vz[center]-vz[above]) + c2*(vz[below]-vz[above2])+
-               c3*(vz[below2]-vz[above3]) + c4*(vz[below3]-vz[above4]))/dz;
+               HIGH_ORDER(c3*(vz[below2]-vz[above3])) + HIGH_ORDER(c4*(vz[below3]-vz[above4])))/dz;
 
 
   if (coeff==1){
@@ -289,10 +306,10 @@ __kernel void update_tauxz(int coeff,
 
 
   float DxmVz= (c1*(vz[center]-vz[left]) + c2*(vz[right]-vz[left2])+
-               c3*(vz[right2]-vz[left3]) + c4*(vz[right3]-vz[left4]))/dx;
+               HIGH_ORDER(c3*(vz[right2]-vz[left3])) + HIGH_ORDER(c4*(vz[right3]-vz[left4])))/dx;
 
   float DzpVx= (c1*(vx[below]-vx[center]) + c2*(vx[below2]-vx[above])+
-               c3*(vx[below3]-vx[above2]) + c4*(vx[below4]-vx[above3]))/dz;
+               HIGH_ORDER(c3*(vx[below3]-vx[above2])) + HIGH_ORDER(c4*(vx[below4]-vx[above3])))/dz;
 
 
 
@@ -349,7 +366,11 @@ __kernel void Adj_injSrc(
 
   int startOfThirdRec = n_extera_rec + n_main_rec;
 
-  if(i%dxr==0 && j == rec_top_right_const){
+#ifdef PYFWI_FIXED
+  if(i%dxr==0 && j == rec_top_right_const && i/dxr<n_extera_rec){
+#else
+  if(i%dxr==0 && j == rec_top_right_const){  // 0.1.10: no bound on the receiver index
+#endif
     int ir = i/dxr;
 
       Avx[(i+ rec_top_right_var)*Nx + j] += res_vx[startOfThirdRec + ir];
@@ -384,26 +405,26 @@ __kernel void Adj_update_tau(__global float *Avx, __global float *Avz,
 
   float DxpAVx= (c1*(Avx[right]*rho_b[right] -Avx[center]*rho_b[center]) +
                  c2*(Avx[right2]*rho_b[right2] -Avx[left]*rho_b[left])+
-                 c3*(Avx[right3]*rho_b[right3] -Avx[left2]*rho_b[left2]) +
-                 c4*(Avx[right4]*rho_b[right4] -Avx[left3]*rho_b[left3]))/dx;
+                 HIGH_ORDER(c3*(Avx[right3]*rho_b[right3] -Avx[left2]*rho_b[left2])) +
+                 HIGH_ORDER(c4*(Avx[right4]*rho_b[right4] -Avx[left3]*rho_b[left3])))/dx;
 
   float DzmAVz= (c1*(Avz[center]*rho_b[center] -Avz[above]*rho_b[above]) +
                  c2*(Avz[below]*rho_b[below] -Avz[above2]*rho_b[above2])+
-               c3*(Avz[below2]*rho_b[below2] -Avz[above3]*rho_b[above3]) +
-               c4*(Avz[below3]*rho_b[below3] -Avz[above4]*rho_b[above4]))/dz;
+               HIGH_ORDER(c3*(Avz[below2]*rho_b[below2] -Avz[above3]*rho_b[above3])) +
+               HIGH_ORDER(c4*(Avz[below3]*rho_b[below3] -Avz[above4]*rho_b[above4])))/dz;
 
   Ataux[center]+= - dt * ((dxpml[center])*Ataux[center] + DxpAVx);
   Atauz[center]+= - dt * ((dzpml[center])*Atauz[center] + DzmAVz);
     
     float DzpAvx= (c1*(Avx[below]*rho_b[below] - Avx[center]*rho_b[center]) +
                     c2*(Avx[below2]*rho_b[below2] -Avx[above]*rho_b[above])+
-                   c3*(Avx[below3]*rho_b[below3] -Avx[above2]*rho_b[above2]) +
-                   c4*(Avx[below4]*rho_b[below4] -Avx[above3]*rho_b[above3]))/dz;
+                   HIGH_ORDER(c3*(Avx[below3]*rho_b[below3] -Avx[above2]*rho_b[above2])) +
+                   HIGH_ORDER(c4*(Avx[below4]*rho_b[below4] -Avx[above3]*rho_b[above3])))/dz;
 
       float DxmAvz= (c1*(Avz[center]*rho_b[center] - Avz[left]*rho_b[left]) +
                     c2*(Avz[right]*rho_b[right] - Avz[left2]*rho_b[left2])+
-                    c3*(Avz[right2]*rho_b[right2] - Avz[left3]*rho_b[left3]) +
-                    c4*(Avz[right3]*rho_b[right3] - Avz[left4]*rho_b[left4]))/dx;
+                    HIGH_ORDER(c3*(Avz[right2]*rho_b[right2] - Avz[left3]*rho_b[left3])) +
+                    HIGH_ORDER(c4*(Avz[right3]*rho_b[right3] - Avz[left4]*rho_b[left4])))/dx;
 
       Atauxz[center]+= - dt*(((dxpml[center] + dzpml[center]) *Atauxz[center]) + (DzpAvx +  DxmAvz));
 
@@ -431,36 +452,36 @@ __kernel void Adj_update_v(__global float *Avx, __global float *Avz,
 
 float DxmAtaux =  (c1*((lam[center]+2*mu[center])*Ataux[center] - (lam[left]+2*mu[left])*Ataux[left]) +
                      c2*((lam[right]+2*mu[right])*Ataux[right] - (lam[left2]+2*mu[left2])*Ataux[left2])+
-                    c3*((lam[right2]+2*mu[right2])*Ataux[right2] - (lam[left3]+2*mu[left3])*Ataux[left3]) +
-                     c4*((lam[right3]+2*mu[right3])*Ataux[right3] -(lam[left4]+2*mu[left4])*Ataux[left4]))/dx;
+                    HIGH_ORDER(c3*((lam[right2]+2*mu[right2])*Ataux[right2] - (lam[left3]+2*mu[left3])*Ataux[left3])) +
+                     HIGH_ORDER(c4*((lam[right3]+2*mu[right3])*Ataux[right3] -(lam[left4]+2*mu[left4])*Ataux[left4])))/dx;
 
   float DxmAtauz = (c1*(lam[center]*Atauz[center] - lam[left]*Atauz[left]) + 
                     c2*(lam[right]*Atauz[right] - lam[left2]*Atauz[left2]) +
-                    c3*(lam[right2]*Atauz[right2] - lam[left3]*Atauz[left3]) + 
-                    c4*(lam[right3]*Atauz[right3] - lam[left4]*Atauz[left4]))/dx;
+                    HIGH_ORDER(c3*(lam[right2]*Atauz[right2] - lam[left3]*Atauz[left3])) + 
+                    HIGH_ORDER(c4*(lam[right3]*Atauz[right3] - lam[left4]*Atauz[left4])))/dx;
 
   float DzmAtauxz=  (c1*(mu[center]*Atauxz[center] -mu[above]*Atauxz[above]) + 
                     c2*(mu[below]*Atauxz[below] - mu[above2]*Atauxz[above2])+
-                    c3*(mu[below2]*Atauxz[below2] -mu[above3]*Atauxz[above3]) + 
-                    c4*(mu[below3]*Atauxz[below3] - mu[above4]*Atauxz[above4]))/dz;
+                    HIGH_ORDER(c3*(mu[below2]*Atauxz[below2] -mu[above3]*Atauxz[above3])) + 
+                    HIGH_ORDER(c4*(mu[below3]*Atauxz[below3] - mu[above4]*Atauxz[above4])))/dz;
 
 
 
   float DzpAtauz =(c1*((lam[below]+2*mu[below])*Atauz[below] -(lam[center]+2*mu[center])*Atauz[center]) +
                    c2*((lam[below2]+2*mu[below2])*Atauz[below2] -(lam[above]+2*mu[above])*Atauz[above])+
-                   c3*((lam[below3]+2*mu[below3])*Atauz[below3] -(lam[above2]+2*mu[above2])*Atauz[above2]) +
-                   c4*((lam[below4]+2*mu[below4])*Atauz[below4] -(lam[above3]+2*mu[above3])*Atauz[above3]))/dz;
+                   HIGH_ORDER(c3*((lam[below3]+2*mu[below3])*Atauz[below3] -(lam[above2]+2*mu[above2])*Atauz[above2])) +
+                   HIGH_ORDER(c4*((lam[below4]+2*mu[below4])*Atauz[below4] -(lam[above3]+2*mu[above3])*Atauz[above3])))/dz;
 
   float DzpAtaux = (c1*(lam[below]*Ataux[below] -lam[center]*Ataux[center]) + 
                     c2*(lam[below2]*Ataux[below2] -lam[above]*Ataux[above])+
-                    c3*(lam[below3]*Ataux[below3]-lam[above2]*Ataux[above2]) + 
-                    c4*(lam[below4]*Ataux[below4]-lam[above3]*Ataux[above3]))/dz;
+                    HIGH_ORDER(c3*(lam[below3]*Ataux[below3]-lam[above2]*Ataux[above2])) + 
+                    HIGH_ORDER(c4*(lam[below4]*Ataux[below4]-lam[above3]*Ataux[above3])))/dz;
 
   
   float DxpAtauxz= (c1*(mu[right] *Atauxz[right] - mu[center]*Atauxz[center]) +
                     c2*(mu[right2]*Atauxz[right2] - mu[left]*Atauxz[left])+
-                    c3*(mu[right3]*Atauxz[right3] - mu[left2]*Atauxz[left2]) + 
-                    c4*(mu[right4]*Atauxz[right4] - mu[left3]*Atauxz[left3]))/dx;
+                    HIGH_ORDER(c3*(mu[right3]*Atauxz[right3] - mu[left2]*Atauxz[left2])) + 
+                    HIGH_ORDER(c4*(mu[right4]*Atauxz[right4] - mu[left3]*Atauxz[left3])))/dx;
 
   Avx[center]+= -dt* ((2*dxpml[center] + dzpml[center]) * Avx[center] + (DxmAtaux + DxmAtauz + DzmAtauxz));
   Avz[center]+= -dt* ((dxpml[center] + 2*dzpml[center]) * Avz[center] + (DzpAtaux + DzpAtauz + DxpAtauxz));
@@ -483,28 +504,28 @@ __kernel void Grad(__global float *vx, __global float *vz,
   if(i>Nz-sdo - npml || j>Nx-sdo - npml){return;}
 
   float DzpVx= (c1*(vz[below]-vz[center]) + c2*(vz[below2]-vz[above])+
-               c3*(vz[below3]-vz[above2]) + c4*(vz[below4]-vz[above3]))/dz;
+               HIGH_ORDER(c3*(vz[below3]-vz[above2])) + HIGH_ORDER(c4*(vz[below4]-vz[above3])))/dz;
 
   float DxmVz= (c1*(vz[center]-vz[left]) + c2*(vz[right]-vz[left2])+
-               c3*(vz[right2]-vz[left3]) + c4*(vz[right3]-vz[left4]))/dx;
+               HIGH_ORDER(c3*(vz[right2]-vz[left3])) + HIGH_ORDER(c4*(vz[right3]-vz[left4])))/dx;
 
   float DxpVx= (c1*(vx[right]-vx[center]) + c2*(vx[right2]-vx[left])+
-               c3*(vx[right3]-vx[left2]) + c4*(vx[right4]-vx[left3]))/dx;
+               HIGH_ORDER(c3*(vx[right3]-vx[left2])) + HIGH_ORDER(c4*(vx[right4]-vx[left3])))/dx;
 
   float DzmVz= (c1*(vz[center]-vz[above]) + c2*(vz[below]-vz[above2])+
-               c3*(vz[below2]-vz[above3]) + c4*(vz[below3]-vz[above4]))/dz;    
+               HIGH_ORDER(c3*(vz[below2]-vz[above3])) + HIGH_ORDER(c4*(vz[below3]-vz[above4])))/dz;    
 
   float DzpPz= (c1*(tauz[below]-tauz[center]) + c2*(tauz[below2]-tauz[above])+
-               c3*(tauz[below3]-tauz[above2]) + c4*(tauz[below4]-tauz[above3]))/dz;
+               HIGH_ORDER(c3*(tauz[below3]-tauz[above2])) + HIGH_ORDER(c4*(tauz[below4]-tauz[above3])))/dz;
 
   float DxmPx= (c1*(taux[center]-taux[left]) + c2*(taux[right]-taux[left2])+
-               c3*(taux[right2]-taux[left3]) + c4*(taux[right3]-taux[left4]))/dx;
+               HIGH_ORDER(c3*(taux[right2]-taux[left3])) + HIGH_ORDER(c4*(taux[right3]-taux[left4])))/dx;
 
   float DxpPxz= (c1*(tauxz[right]-tauxz[center]) + c2*(tauxz[right2]-tauxz[left])+
-               c3*(tauxz[right3]-tauxz[left2]) + c4*(tauxz[right4]-tauxz[left3]))/dx;
+               HIGH_ORDER(c3*(tauxz[right3]-tauxz[left2])) + HIGH_ORDER(c4*(tauxz[right4]-tauxz[left3])))/dx;
 
   float DzmPxz= (c1*(tauxz[center]-tauxz[above]) + c2*(tauxz[below]-tauxz[above2])+
-               c3*(tauxz[below2]-tauxz[above3]) + c4*(tauxz[below3]-tauxz[above4]))/dz;
+               HIGH_ORDER(c3*(tauxz[below2]-tauxz[above3])) + HIGH_ORDER(c4*(tauxz[below3]-tauxz[above4])))/dz;
 
 
   Gmu[center]+= 2*dt*(Ataux[center]*DxpVx + Atauz[center]*DzmVz) + dt*Atauxz[center]*(DzpVx+DxmVz);

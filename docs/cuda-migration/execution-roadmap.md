@@ -516,6 +516,18 @@ CUDA comes in as an option; the default stays `opencl`.
   characterisation stays bit for bit); `test/helpers.py:active_source` lets the static known-bug test
   read the branch of each mode. With `acq_type=0` the `vz` seismogram was a copy of `vx`; in `fixed` it
   records `vz`, so it and everything that depends on it (components 2 and 4) change completely.
+- **Result (part 3, bounds):** in `fixed`, `HIGH_ORDER(term)` drops the zero-coefficient `c3`/`c4`
+  terms of order 4 (they read up to 4 cells away; in `legacy` the macro gives back the same tokens)
+  and the five receiver loops are bounded (`n_extera_rec` in the right well of `elastic.cl`, `Nr` in
+  the crosswell kernels). Checked with the C preprocessor: the `legacy` code of the three files is
+  token for token that of 0.1.10 in both orders. In `fixed` nothing is written outside a buffer and
+  every receiver loop is bounded (known-bug tests). Tried and **rejected**: the stencil bound
+  `i >= Nz - sdo` (no read of row `Nz`). It froze the last row inside the absorbing layer, and the
+  mathematical baseline got worse (boundary reflection 1.09 % → 1.23 %, gradient against finite
+  differences 31 % → 38 %), so both modes keep reading the zero margin as the outer boundary until
+  Phase 3 brings explicit halo cells. MAT in `fixed` now: gradient error 31.2 % (as `legacy`),
+  reflection 1.09 % (1.08 %), analytic correlation 0.9979 (0.9987: from the full `dt` combined with
+  the impulse-train source injection, the next part).
 
 ### 2.5 API contract on CUDA
 

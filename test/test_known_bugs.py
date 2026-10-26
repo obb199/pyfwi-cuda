@@ -24,9 +24,9 @@ and must pass everywhere else.
 
 | Test | Bug | Fixed in roadmap step |
 | --- | --- | --- |
-| ``test_stencils_do_not_read_outside_buffers`` | stencils read past the end / before the start of the field buffers (inside the allocation since 1.7) | 2.4 |
-| ``test_kernels_do_not_write_outside_buffers`` | crosswell and right-well ``Adj_injSrc`` accumulate past the end of the adjoint fields | 2.4 |
-| ``test_receiver_loops_bound_the_receiver_index`` | 5 receiver loops have no bound on the receiver index | 2.4 |
+| ``test_stencils_do_not_read_outside_buffers`` | stencils read past the end / before the start of the field buffers (inside the allocation since 1.7; the reads before the start go in the ``fixed`` mode) | Phase 3 (halo cells) |
+| ``test_kernels_do_not_write_outside_buffers`` | crosswell and right-well ``Adj_injSrc`` accumulate past the end of the adjoint fields | 2.4 (``fixed`` mode) |
+| ``test_receiver_loops_bound_the_receiver_index`` | 5 receiver loops have no bound on the receiver index | 2.4 (``fixed`` mode) |
 | ``test_default_geometry_is_deterministic`` | race conditions at source/receiver coincidences (non-strict: probabilistic) | 3.4 |
 | ``test_chpr_zero_gives_the_checkpointed_gradient`` | ``chpr=0`` (the default) rebuilds the field backwards through the PML: wrong gradient | 4.2 |
 | ``test_lbfgs_iterates_with_physically_scaled_data`` | absolute ``pgtol = 1e-8``: L-BFGS stops at iteration 0 on realistic data | 2.4 |
@@ -136,45 +136,58 @@ def _filled_outside_buffers(monkeypatch, fill):
         yield lambda W: W.margins_changed()
 
 
-@pytest.mark.xfail(strict=True, reason="the stencils read outside the field buffers (row Nz, and i-3 with i=2): "
-                                       "with NaN there, the outputs become NaN (step 1.7 keeps these reads inside "
-                                       "the allocation, the fixed mode of step 2.4 removes them)")
-def test_stencils_do_not_read_outside_buffers(opencl_platform, monkeypatch):
+@pytest.mark.xfail(strict=True, reason="the stencils read one row past the field edges (row Nz), in both "
+                                       "numeric modes: that zero margin is the outer boundary of the grid")
+@pytest.mark.parametrize("numerics", ["legacy", "fixed"])
+def test_stencils_do_not_read_outside_buffers(opencl_platform, monkeypatch, numerics):
+    # 0.1.10: the stencils read outside the field buffers (row Nz, and i-3 with i=2): with NaN there,
+    # the outputs become NaN. Step 1.7 keeps these reads inside the allocation, where they read 0.
+    # The fixed mode of step 2.4 drops the zero-coefficient terms of order 4 (the reads before the
+    # start) but keeps the read of row Nz: not updating the last row instead changes the outer
+    # boundary and worsens the absorbing layer (measured: reflection 1.09 % -> 1.23 %, gradient
+    # error against finite differences 31 % -> 38 %). Explicit halo cells come with Phase 3.
     with _filled_outside_buffers(monkeypatch, np.nan):
-        case = tiny_case()
+        case = tiny_case(inpa_extra={"numerics": numerics})
         d_obs, grad = forward_and_gradient(case)
     assert all(np.isfinite(v).all() for v in d_obs.values()), "seismogram has NaN: read past a buffer"
     assert all(np.isfinite(v).all() for v in grad.values()), "gradient has NaN: read past a buffer"
 
 
-@pytest.mark.parametrize("acq_type", [
-    pytest.param(0, marks=pytest.mark.xfail(strict=True, reason="Adj_injSrc of elastic_crosswell.cl has no receiver "
-                                                                "bound: it reads past the residual and accumulates "
-                                                                "past the end of the adjoint fields")),
-    1,  # the surface branches are bounded: no out-of-bounds write
-    pytest.param(2, marks=pytest.mark.xfail(strict=True, reason="the right-well branch of Adj_injSrc in elastic.cl "
-                                                                "has no receiver bound")),
-])
-def test_kernels_do_not_write_outside_buffers(opencl_platform, monkeypatch, acq_type):
+#: Acquisitions and numeric modes of the write test: in the legacy mode the crosswell and the right
+#: well of the combined acquisition write outside the buffers, as 0.1.10 does; the fixed mode never.
+_LEGACY_WRITES = pytest.mark.xfail(strict=True, reason="Adj_injSrc has no receiver bound in the crosswell kernels "
+                                                       "and in the right well of elastic.cl: it reads past the "
+                                                       "residual and accumulates past the adjoint fields")
+WRITE_CASES = [pytest.param(0, "legacy", marks=_LEGACY_WRITES), (1, "legacy"),
+               pytest.param(2, "legacy", marks=_LEGACY_WRITES)]
+WRITE_CASES += [pytest.param(acq, "fixed", marks=pytest.mark.xfail(condition=REFERENCE and acq != 1, strict=True,
+                                                                   reason="0.1.10 has no fixed mode"))
+                for acq in (0, 1, 2)]
+
+
+@pytest.mark.parametrize("acq_type, numerics", WRITE_CASES)
+def test_kernels_do_not_write_outside_buffers(opencl_platform, monkeypatch, acq_type, numerics):
     # 1.0 outside the buffers: a write, or an accumulation of a value read out of bounds, changes it.
     with _filled_outside_buffers(monkeypatch, 1.0) as written_outside:
-        case = tiny_case(acq_type=acq_type, components=4)
+        case = tiny_case(acq_type=acq_type, components=4, inpa_extra={"numerics": numerics})
         forward_and_gradient(case)
     touched = written_outside(case.W)
     assert not touched, f"written outside {len(touched)} buffer(s): {touched}"
 
 
-@pytest.mark.xfail(strict=True, reason="elastic.cl lines 89 and 352 and elastic_crosswell.cl lines 24, 48 and 71 "
-                                       "loop over every grid row without bounding the receiver index")
-def test_receiver_loops_bound_the_receiver_index():
+@pytest.mark.parametrize("numerics", NUMERIC_MODES)
+def test_receiver_loops_bound_the_receiver_index(numerics):
+    # 0.1.10: elastic.cl lines 89 and 352 and elastic_crosswell.cl lines 24, 48 and 71 loop over every
+    # grid row without bounding the receiver index (the fork keeps them in the legacy branch).
     # A receiver loop is a kernel branch 'if (i % dxr == 0 && ...)' or 'if (j % dxr == 0 && ...)'.
     # Its receiver index i/dxr (or ir) must be compared with the number of receivers, either in
     # the condition or in the next two lines; otherwise grid rows beyond the last receiver are
     # recorded into the following time sample and injected from past the end of the residual.
+    import PyFWI
     unbounded = []
     for name in ("elastic.cl", "elastic_crosswell.cl", "elastic_surface.cl"):
-        with open(os.path.join(REPO, "src", "PyFWI", name)) as f:
-            lines = f.read().splitlines()
+        with open(os.path.join(os.path.dirname(PyFWI.__file__), name)) as f:
+            lines = active_source(f.read(), fixed=numerics == "fixed").splitlines()
         for k, line in enumerate(lines):
             if re.search(r"if\s*\(.*dxr\s*==\s*0", line):
                 window = "\n".join(lines[k:k + 3])

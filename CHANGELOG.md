@@ -54,6 +54,12 @@ how much and in which numeric mode.
 - In the `fixed` mode the crosswell kernels record `vz` in the `vz` seismogram; 0.1.10 (and the
   `legacy` mode) recorded `vx` there, so with `acq_type=0` the `vz` data, and the misfit and
   gradient of components 2 and 4, are a different quantity in `fixed`.
+- In the `fixed` mode the kernels no longer access memory outside their buffers, except one row past
+  the field edges: the order-4 stencils skip their zero-coefficient terms (which read up to 4 cells
+  away) and the receiver loops stop at the last receiver (they read past the residual and wrote past
+  the adjoint fields). No numerical change beyond rounding, since those reads returned zeros from the
+  margins of step 1.7. The read of the row past the edge stays in both modes: that zero margin is the
+  outer boundary, and not updating the last row instead worsened the absorbing layer.
 
 ## [0.1.11] - 2026-10-25
 

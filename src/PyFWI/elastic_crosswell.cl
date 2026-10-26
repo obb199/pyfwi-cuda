@@ -21,7 +21,11 @@ __kernel void injSrc(__global float *vx,__global float *vz,
 
   }
 
-   if(i%dxr==0 && j == rec_top_right_const){
+#ifdef PYFWI_FIXED
+   if(i%dxr==0 && j == rec_top_right_const && i/dxr<Nr){
+#else
+   if(i%dxr==0 && j == rec_top_right_const){  // 0.1.10: no bound on the receiver index
+#endif
     int ir =  i/dxr;
       seismogram_vxi[nt * Nr + ir]  =  vx[(i+rec_top_right_var)*Nx + j];
 #ifdef PYFWI_FIXED
@@ -49,7 +53,11 @@ __kernel void Adj_injSrc(
   int i = get_global_id(0) ;
   int j = get_global_id(1) ;
 
-if(i%dxr==0 && j == rec_top_right_const){
+#ifdef PYFWI_FIXED
+if(i%dxr==0 && j == rec_top_right_const && i/dxr<Nr){
+#else
+if(i%dxr==0 && j == rec_top_right_const){  // 0.1.10: no bound on the receiver index
+#endif
     int ir =  i/dxr;
     Avx[(i+rec_top_right_var)*Nx + j] += res_vx[ir];
     Avz[(i+rec_top_right_var)*Nx + j] += res_vz[ir];
@@ -72,7 +80,11 @@ __kernel void hessian_seismogram(__global float *vx,__global float *vz,
   int i = get_global_id(0) ;
   int j = get_global_id(1) ;
 
-   if(i%dxr==0 && j == recDepth){
+#ifdef PYFWI_FIXED
+   if(i%dxr==0 && j == recDepth && i/dxr<Nr){
+#else
+   if(i%dxr==0 && j == recDepth){  // 0.1.10: no bound on the receiver index
+#endif
     int ir =  i/dxr;
       seismogram_vxi[ir]  =  vx[(i+first_rec)*Nx + j];
 #ifdef PYFWI_FIXED
