@@ -161,7 +161,7 @@ def test_receiver_table_follows_the_loops_of_the_opencl_kernels():
     assert cells[2] == -1 and first[2] == 0
 
 
-def _native_engine(nt_ext=NT_EXT, batch=1, ns=NS, budget=0, chpr=30, boundary_width=None):
+def _native_engine(nt_ext=NT_EXT, batch=1, ns=NS, budget=0, chpr=30, boundary_width=None, fp16=False):
     """An engine on the fake backend with a native program and a receiver table (step 3.4), running
     ``batch`` shots at once (step 3.9). A third shot, when ``ns`` is 3, has its source on cell (2, 2);
     ``budget``: bytes of checkpoints on the device (step 3.8); ``boundary_width``: boundary saving
@@ -175,7 +175,7 @@ def _native_engine(nt_ext=NT_EXT, batch=1, ns=NS, budget=0, chpr=30, boundary_wi
     engine = PropagationEngine(backend, sources, "surface", tnz=TNZ, tnx=TNX, ns=ns, nr=NR, nt=NT, nt_ext=nt_ext,
                                dt_scale=DT_SCALE, chp=checkpoint_steps(chpr, NT), dxr=np.int32(1), srcx=srcx,
                                srcz=srcz, source=source, rec_top_right_var=0, numerics="fixed", receivers=table,
-                               batch=batch, boundary_width=boundary_width)
+                               batch=batch, boundary_width=boundary_width, fp16=fp16)
     field = np.ones((TNZ, TNX), np.float32)
     engine.set_pml(0 * field, 0 * field)
     engine.set_model(RHO_INVERSE * field, MU * field, LAM * field)
@@ -439,6 +439,67 @@ def test_boundary_saving_needs_native_kernels_and_memory():
     field = np.ones((TNZ, TNX), np.float32)
     with pytest.raises(ValueError, match="region without absorbing layer"):
         engine.set_pml(field, field)
+
+
+def test_fp16_scales():
+    # Step 4.3: the largest injected sample, in stress units, becomes FP16_PEAK; the velocities take
+    # impedance times the scale of the stresses.
+    from PyFWI.engine.propagation import FP16_PEAK, _scale_of, fp16_scales, power_of_two
+    assert fp16_scales(0.0, 2.0, 128.0) == (FP16_PEAK / 2.0, FP16_PEAK / 2.0 * 128.0)
+    assert fp16_scales(1.0, 2.0, 128.0) == (FP16_PEAK / 128.0, FP16_PEAK)  # the velocity sample dominates
+    assert fp16_scales(0.0, 3.0, 128.0)[0] == 4.0  # 16 / 3 rounded to a power of two
+    assert fp16_scales(0.0, 0.0, 8.0) == (1.0, 8.0)
+    assert [power_of_two(v) for v in (1.0, 3.0, 0.3, 1e6)] == [1.0, 4.0, 0.25, 2.0 ** 20]
+    assert [_scale_of(n) for n in ("vx_b", "tauxz_b", "avz_b", "ataux_b")] == ["v", "tau", "av", "atau"]
+
+
+@pytest.mark.parametrize("batch", [1, 2])
+def test_fp16_storage_and_scales(batch):
+    # Step 4.3 on the fake backend: half-precision fields, adjoint fields and checkpoints (half the bytes),
+    # float32 gradients, the model scaled by the impedance, the source and the residual by the scales, the
+    # seismograms, fields and gradients brought back to physical units, an overflow reported.
+    from PyFWI.engine.propagation import FP16_PEAK
+    engine, _ = _native_engine(batch=batch, budget=1 << 30, fp16=True)
+    single, _ = _native_engine(batch=batch, budget=1 << 30)
+    assert engine.vx_b.dtype == np.float16 and engine.backend.nbytes(engine.vx_b) == single.backend.nbytes(single.vx_b) // 2
+    assert engine._device_checkpoints.dtype == np.float16
+    field = np.ones((TNZ, TNX), np.float32)
+    # The impedance of the model, sqrt((lambda + 2 mu) / (1 / rho)) = sqrt(8), as a power of two (log2 = 1.5,
+    # rounded half to even: 2), and 1 / rho times it.
+    assert engine.impedance == 4.0 and engine.rho_b[0] == pytest.approx(engine.impedance)
+    seismogram = engine.forward()
+    steps = np.abs(engine.source_steps[:, :4])  # the toy source: the same samples in every component
+    peak = max(steps[:, 2:].max(), engine.impedance * steps[:, :2].max())  # in stress units
+    assert engine.scales["tau"] == 2.0 ** round(np.log2(FP16_PEAK / peak))
+    assert engine.scales["v"] == pytest.approx(engine.scales["tau"] * engine.impedance)
+    recorded = np.empty(NT_EXT * NR, np.float32)
+    engine.backend.to_host(recorded, engine.backend.section(engine.seismogramid_vx_b, 0, NT_EXT * NR * 4))
+    np.testing.assert_allclose(seismogram["vx"][:, :, 0].reshape(-1), recorded / engine.scales["v"], rtol=1e-6)
+    host = engine.read_field("vx_b", np.empty((TNZ, TNX), np.float32))
+    assert host.dtype == np.float32
+    np.testing.assert_allclose(host * engine.scales["v"], engine.backend.section(
+        engine.vx_b, engine._last_slot * engine._stride * 2, engine._plane * 2).reshape(TNZ, TNX), rtol=1e-3)
+    assert engine.checkpoints["vx"].dtype == np.float16
+    engine.prepare_gradient()
+    assert engine.Gmu_b.dtype == np.float32 and engine.avx_b.dtype == np.float16
+    res = residual()
+    engine.gradient(res)
+    assert engine.scales["atau"] == pytest.approx(engine.scales["av"] * engine.impedance)
+    largest = max(np.abs(res[par]).max() for par in COMPONENTS)  # every component: in the stresses here
+    assert engine.scales["av"] == 2.0 ** round(np.log2(FP16_PEAK / (engine.impedance * largest)))
+    raw = np.empty((TNZ, TNX), np.float32)
+    engine.backend.to_host(raw, engine.backend.section(engine.Gmu_b, 0, engine._plane * 4))
+    g_mu = engine.read_gradient()[0]
+    np.testing.assert_allclose(g_mu, raw / (engine.scales["atau"] * engine.scales["v"]), rtol=1e-6)
+    with pytest.raises(FloatingPointError, match="half-precision fields overflowed"):
+        engine._unscaled("vx", np.array([np.inf], np.float32))
+    with pytest.raises(ValueError, match="FP16 mode needs the native CUDA kernels"):
+        from PyFWI.engine.propagation import PropagationEngine, checkpoint_steps
+        PropagationEngine(FakeBackend(nr=NR, tnz=TNZ, tnx=TNX), {"elastic": "e", "crosswell": "c", "surface": "s"},
+                          "surface", tnz=TNZ, tnx=TNX, ns=NS, nr=NR, nt=NT, nt_ext=NT_EXT, dt_scale=DT_SCALE,
+                          chp=checkpoint_steps(30, NT), dxr=np.int32(1), srcx=SRCX, srcz=SRCZ, source=source,
+                          rec_top_right_var=0, numerics="fixed", fp16=True)
+    del field
 
 
 def test_shot_batch():

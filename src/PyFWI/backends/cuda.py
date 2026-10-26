@@ -237,9 +237,10 @@ class CUDABackend:
         return allocation[margin_bytes // itemsize:(margin_bytes + host.nbytes) // itemsize], allocation
 
     @staticmethod
-    def allocate_empty(nbytes):
-        """A device buffer of ``nbytes`` bytes (float32 values), content undefined."""
-        return cp.empty(nbytes // 4, dtype=np.float32)
+    def allocate_empty(nbytes, dtype=np.float32):
+        """A device buffer of ``nbytes`` bytes of ``dtype`` values (float16 for the FP16 fields of step 4.3),
+        content undefined."""
+        return cp.empty(nbytes // np.dtype(dtype).itemsize, dtype=dtype)
 
     @staticmethod
     def nbytes(buffer):

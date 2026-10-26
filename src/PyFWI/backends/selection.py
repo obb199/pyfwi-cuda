@@ -305,6 +305,36 @@ def select_boundary_saving(environ=None):
     return value == "1"
 
 
+#: Step 4.3: the environment variable of the FP16 mode, an opt-in feature of Phase 4.
+FP16 = "PYFWI_FP16"
+
+
+def select_fp16(environ=None):
+    """True when ``PYFWI_FP16`` is ``1``: the native kernels store the fields in half precision, scaled
+    (``PyFWI.engine.propagation.fp16_scales``).
+
+    Parameters
+    ----------
+    environ : mapping, optional
+        Where the variable is read; ``os.environ`` by default.
+
+    Returns
+    -------
+    bool
+        False when the variable is unset, empty or ``0`` (the default: float32).
+
+    Raises
+    ------
+    ValueError
+        Another value.
+    """
+    environ = os.environ if environ is None else environ
+    value = str(environ.get(FP16, "")).strip()
+    if value not in ("", "0", "1"):
+        raise ValueError(f"{FP16} must be 0 or 1, not {value!r}")
+    return value == "1"
+
+
 #: Kernel sets of the CUDA backend (Phase 3): ``native``, the CUDA kernels of ``PyFWI/kernels/elastic.cu``
 #: (fixed mode only), and ``parity``, the OpenCL files compiled for CUDA (step 2.3).
 CUDA_KERNELS = ("native", "parity")

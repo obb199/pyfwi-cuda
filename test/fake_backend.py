@@ -116,16 +116,17 @@ class FakeBackend:
 
     # memory
     def allocate(self, host, margin_bytes, fill):
-        host = np.ascontiguousarray(host, dtype=np.float32)
-        whole = np.full(2 * margin_bytes // 4 + host.size, fill, np.float32)
-        start = margin_bytes // 4
+        host = np.ascontiguousarray(host)
+        host = host if host.dtype == np.float16 else host.astype(np.float32)  # float16: the FP16 fields
+        whole = np.full(2 * margin_bytes // host.itemsize + host.size, fill, host.dtype)
+        start = margin_bytes // host.itemsize
         whole[start:start + host.size] = host.reshape(-1)
         self.log.append(("allocate", host.nbytes))
         return whole[start:start + host.size], whole
 
-    def allocate_empty(self, nbytes):
+    def allocate_empty(self, nbytes, dtype=np.float32):
         self.log.append(("allocate", nbytes))
-        return np.empty(nbytes // 4, np.float32)
+        return np.empty(nbytes // np.dtype(dtype).itemsize, dtype)
 
     @staticmethod
     def nbytes(buffer):
@@ -137,7 +138,7 @@ class FakeBackend:
         if host.dtype.kind in "iu":  # an integer table: its bytes, as a device copy does
             buffer.view(host.dtype)[:host.size] = host.reshape(-1)
         else:
-            buffer[:] = host.astype(np.float32).reshape(-1)
+            buffer[:] = host.astype(buffer.dtype).reshape(-1)
         self.log.append(("to_device", blocking))
         return FakeEvent()
 
@@ -151,10 +152,10 @@ class FakeBackend:
 
     @staticmethod
     def section(buffer, offset, nbytes):
-        return buffer[offset // 4:(offset + nbytes) // 4]
+        return buffer[offset // buffer.itemsize:(offset + nbytes) // buffer.itemsize]
 
     def copy(self, target, source, nbytes, offset=0):
-        target[:nbytes // 4] = source[offset // 4:(offset + nbytes) // 4]
+        target[:nbytes // target.itemsize] = source[offset // source.itemsize:(offset + nbytes) // source.itemsize]
         self.log.append(("copy", offset))
 
     def wait(self, events):

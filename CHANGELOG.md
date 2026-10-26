@@ -23,6 +23,13 @@ how much and in which numeric mode.
   (medium scenario: 192 MB instead of 2.3 GB); the real medium scenario runs its 8 shots on the GPU in
   2.4 GB instead of 9.8 GB, with a 1.8× faster forward modelling.
 
+- `PYFWI_FP16=1` (step 4.3, off by default, CUDA `fixed` mode): the fields are stored in half precision,
+  scaled by powers of two, the arithmetic staying float32: half the memory for the fields, checkpoints and
+  stored bands, 1.26× to 1.43× faster on the medium and large scenarios, seismograms within 44 to 57 dB and
+  gradients within 33 to 46 dB of float32. Not for inversions: the rounding error (about 60 dB below the
+  peak of the fields) drowns the late, attenuated part of long recordings and makes the misfit too rough
+  for the line search of the optimisers.
+
 ### Changed
 
 - The cost function no longer deep-copies its inputs three times (same values).

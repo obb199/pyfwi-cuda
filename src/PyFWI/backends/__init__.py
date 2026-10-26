@@ -10,7 +10,7 @@ Every backend offers the same small interface:
 ``allocate(host, margin_bytes, fill)``      device buffer holding ``host``, inside an allocation
                                             ``[margin | data | margin]`` whose margins hold ``fill``;
                                             returns ``(buffer, allocation)``
-``allocate_empty(nbytes)``                  device buffer without margins, content undefined
+``allocate_empty(nbytes, dtype)``           device buffer without margins, content undefined
 ``nbytes(buffer)``                          size of a buffer in bytes
 ``alignment``                               bytes to which a buffer inside an allocation must be aligned
 ``to_device(buffer, host, blocking=True)``  copy host -> device; returns an event

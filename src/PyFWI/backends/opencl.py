@@ -97,8 +97,9 @@ class OpenCLBackend:
         cl.enqueue_copy(self.queue, allocation, whole)
         return allocation.get_sub_region(margin_bytes, host.nbytes), allocation
 
-    def allocate_empty(self, nbytes):
-        """A device buffer of ``nbytes`` bytes, without margins; its content is undefined."""
+    def allocate_empty(self, nbytes, dtype=None):
+        """A device buffer of ``nbytes`` bytes, without margins; its content is undefined. ``dtype`` is not
+        used: an OpenCL buffer is bytes (the CUDA backend types its buffers)."""
         return cl.Buffer(self.context, cl.mem_flags.READ_WRITE, nbytes)
 
     @staticmethod

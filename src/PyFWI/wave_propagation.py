@@ -8,7 +8,8 @@ from PyFWI import _device_arrays as device
 
 import PyFWI.fwi_tools as tools
 from PyFWI.backends.opencl import OpenCLBackend
-from PyFWI.backends.selection import select_backend, select_boundary_saving, select_cuda_kernels, select_numerics
+from PyFWI.backends.selection import (select_backend, select_boundary_saving, select_cuda_kernels, select_fp16,
+                                      select_numerics)
 from PyFWI.engine.propagation import PropagationEngine, checkpoint_steps, receiver_table
 import PyFWI._info as _info
 from PyFWI.fwi_tools import expand_model
@@ -184,6 +185,12 @@ class WavePreparation:
         if self.boundary_saving and self.cuda_kernels != "native":
             raise ValueError("PYFWI_BOUNDARY_SAVING=1 needs the native CUDA kernels: the CUDA backend in the fixed "
                              "numeric mode (PyFWI.info() says what runs)")
+        # The FP16 mode (step 4.3 of the fork, PYFWI_FP16=1): the fields in half precision, scaled; with the
+        # native kernels only.
+        self.fp16 = select_fp16()
+        if self.fp16 and self.cuda_kernels != "native":
+            raise ValueError("PYFWI_FP16=1 needs the native CUDA kernels: the CUDA backend in the fixed numeric mode "
+                             "(PyFWI.info() says what runs)")
 
         # The time loops, the device buffers (with margins), the kernels and the checkpoints live in
         # the engine (step 2.1 of the fork, PyFWI.engine.propagation); its attributes (W.vx_b,
@@ -205,7 +212,7 @@ class WavePreparation:
             injection, tnz=self.tnz, tnx=self.tnx, ns=self.ns, nr=self.nr, nt=self.nt, nt_ext=self.nt_ext,
             dt_scale=self.dt_scale, chp=self.chp, dxr=self.dxr, srcx=self.srcx, srcz=self.srcz, source=self.src,
             rec_top_right_var=self.rec_top_right_var, numerics=self.numerics, receivers=receivers,
-            boundary_width=int(self.sdo) if self.boundary_saving else None)
+            boundary_width=int(self.sdo) if self.boundary_saving else None, fp16=self.fp16)
         if self.boundary_saving:
             self.chp, self.nchp = self._engine.chp, self._engine.nchp  # the last step only: the gradient starts there
 
@@ -320,7 +327,8 @@ class WavePreparation:
         Used by ``__init__`` when the CUDA backend runs the fixed mode (``self.cuda_kernels``).
         """
         with open(os.path.join(os.path.dirname(__file__), "kernels", "elastic.cu")) as f:
-            return WavePreparation.kernel_defines(self) + f.read()
+            fp16 = "#define PYFWI_FP16\n" if getattr(self, "fp16", False) else ""  # step 4.3: half-precision fields
+            return WavePreparation.kernel_defines(self) + fp16 + f.read()
 
     def kernel_caller(self):
         '''

@@ -1012,6 +1012,32 @@ Everything here is optional and off by default. Each feature has its own toleran
   - seismogram SNR against FP32;
   - complete FWI with a final model error within the target (proposed: at most 10% above FP32);
   - DES (up to ~2×) and MEM (half).
+- **Result:** `PYFWI_FP16=1` (off by default; native kernels only). The fields, adjoint fields,
+  checkpoints and stored bands are half-precision numbers: the kernels store them as a 2-byte `real` read
+  as a float and written from a float (the arithmetic stays float32; in float32 storage `real` is float
+  and the kernels kept their bits, part 1). The engine scales the fields so that their values suit half
+  precision: the velocities take the median impedance of the model times the scale of the stresses (a plane
+  wave has stresses about the impedance times its velocities), and that ratio goes into the model buffers
+  (1 / density times it, the Lame parameters divided by it), which also serve the adjoint updates when the
+  adjoint stresses take the impedance times the scale of the adjoint velocities, the ratio of the transposed
+  equations; the largest injected sample of the source (forward) or of the residual (adjoint) becomes 16. The
+  source and the residual are scaled on the host, the seismograms, fields and gradients unscaled. Every scale
+  is a power of two: scaling then only shifts exponents, the rounding does not depend on it (scales that
+  followed the model exactly changed every rounding at the smallest change of the model). An overflow is
+  reported. Measured: seismograms 44 to 57 dB of signal-to-noise ratio against float32 on three cases,
+  gradients 33 to 46 dB (correlation 0.9998 to 1.0000), the same with a wavelet a million times weaker or
+  stronger (overflow and underflow test), and with boundary saving over 3,500 steps (39.8 dB); memory: the
+  fields, adjoint fields, checkpoints and bands take half the bytes (MEM). DES (same session): medium 1.56 s /
+  3.91 s → 1.09 s / 2.83 s (1.43× / 1.38×), large 44.8 s / 128.8 s → 35.3 s / 102.6 s (1.27× / 1.26×), small
+  unchanged; less than the ~2× of the analysis, because the model, the gradients and their preconditioners
+  stay float32 (the gradient kernel moves 27 arrays, 10 of them fields). **Not met: the complete FWI.** The
+  rounding of every update leaves an error about 60 dB below the peak of the fields: a 1 s recording keeps
+  39.5 dB overall but its late half, attenuated by 63 dB, falls under it (−4 dB; 44 dB without absorbing
+  layer, where nothing decays), and the error changes chaotically with the model, so the misfit is rough (a
+  change of 0.002 m/s moved it by 6 % at 25 Hz) and the line search of L-BFGS finds no descent: the inversions
+  of the example and of a larger anomaly do not move. Rounding toward zero in the damped cells was tried and
+  did not help. The FWI test is a strict `xfail` with this reason; the FP16 mode suits modelling and
+  gradients (imaging), not inversion — a point for gate G4.
 
 ### 4.4 Multi-GPU by shots
 

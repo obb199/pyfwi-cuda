@@ -187,6 +187,7 @@ except where the table says so.
 | `PYFWI_CUDA_CHECKPOINT_BUDGET` | 80 % of the free GPU memory | Bytes of checkpoints (the forward field stored for the gradient) kept on the GPU; the others stay in host memory |
 | `PYFWI_CUDA_BLOCK` | 32 columns by 8, 4 or 2 rows, to fill the GPU | The CUDA block of every launch, `<columns>x<rows>` (for example `64x4`) |
 | `PYFWI_BOUNDARY_SAVING` | `0` | `1` stores, at every step, only a band of cells around the model instead of checkpoints of the whole field (`chpr`), and rebuilds the forward field exactly for the gradient: 5 to 12 times less memory; the `fixed` mode on CUDA only |
+| `PYFWI_FP16` | `0` | `1` stores the fields in half precision (scaled): half the memory, 1.3 to 1.4 times faster on large grids; seismograms within about 45 dB of float32. For modelling and gradients, not for inversions (see the CHANGELOG); the `fixed` mode on CUDA only |
 | `PYFWI_CUDA_COST` | `0` | `1` runs the L2 cost function, its multi-scale filters and the smoothing of the gradient on the GPU (an inversion step faster when the propagation is fast; results within 1e-6, the filters in float32) |
 
 ## Citing PyFWI

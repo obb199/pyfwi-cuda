@@ -290,3 +290,12 @@ def test_boundary_saving_selection():
     assert select_boundary_saving({"PYFWI_BOUNDARY_SAVING": " 1 "}) is True
     with pytest.raises(ValueError, match="PYFWI_BOUNDARY_SAVING must be 0 or 1"):
         select_boundary_saving({"PYFWI_BOUNDARY_SAVING": "on"})
+
+
+def test_fp16_selection():
+    # Step 4.3: PYFWI_FP16, off by default (test_fp16.py tests the feature).
+    from PyFWI.backends.selection import select_fp16
+    assert select_fp16({}) is False and select_fp16({"PYFWI_FP16": "0"}) is False
+    assert select_fp16({"PYFWI_FP16": "1"}) is True
+    with pytest.raises(ValueError, match="PYFWI_FP16 must be 0 or 1"):
+        select_fp16({"PYFWI_FP16": "half"})

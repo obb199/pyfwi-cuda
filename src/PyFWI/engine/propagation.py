@@ -60,6 +60,12 @@ MAX_GRAPH_STEPS = 50
 #: 640 x 790 -3 % / -2 %. Above 2^20 cells the gain is small and the memory of the fields grows.
 BATCH_CELLS = 1 << 20
 
+#: Step 4.3, FP16 storage: the largest sample of the source (or of the residual) injected, in stress
+#: units, becomes this scaled value. The fields then reach a few times more where the source accumulates
+#: (5 to 100 measured), far below the largest half-precision number (65504), while the weak far field stays
+#: above its smallest normal number (6.1e-5) over six orders of magnitude.
+FP16_PEAK = 16.0
+
 #: The buffers with one field per slot of a batch (step 3.9): the forward and adjoint fields, and the
 #: gradients and their preconditioners, which ``gradient`` sums into slot 0 at its end.
 FIELD_BUFFERS = tuple(f"{par}_b" for par in COMPONENTS) + tuple(f"a{par}_b" for par in COMPONENTS)
@@ -281,6 +287,58 @@ def band_cells(rectangle, width, tnx):
     return (rows[~inner] * int(tnx) + columns[~inner]).astype(np.int32)
 
 
+def fp16_scales(velocity, stress, impedance):
+    """The scales of the stresses and velocities stored in half precision (step 4.3): ``(stress, velocity)``.
+
+    The stored fields are the physical ones times their scale. A plane wave has stresses about
+    ``impedance`` (density times velocity) times its particle velocities, so the velocities take
+    ``impedance`` times the scale of the stresses: both then have similar stored values. The scale of the
+    stresses makes the largest injected sample, ``stress`` or ``impedance * velocity`` in stress units,
+    ``FP16_PEAK``, rounded to a power of two (``power_of_two``; ``impedance`` is one too).
+
+    The adjoint fields obey the transposed equations, where the stresses are about the velocities divided
+    by the impedance: ``PropagationEngine.gradient`` calls this with the roles of the velocities and of the
+    stresses swapped (the largest residual injected into the stresses as ``velocity``, into the velocities
+    as ``stress``). The first result is then the scale of the adjoint velocities, the second, ``impedance``
+    times larger, that of the adjoint stresses: the ratio for which the scaled model of ``set_model`` also
+    serves the adjoint updates (whose stresses are updated from the velocities times 1 / density).
+
+    Parameters
+    ----------
+    velocity, stress : float
+        Largest absolute samples injected into the velocities and into the stresses.
+    impedance : float
+        The ratio of the scales (``PropagationEngine.impedance``, or its inverse for the adjoint).
+
+    Returns
+    -------
+    tuple of float
+        ``(stress scale, velocity scale)``; ``(1, impedance)`` when nothing is injected.
+    """
+    peak = max(float(stress), float(impedance) * float(velocity))
+    stress_scale = power_of_two(FP16_PEAK / peak) if peak > 0 else 1.0
+    return stress_scale, stress_scale * float(impedance)
+
+
+def power_of_two(value):
+    """The power of two nearest to ``value`` (in log scale), for the scales of the FP16 mode (step 4.3).
+
+    Multiplying by a power of two only shifts the exponent: the stored half-precision numbers then have
+    the mantissas they would have without scaling, and their rounding does not depend on the scales.
+    Scales that followed the model or the residual exactly changed every rounding at the smallest change
+    of the model, and made the misfit of an inversion jump by the rounding noise (15 % at the first step of
+    a line search, which then failed): measured before this choice.
+    """
+    return float(2.0 ** round(np.log2(value)))
+
+
+def _scale_of(name):
+    """The key of ``PropagationEngine.scales`` of the field buffer ``name`` (``"atauxz_b"`` -> ``"atau"``)."""
+    adjoint = name.startswith("a")
+    velocity = name.lstrip("a").startswith("v")
+    return ("a" if adjoint else "") + ("v" if velocity else "tau")
+
+
 def shot_batch(ns, tnz, tnx, environ=None):
     """Number of shots that the native loops run at once (step 3.9).
 
@@ -400,6 +458,9 @@ class PropagationEngine:
     batch : int, optional
         With native injection, the shots run at once (step 3.9); ``shot_batch`` when None. Without
         it, the shots run one by one.
+    fp16 : bool, optional
+        FP16 storage (step 4.3, native kernels only, compiled with ``PYFWI_FP16``): the fields, adjoint
+        fields, checkpoints and stored bands are half-precision numbers, scaled (``fp16_scales``).
     boundary_width : int, optional
         Boundary saving (step 4.2, native kernels only): instead of the checkpoints of ``chp``, the
         fields of a band of this width (the half order ``sdo``) at the edge of the undamped rectangle
@@ -409,7 +470,7 @@ class PropagationEngine:
 
     def __init__(self, backend, sources, injection, *, tnz, tnx, ns, nr, nt, nt_ext, dt_scale, chp, dxr,
                  srcx, srcz, source, rec_top_right_var, numerics="legacy", receivers=None, batch=None,
-                 boundary_width=None):
+                 boundary_width=None, fp16=False):
         self.backend = backend
         self.tnz, self.tnx, self.ns, self.nr = tnz, tnx, ns, nr
         self.nt, self.nt_ext, self.dt_scale = nt, nt_ext, dt_scale
@@ -470,6 +531,16 @@ class PropagationEngine:
             self.step_b = self._table(np.zeros(1, np.int32))
             self.source_cell_b = self._table(np.zeros(self.batch, np.int32))
             self.source_steps_b = backend.allocate_empty(int(nt) * 4 * 4)
+        #: Step 4.3: the type of the stored fields: float16 in the FP16 mode (native kernels only), else
+        #: float32; ``field_bytes`` per value. ``scales`` multiply the physical fields into the stored
+        #: ones: "v" and "tau" for the forward velocities and stresses, "av" and "atau" for the adjoint
+        #: ones, and ``impedance`` their ratio (``fp16_scales``); all 1 in float32.
+        self.fp16 = bool(fp16)
+        if self.fp16 and not self.native_injection:
+            raise ValueError("the FP16 mode needs the native CUDA kernels: the CUDA backend in the fixed numeric mode")
+        self.field_dtype = np.float16 if self.fp16 else np.float32
+        self.field_bytes = np.dtype(self.field_dtype).itemsize
+        self.scales, self.impedance = {"v": 1.0, "tau": 1.0, "av": 1.0, "atau": 1.0}, 1.0
         #: Step 4.2: boundary saving (``boundary_width`` cells), with the native kernels only. Its kernels,
         #: the shot of every slot (``band_shot_b``), and only the last field as checkpoint: the gradient
         #: starts from it. The band and its store come with the absorbing layer (``set_pml``).
@@ -504,7 +575,7 @@ class PropagationEngine:
         # change. ``residual_rows``: the time samples of one shot in it.
         self.res_shot_b, self.residual_rows = {}, 0
 
-        field = self._slots_host()  # one field per slot of a batch (step 3.9)
+        field = self._slots_host(self.field_dtype)  # one field per slot of a batch (step 3.9)
         for par in COMPONENTS:
             self._set_buffer(f"{par}_b", field)
 
@@ -519,12 +590,13 @@ class PropagationEngine:
         #: device, as many as the backend has room for (step 3.8: ``checkpoint_budget``), in one buffer
         #: of ``(5 components, _device_shots, nchp, tnz, tnx)`` values, stored and restored by device
         #: copies; those of the other shots on the host (see ``checkpoints``).
-        per_shot = 5 * self.nchp * self._plane * 4  # bytes of the checkpoints of one shot
+        per_shot = 5 * self.nchp * self._plane * self.field_bytes  # bytes of the checkpoints of one shot
         budget = backend.checkpoint_budget() if hasattr(backend, "checkpoint_budget") else 0
         self._device_shots = min(int(ns), budget // per_shot)
-        self._device_checkpoints = backend.allocate_empty(self._device_shots * per_shot) if self._device_shots else None
+        self._device_checkpoints = (backend.allocate_empty(self._device_shots * per_shot, self.field_dtype)
+                                    if self._device_shots else None)
         self._host_checkpoints = None if self._device_shots == int(ns) else {
-            par: np.zeros((ns, self.nchp, tnz, tnx), np.float32) for par in COMPONENTS}
+            par: np.zeros((ns, self.nchp, tnz, tnx), self.field_dtype) for par in COMPONENTS}
 
     @property
     def checkpoints(self):
@@ -538,9 +610,9 @@ class PropagationEngine:
         if self._device_checkpoints is not None:
             self.backend.finish()
             if self._host_checkpoints is None:
-                self._host_checkpoints = {par: np.empty((self.ns, self.nchp, self.tnz, self.tnx), np.float32)
+                self._host_checkpoints = {par: np.empty((self.ns, self.nchp, self.tnz, self.tnx), self.field_dtype)
                                           for par in COMPONENTS}
-            block = self._device_shots * self.nchp * self._plane * 4  # Python ints: above 2 GB
+            block = self._device_shots * self.nchp * self._plane * self.field_bytes  # Python ints: above 2 GB
             for comp, par in enumerate(COMPONENTS):
                 self.backend.to_host(self._host_checkpoints[par][:self._device_shots],
                                      self.backend.section(self._device_checkpoints, comp * block, block))
@@ -554,8 +626,8 @@ class PropagationEngine:
 
     def _checkpoint_section(self, comp, s, chpc):
         """The part of the device checkpoints holding component ``comp`` of shot ``s`` at checkpoint ``chpc``."""
-        offset = ((comp * self._device_shots + int(s)) * self.nchp + int(chpc)) * self._plane * 4  # no int32 overflow
-        return self.backend.section(self._device_checkpoints, offset, self._plane * 4)
+        offset = ((comp * self._device_shots + int(s)) * self.nchp + int(chpc)) * self._plane * self.field_bytes
+        return self.backend.section(self._device_checkpoints, offset, self._plane * self.field_bytes)
 
     # ------------------------------------------------------------------ buffers
 
@@ -598,10 +670,11 @@ class PropagationEngine:
         changed = []
         margin = self.margin_bytes
         for name, allocation in self._allocations.items():
-            whole = np.empty(self.backend.nbytes(allocation) // 4, np.float32)
+            dtype = np.dtype(getattr(allocation, "dtype", np.float32))  # float16 fields in the FP16 mode
+            whole = np.empty(self.backend.nbytes(allocation) // dtype.itemsize, dtype)
             self.backend.to_host(whole, allocation)
             data_bytes = self.backend.nbytes(getattr(self, name))
-            margins = np.concatenate([whole[:margin // 4], whole[(margin + data_bytes) // 4:]])
+            margins = np.concatenate([whole[:margin // dtype.itemsize], whole[(margin + data_bytes) // dtype.itemsize:]])
             intact = np.isnan(margins).all() if np.isnan(MARGIN_FILL) else (margins == np.float32(MARGIN_FILL)).all()
             if not intact:
                 changed.append(name)
@@ -611,8 +684,9 @@ class PropagationEngine:
         """The five device buffers of the forward field, in the order of ``COMPONENTS``."""
         return (self.vx_b, self.vz_b, self.taux_b, self.tauz_b, self.tauxz_b)
 
-    def _slots_host(self):
-        """The initial content of a buffer of ``FIELD_BUFFERS`` or ``GRADIENT_BUFFERS``.
+    def _slots_host(self, dtype=np.float32):
+        """The initial content of a buffer of ``FIELD_BUFFERS`` (of ``dtype``: the type of the fields, step
+        4.3) or ``GRADIENT_BUFFERS`` (float32).
 
         One shot at a time: a zero field, ``(tnz, tnx)``. A batch (step 3.9): ``batch`` zero fields,
         each followed by one row of ``MARGIN_FILL`` that no kernel writes. The stencils of the last
@@ -621,19 +695,21 @@ class PropagationEngine:
         what a single shot computes (``slot_values`` of elastic.cu).
         """
         if self.batch == 1:
-            return np.zeros((self.tnz, self.tnx), np.float32)
-        host = np.full((self.batch, self.tnz + 1, self.tnx), MARGIN_FILL, np.float32)
+            return np.zeros((self.tnz, self.tnx), dtype)
+        host = np.full((self.batch, self.tnz + 1, self.tnx), MARGIN_FILL, dtype)
         host[:, :self.tnz] = 0
         return host
 
-    def _slot(self, buffer, slot):
+    def _slot(self, buffer, slot, itemsize=None):
         """The field of slot ``slot`` in a buffer of ``FIELD_BUFFERS`` or ``GRADIENT_BUFFERS`` (step 3.9).
 
         The buffer itself without batches: only the CUDA backend, which runs them, has ``section``.
+        ``itemsize``: bytes of a value, those of the fields by default (4 for the gradients).
         """
         if self.batch == 1:
             return buffer
-        return self.backend.section(buffer, slot * self._stride * 4, self._plane * 4)
+        size = self.field_bytes if itemsize is None else itemsize  # bytes of a value
+        return self.backend.section(buffer, slot * self._stride * size, self._plane * size)
 
     def set_pml(self, vdx_pml, vdz_pml):
         """Device buffers of the absorbing boundary (damping times the largest velocity), per forward run.
@@ -660,7 +736,7 @@ class PropagationEngine:
             return
         if cells.size == 0:
             raise ValueError("boundary saving needs a region without absorbing layer")
-        nbytes = int(self.ns) * int(self.nt) * 5 * int(cells.size) * 4  # Python ints: no int32 overflow
+        nbytes = int(self.ns) * int(self.nt) * 5 * int(cells.size) * self.field_bytes  # no int32 overflow
         budget = self.backend.checkpoint_budget() if hasattr(self.backend, "checkpoint_budget") else nbytes
         if nbytes > budget:
             raise MemoryError(f"boundary saving needs {nbytes / 1e9:.2f} GB on the GPU for the {self.ns} shots, "
@@ -668,7 +744,7 @@ class PropagationEngine:
         self._band_cells, self.n_band = cells, int(cells.size)
         self.band_b = self._table(cells)
         self._band_store = None  # release the old one first
-        self._band_store = self.backend.allocate_empty(nbytes)
+        self._band_store = self.backend.allocate_empty(nbytes, self.field_dtype)
         self.band_size = (1, self.n_band)
         self._graph_cache = {}  # arguments of the graphs (_replay)
 
@@ -678,16 +754,31 @@ class PropagationEngine:
         return self._band_store, self.band_b, self.band_shot_b, self.step_b
 
     def set_model(self, rho_inverse, mu, lam):
-        """Device buffers of the model (1 / density and the Lame parameters), per forward run."""
+        """Device buffers of the model (1 / density and the Lame parameters), per forward run.
+
+        In the FP16 mode (step 4.3) the stresses are stored ``impedance`` times less scaled than the
+        velocities (``fp16_scales``): the updates then need 1 / density times the impedance and the Lame
+        parameters divided by it, which the buffers hold. The adjoint fields are scaled the other way
+        round (their stresses ``impedance`` times more), so the same buffers serve them.
+        """
+        if self.fp16:
+            # The median impedance of the model, rounded to a power of two (power_of_two): the scaling of
+            # the model is then exact, and stays the same while an inversion changes the model a little.
+            stiffness = np.asarray(lam, np.float64) + 2 * np.asarray(mu, np.float64)
+            self.impedance = power_of_two(np.median(np.sqrt(stiffness / np.asarray(rho_inverse, np.float64))))
+            rho_inverse = (np.asarray(rho_inverse, np.float64) * self.impedance).astype(np.float32)
+            mu = (np.asarray(mu, np.float64) / self.impedance).astype(np.float32)
+            lam = (np.asarray(lam, np.float64) / self.impedance).astype(np.float32)
         self._set_buffer("rho_b", rho_inverse)
         self._set_buffer("mu_b", mu)
         self._set_buffer("lam_b", lam)
 
     def prepare_gradient(self):
         """Create the gradient, preconditioner and adjoint-field buffers, zeroed, for a new gradient."""
-        field = self._slots_host()  # one field per slot of a batch (step 3.9)
-        for name in ("Gmu_b", "Glam_b", "Grho_b", "g_mu_precond_b", "g_lam_precond_b", "g_rho_precond_b",
-                     "avx_b", "avz_b", "ataux_b", "atauz_b", "atauxz_b"):
+        gradient, field = self._slots_host(), self._slots_host(self.field_dtype)  # one per slot (step 3.9)
+        for name in GRADIENT_BUFFERS:
+            self._set_buffer(name, gradient)
+        for name in ("avx_b", "avz_b", "ataux_b", "atauz_b", "atauxz_b"):
             self._set_buffer(name, field)
 
     def read_field(self, name, host):
@@ -695,11 +786,19 @@ class PropagationEngine:
 
         With a batch of shots (step 3.9) the buffers of the fields and adjoint fields hold one field per
         slot: the field of the last shot run is read, as 0.1.10's buffers hold it; those of the
-        gradients, slot 0, which holds the sum of every shot after ``gradient``.
+        gradients, slot 0, which holds the sum of every shot after ``gradient``. In the FP16 mode (step
+        4.3) a field is converted to float32 and unscaled.
         """
         buffer = getattr(self, name)
-        if name in FIELD_BUFFERS or name in GRADIENT_BUFFERS:
-            buffer = self._slot(buffer, self._last_slot if name in FIELD_BUFFERS else 0)
+        if name in GRADIENT_BUFFERS:
+            buffer = self._slot(buffer, 0, 4)
+        elif name in FIELD_BUFFERS:
+            buffer = self._slot(buffer, self._last_slot)
+            if self.fp16:  # half precision, scaled (step 4.3): the physical field as float32
+                stored = np.empty(host.shape, np.float16)
+                self.backend.to_host(stored, buffer)
+                host[...] = stored.astype(np.float32) / np.float32(self.scales[_scale_of(name)])
+                return host
         self.backend.to_host(host, buffer)
         return host
 
@@ -838,11 +937,18 @@ class PropagationEngine:
             # every time, and resampled when they changed (0.4 ms of host time on the small scenario,
             # with the GPU idle, before step 3.11).
             samples = recorded_source(self.src, self.nt, self.dt_scale)
-            if self._source_samples is None or not np.array_equal(samples, self._source_samples):
+            changed = self._source_samples is None or not np.array_equal(samples, self._source_samples)
+            if changed:
                 self._source_samples = samples
                 self.source_steps = resampled_source(samples, self.nt, self.dt_scale)
-                if self.native_injection:
-                    self.backend.to_device(self.source_steps_b, np.ascontiguousarray(self.source_steps[:, :4]))
+            if self.native_injection and (changed or self.fp16):  # FP16: the scales follow the model
+                steps = self.source_steps[:, :4]
+                if self.fp16:
+                    self.scales["tau"], self.scales["v"] = fp16_scales(np.abs(steps[:, :2]).max(),
+                                                                       np.abs(steps[:, 2:]).max(), self.impedance)
+                    factors = np.array([self.scales["v"]] * 2 + [self.scales["tau"]] * 2)
+                    steps = (steps.astype(np.float64) * factors).astype(np.float32)
+                self.backend.to_device(self.source_steps_b, np.ascontiguousarray(steps))
         if self.native_injection:
             self._set_native_injection_args()
             self.backend.set_args(self.knl.advance, self.step_b, np.int32(+1))
@@ -972,7 +1078,7 @@ class PropagationEngine:
         fields = [self._slot(buffer, slot) for buffer in self._field_buffers()]
         if s < self._device_shots:
             for comp, field in enumerate(fields):
-                self.backend.copy(self._checkpoint_section(comp, s, chpc), field, self._plane * 4)
+                self.backend.copy(self._checkpoint_section(comp, s, chpc), field, self._plane * self.field_bytes)
             return
         for par, field in zip(COMPONENTS, fields):  # the storage, not the property
             self.backend.to_host(self._host_checkpoints[par][s, chpc], field, blocking=False)
@@ -1022,7 +1128,7 @@ class PropagationEngine:
         events = [self.backend.to_host(host[par], buffer, blocking=False) for par, buffer in zip(COMPONENTS, buffers)]
         self.backend.wait(events)
         for par in COMPONENTS:
-            self.seismogram[par][:, :, shots[0]:shots[-1] + 1] = host[par].transpose(1, 2, 0)
+            self.seismogram[par][:, :, shots[0]:shots[-1] + 1] = self._unscaled(par, host[par]).transpose(1, 2, 0)
 
     def _store_checkpoints(self, shots, chpc):
         """Store checkpoint ``chpc`` of every shot of the batch ``shots``, each from its slot: those kept on
@@ -1074,7 +1180,7 @@ class PropagationEngine:
         fields = [self._slot(buffer, slot) for buffer in self._field_buffers()]
         if s < self._device_shots:
             for comp, field in enumerate(fields):
-                self.backend.copy(field, self._checkpoint_section(comp, s, chpc), self._plane * 4)
+                self.backend.copy(field, self._checkpoint_section(comp, s, chpc), self._plane * self.field_bytes)
             return
         for par, field in zip(COMPONENTS, fields):  # the storage, not the property
             self.backend.to_device(field, self._host_checkpoints[par][s, chpc], blocking=False)
@@ -1166,7 +1272,17 @@ class PropagationEngine:
         events = [self.backend.to_host(host[par], buffer, blocking=False) for par, buffer in zip(COMPONENTS, buffers)]
         self.backend.wait(events)
         for par in COMPONENTS:
-            self.seismogram[par][:, :, s] = host[par]
+            self.seismogram[par][:, :, s] = self._unscaled(par, host[par])
+
+    def _unscaled(self, component, recorded):
+        """A recorded seismogram of ``component`` in physical units: the FP16 mode records the scaled
+        fields (step 4.3); checks that half precision did not overflow."""
+        if not self.fp16:
+            return recorded
+        if not np.isfinite(recorded).all():
+            raise FloatingPointError("the half-precision fields overflowed (FP16 mode, PYFWI_FP16): run with "
+                                     "PYFWI_FP16=0, or report the case")
+        return recorded / np.float32(self.scales["v" if component in ("vx", "vz") else "tau"])
 
     # ------------------------------------------------------------------ gradient
 
@@ -1181,6 +1297,11 @@ class PropagationEngine:
             ``observe(s, t, t_src)`` is called after every internal step ``t`` of shot ``s``
             (``t_src``: the last recorded sample injected, ``nt_ext`` before the first).
         """
+        if self.fp16:  # the scales of the adjoint fields, from the residual of every shot (step 4.3)
+            velocity = max(float(np.abs(np.asarray(res[par])).max()) for par in ("vx", "vz"))
+            stress = max(float(np.abs(np.asarray(res[par])).max()) for par in ("taux", "tauz", "tauxz"))
+            # The roles swap for the adjoint (see fp16_scales): (adjoint velocities, adjoint stresses).
+            self.scales["av"], self.scales["atau"] = fp16_scales(stress, velocity, self.impedance)
         self.backend.call(self.knl.MakeGradZero, self._size(self.global_size, self.batch),  # every slot
                           self.Gmu_b, self.Glam_b, self.Grho_b,
                           self.g_mu_precond_b, self.g_lam_precond_b, self.g_rho_precond_b)
@@ -1322,6 +1443,8 @@ class PropagationEngine:
             # Columns s*nr to (s+count)*nr, as float32 and contiguous, shot after shot: the values
             # make_residual sent.
             columns = np.asarray(res[par])[:rows, s * nr:(s + count) * nr]
+            if self.fp16:  # scaled as the adjoint field it is injected into (step 4.3)
+                columns = columns * self.scales["av" if par in ("vx", "vz") else "atau"]
             shots = np.ascontiguousarray(columns.reshape(rows, count, nr).transpose(1, 0, 2), dtype=np.float32)
             nbytes = self.batch * shots[0].nbytes
             if self.res_shot_b.get(par) is None or self.backend.nbytes(self.res_shot_b[par]) != nbytes:
@@ -1370,13 +1493,31 @@ class PropagationEngine:
         shape = (self.tnz, self.tnx)
         g_mu, g_lam, g_rho = (np.zeros(shape, np.float32) for _ in range(3))
         # Slot 0, which holds the sum of the shots of every slot (step 3.9).
-        self.backend.to_host(g_mu, self._slot(self.Gmu_b, 0))
-        self.backend.to_host(g_lam, self._slot(self.Glam_b, 0))
-        self.backend.to_host(g_rho, self._slot(self.Grho_b, 0))
+        self.backend.to_host(g_mu, self._slot(self.Gmu_b, 0, 4))
+        self.backend.to_host(g_lam, self._slot(self.Glam_b, 0, 4))
+        self.backend.to_host(g_rho, self._slot(self.Grho_b, 0, 4))
+        factors = self._gradient_factors()
+        g_mu, g_lam, g_rho = (g * np.float32(f) for g, f in zip((g_mu, g_lam, g_rho), factors[:3]))
         if not preconditioners:
             return g_mu, g_lam, g_rho, np.ones(shape, np.float32), np.ones(shape, np.float32), np.ones(shape, np.float32)
         precond = [np.zeros(shape, np.float32) for _ in range(3)]
-        self.backend.to_host(precond[0], self._slot(self.g_mu_precond_b, 0))
-        self.backend.to_host(precond[1], self._slot(self.g_lam_precond_b, 0))
-        self.backend.to_host(precond[2], self._slot(self.g_rho_precond_b, 0))
+        self.backend.to_host(precond[0], self._slot(self.g_mu_precond_b, 0, 4))
+        self.backend.to_host(precond[1], self._slot(self.g_lam_precond_b, 0, 4))
+        self.backend.to_host(precond[2], self._slot(self.g_rho_precond_b, 0, 4))
+        precond = [p * np.float32(f) for p, f in zip(precond, factors[3:])]
         return (g_mu, g_lam, g_rho, *precond)
+
+    def _gradient_factors(self):
+        """The factors that bring the gradients and preconditioners of the FP16 mode (step 4.3) back to
+        physical units, in the order of ``read_gradient``; 1 in float32.
+
+        Every term of the gradient kernel multiplies an adjoint field by a derivative of a forward
+        field, or two forward fields, so its value carries the product of their scales (and the density
+        term the square of the scaled 1 / density, ``impedance`` times the true one).
+        """
+        if not self.fp16:
+            return (1.0,) * 6
+        s, z = self.scales, self.impedance
+        energy = 1.0 / (s["tau"] * s["v"]) ** 2
+        return (1.0 / (s["atau"] * s["v"]), 1.0 / (s["atau"] * s["v"]), 1.0 / (z * z * s["av"] * s["tau"]),
+                energy, energy, energy)
