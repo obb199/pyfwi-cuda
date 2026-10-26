@@ -39,6 +39,7 @@ This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into 
 | 4.1–4.6 | Cost function on the GPU, boundary saving, FP16, multi-GPU, DLPack, geophysical validation | Phase 4 |
 | 4.7 | Release 0.4.0 | **G4** |
 | 5.x | Final documentation, upstream, publication and conditional optimisations | Maintenance |
+| 6 | Final document: what CUDA gains over OpenCL on the project's GPU, didactic | **The last step** |
 
 Estimated duration in the analysis: about 20 weeks for one person (Phase 0 ≈ 3, Phase 1 ≈ 3, Phase 2 ≈ 4, Phase 3 ≈ 6, Phase 4 ≈ 4), or about 14 with two people, because Phase 4 can run in parallel with Phase 3 after G2.
 
@@ -1026,6 +1027,29 @@ PKG, EXA, FWI, DES, PRF, EST and a CHANGELOG with the tolerances of every opt-in
 | 5.3 | Bug fixes sent back to the original PyFWI by PR | Only with the owner's approval; each PR with the test that reproduces the bug |
 | 5.4 | Decide publication: public repository, name on PyPI | Owner's decision; before that, full PKG and licence review (CuPy MIT and cuda.core Apache-2.0, compatible with GPLv3) |
 | 5.5 | Conditional optimisations: tiling, temporal blocking, whole loop in a graph with conditional nodes | Only if Nsight Compute shows kernels bound by memory bandwidth; same protocol as Phase 3 |
+
+## 6. Final document: CUDA against OpenCL on the project's GPU
+
+The last step of the project, after everything above: a didactic document, easy to read for someone who
+knows neither GPUs nor the code, that shows what using CUDA gains over OpenCL on the graphics card of the
+project (the GeForce RTX 3060 of the development machine), with figures and plain explanations.
+
+- **Goes in:** `docs/cuda-migration/cuda-vs-opencl.md`, with its figures drawn by a script from result
+  files of the repository, like the [overview](overview.md):
+  - the same scenarios measured on the same GPU in one session, the OpenCL backend and the CUDA backend
+    side by side, like for like (the same numeric mode on both: `legacy` against `legacy`, `fixed` against
+    `fixed`), then the default configuration of each backend;
+  - where the difference comes from, explained without jargon: kernels written for the GPU, fewer
+    launches, the GPU kept busy, the memory of the card used for the checkpoints, and the features of
+    Phase 4 that only the CUDA backend has;
+  - what does not change: the results (within the recorded tolerances), the public API, and when OpenCL is
+    still the right choice (no NVIDIA GPU or no CuPy);
+  - a short "how to reproduce" section.
+- **Tests:** the figures are drawn from the stored results (a test, as for the overview); every number of
+  the document comes from a stored result file or from a report, and is checked against it; the document
+  is linked from the README.
+- **Criterion:** a reader who is not a developer understands, from the document alone, how much faster the
+  CUDA backend is on this GPU, why, and what it costs to use it.
 
 ## Pending actions for the project owner
 
