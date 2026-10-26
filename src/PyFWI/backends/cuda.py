@@ -42,7 +42,10 @@ BLOCK_ROWS = (8, 4, 2)
 #: Blocks per streaming multiprocessor below which a launch takes shorter blocks. Measured on the
 #: RTX 3060 (28 SMs), legacy mode, gradient of the small benchmark scenario (140 x 140 grid): 0.80 s
 #: with 32 x 8 blocks (90 blocks), 0.73 s with 32 x 4, 0.64 s with 32 x 2 (350 blocks); on the
-#: medium one (440 x 440) 32 x 8 and 32 x 4 are within 2 %. Step 3.1 replaces this with a tuning.
+#: medium one (440 x 440) 32 x 8 and 32 x 4 are within 2 %. Step 3.1 tried to tune the block of each
+#: kernel at run time instead, timing it alone with every shape: in the time loops the chosen blocks
+#: were slower than this rule (fixed mode, small scenario 10 %, medium forward 8 to 13 %; a kernel run
+#: alone over and over finds its data in the L2 cache, which the loops do not), so the rule stays.
 BLOCKS_PER_SM = 8
 
 #: Pinned staging buffers kept for each copy size (``_StagingPool``): a buffer is reused, after its
@@ -72,6 +75,22 @@ def portable_source(source):
     if count != kernels:
         raise ValueError(f"{kernels} kernels but {count} start with 'int i = get_global_id(0)': cannot guard them")
     return header + "\n" + guarded
+
+
+def forced_block(text):
+    """The block ``(columns, rows, 1)`` of a ``PYFWI_CUDA_BLOCK`` value such as ``"64x4"``.
+
+    Raises
+    ------
+    ValueError
+        If ``text`` is not two positive integers joined by ``x`` with at most 1,024 threads.
+    """
+    match = re.fullmatch(r"\s*(\d+)\s*x\s*(\d+)\s*", text)
+    columns, rows = (int(match.group(1)), int(match.group(2))) if match else (0, 0)
+    if not (columns > 0 and rows > 0 and columns * rows <= 1024):
+        raise ValueError(f"PYFWI_CUDA_BLOCK={text!r}: expected '<columns>x<rows>' with at most 1024 threads, "
+                         "for example '32x4'")
+    return (columns, rows, 1)
 
 
 class CUDAKernel:
@@ -312,7 +331,13 @@ class CUDABackend:
 
     def block(self, global_size):
         """The block for an OpenCL global size: 32 columns, and the most rows of ``BLOCK_ROWS`` that still
-        give at least ``BLOCKS_PER_SM`` blocks per streaming multiprocessor (else the fewest rows)."""
+        give at least ``BLOCKS_PER_SM`` blocks per streaming multiprocessor (else the fewest rows).
+
+        ``PYFWI_CUDA_BLOCK``, ``"<columns>x<rows>"`` (``"64x4"``), sets the block of every launch
+        instead, to tune it for a GPU (step 3.1); the results do not depend on it.
+        """
+        if global_size not in self._blocks and os.environ.get("PYFWI_CUDA_BLOCK"):
+            self._blocks[global_size] = forced_block(os.environ["PYFWI_CUDA_BLOCK"])
         if global_size not in self._blocks:
             choice = (BLOCK[0], BLOCK_ROWS[-1], 1)
             for rows in BLOCK_ROWS:

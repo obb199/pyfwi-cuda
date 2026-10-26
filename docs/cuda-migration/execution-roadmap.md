@@ -750,6 +750,21 @@ Each optimisation is a separate commit, with a benchmark before and after, so th
 | 3.9 | Batched shots (3D grid x, z, shot); partial gradients summed in a fixed order at the end | DET (critical); OTM with B = 1, 2 and 4 | B times fewer launches |
 | 3.10 | PML only at the borders: interior blocks skip the damping | OTM; MAT (PML reflection) | −2 reads per interior cell |
 
+**Results of Phase 3** (version 0.3.0.dev0 from step 3.1 on):
+
+- **3.1 (mapping and block size):** the mapping is coalesced since step 2.3 (the portability header
+  maps the column, contiguous in memory, to `threadIdx.x`); a test now checks it. The block rule of
+  step 2.7 (32 columns by 8, 4 or 2 rows, at least 8 blocks per multiprocessor) stays the default,
+  and `PYFWI_CUDA_BLOCK=<columns>x<rows>` sets the block of every launch to tune it for a GPU. A
+  run-time autotuning was implemented and measured first: before each run, every kernel timed alone
+  with 7 block shapes, the fastest kept in a table per kernel, program and grid. Same bits, but slower
+  in the time loops: `fixed` small 0.20 s / 0.19 s → 0.22 s / 0.21 s, medium forward 2.99 s → 3.2 to
+  3.4 s (`legacy` unchanged), because a kernel run alone over and over finds its data in the L2 cache
+  (3 MB), which the loops, alternating kernels and fields, do not; rejected. Tests: any block (32×8,
+  64×4, 128×1, 16×2, 8×8) gives the same bits on a 61 × 67 grid, and a whole forward + gradient the
+  same bits with 64×4 and 16×8 in both modes; wrong values of the variable are explained. DES
+  unchanged (the default block did not change).
+
 ### 3.11 `auto` default and release 0.3.0
 
 - **Goes in:** the default becomes `auto`. Whether OpenCL also switches to `fixed` by default in this version is decided and recorded at G3.

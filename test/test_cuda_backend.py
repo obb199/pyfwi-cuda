@@ -105,6 +105,59 @@ def test_blocks_fill_the_multiprocessors(backend):
             assert np.prod(backend.grid(size, (32, 2 * block[1], 1))) < target, size
 
 
+#: A kernel that records, for every work item, the thread index along x of the block (step 3.1).
+THREADS = """
+#define Nz 61
+#define Nx 67
+__kernel void column_thread(__global float *out) {
+  int i = get_global_id(0);
+  int j = get_global_id(1);
+  out[i * Nx + j] = (float)threadIdx.x;
+}
+"""
+
+
+def test_the_column_follows_the_thread_index_x(backend):
+    # Coalesced mapping: neighbouring columns (contiguous in memory) are neighbouring threads.
+    kernel = backend.kernel(backend.build(THREADS), "column_thread")
+    out = backend.allocate_empty(61 * 67 * 4)
+    backend.call(kernel, (61, 67), out)
+    host = np.empty((61, 67), np.float32)
+    backend.to_host(host, out)
+    width = backend.block((61, 67))[0]
+    np.testing.assert_array_equal(host, np.tile(np.arange(67) % width, (61, 1)))
+
+
+@pytest.mark.parametrize("forced", ["32x8", "64x4", "128x1", "16x2", "8x8"])
+def test_any_block_gives_the_same_result(backend, monkeypatch, forced):
+    # PYFWI_CUDA_BLOCK sets the block of every launch (tuning for a GPU, step 3.1); the result does not
+    # change, also on a grid that is not a multiple of the block (61 x 67).
+    from PyFWI.backends.cuda import CUDABackend
+
+    source = SOURCE.replace("#define Nz 5\n#define Nx 37", "#define Nz 61\n#define Nx 67")
+    results = []
+    for value in (None, forced):
+        if value:
+            monkeypatch.setenv("PYFWI_CUDA_BLOCK", value)
+        fresh = CUDABackend(0)  # the block of a grid is chosen once per backend
+        kernel = fresh.kernel(fresh.build(source), "mark")
+        a, _ = fresh.allocate(np.arange(61 * 67, dtype=np.float32), 512, fill=3.0)
+        b, b_allocation = fresh.allocate(np.zeros(61 * 67, np.float32), 512, fill=-7.0)
+        fresh.call(kernel, (61, 67), a, b, np.float32(1), fresh.allocate_empty(4))
+        whole = np.empty(b_allocation.size, np.float32)
+        fresh.to_host(whole, b_allocation)
+        results.append(whole)
+    assert fresh.block((61, 67)) == (*map(int, forced.split("x")), 1)
+    np.testing.assert_array_equal(results[0], results[1])
+
+
+@pytest.mark.parametrize("wrong", ["64", "64x", "x4", "0x4", "64x32", "a by b"])
+def test_a_wrong_forced_block_is_explained(wrong):
+    from PyFWI.backends.cuda import forced_block
+    with pytest.raises(ValueError, match="expected '<columns>x<rows>'"):
+        forced_block(wrong)
+
+
 def test_kernels_run_exactly_on_the_opencl_work_items(backend):
     # Nz x Nx = 5 x 37 is not a multiple of the 8 x 32 blocks: the guard must stop the threads
     # beyond it, or they would write past the end of b (into its margin, filled with -7).

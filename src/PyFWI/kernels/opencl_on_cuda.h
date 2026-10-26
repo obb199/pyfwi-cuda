@@ -8,7 +8,8 @@
 //   disappears: every pointer of a CUDA kernel already points to global memory;
 // * get_global_id(0) is the row (z, slow index of the arrays) and get_global_id(1) the column
 //   (x, contiguous in memory), so that the column follows threadIdx.x: neighbouring threads read
-//   neighbouring addresses. The backend launches blocks of 32 columns x 8 rows.
+//   neighbouring addresses (coalesced accesses). The backend launches blocks of 32 columns by 8, 4
+//   or 2 rows (PyFWI/backends/cuda.py: CUDABackend.block).
 //
 // The grid of blocks covers the OpenCL global size (Nz rows, Nx columns) rounded up to whole
 // blocks; the backend adds, at the start of every kernel, a return for the work items beyond it, so

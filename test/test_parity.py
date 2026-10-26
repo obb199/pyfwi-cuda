@@ -130,6 +130,23 @@ def test_grids_that_are_not_a_multiple_of_the_block(both, tnz, tnx):
         assert relative_l2(g_opencl[key], g_cuda[key]) <= TOLERANCE["legacy"]["gradient"], key
 
 
+@pytest.mark.parametrize("numerics", ["legacy", "fixed"])
+def test_cuda_results_do_not_depend_on_the_block(cuda_device, monkeypatch, numerics):
+    # Step 3.1: the block shape (the rule of CUDABackend.block, or PYFWI_CUDA_BLOCK) changes no bit.
+    monkeypatch.setenv("PYFWI_BACKEND", "cuda:strict")
+    monkeypatch.setenv("PYFWI_NUMERICS", numerics)
+    runs = []
+    for forced in (None, "64x4", "16x8"):
+        if forced:
+            monkeypatch.setenv("PYFWI_CUDA_BLOCK", forced)
+        runs.append(forward_and_gradient(tiny_case(acq_type=2, components=4, nz=41, nx=53)))
+    for data, gradient in runs[1:]:
+        for key in data:
+            np.testing.assert_array_equal(data[key], runs[0][0][key], err_msg=key)
+        for key in gradient:
+            np.testing.assert_array_equal(gradient[key], runs[0][1][key], err_msg=key)
+
+
 def test_cuda_runs_are_deterministic(cuda_device, monkeypatch):
     monkeypatch.setenv("PYFWI_BACKEND", "cuda:strict")
     first, second = forward_and_gradient(tiny_case(acq_type=2)), forward_and_gradient(tiny_case(acq_type=2))
