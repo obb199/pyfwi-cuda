@@ -80,6 +80,12 @@ def test_cli_writes_a_complete_result_file(opencl_platform, tmp_path):
     assert len(tiny["forward_s"]["runs"]) == 2 and tiny["forward_s"]["median"] > 0
     assert tiny["per_step"]["forward_launches"] == pytest.approx(4.15, abs=0.05)  # 4 updates + 1/7 injection + zeroing
     assert {"opencl_device", "pyopencl", "pyfwi"} <= set(results["machine"])
+    # What ran (step 3.11): here OpenCL, which the suite pins (test/conftest.py).
+    if not running_reference():
+        assert tiny["engine"] == {"backend": "opencl (opencl asked by PYFWI_BACKEND)", "numerics": "legacy",
+                                  "cuda_kernels": None, "batch": 1}
+    else:
+        assert tiny["engine"]["backend"] == "opencl (PyFWI 0.1.10)"
 
 
 def _fake_run(label, forward, gradient):
@@ -98,6 +104,18 @@ def test_report_shows_speed_ups_relative_to_the_first_run():
     assert "| small | before | 2.00 | 4.00 | 1.00 / 1.00 |" in text
     assert "| small | after | 1.00 | 1.00 | 2.00 / 4.00 |" in text
     assert text.count("\n|") >= 6  # header rows + one row per run and scenario
+
+
+def test_report_names_what_ran():
+    from tools.benchmark_report import render
+    run = _fake_run("cuda", 1.0, 1.0)
+    run["scenarios"]["small"]["engine"] = {"backend": "cuda device 0 (auto, the default)", "numerics": "fixed",
+                                           "cuda_kernels": "native", "batch": 4}
+    run["scenarios"]["medium"] = {**run["scenarios"]["small"], "engine": {**run["scenarios"]["small"]["engine"],
+                                                                           "batch": 2}}
+    text = render([_fake_run("old", 2.0, 2.0), run])
+    assert "| old | " in text and " | not recorded | " in text  # files written before step 3.11
+    assert "cuda device 0 (auto, the default), fixed, native kernels, batches of 2/4" in text
 
 
 def test_report_orders_scenarios_by_size_and_states_the_scaling():

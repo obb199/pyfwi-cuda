@@ -5,8 +5,9 @@ What it measures
 For each scenario: the wall-clock time of one forward modelling and of one gradient
 (median of ``--repeats`` runs after one warm-up run), the time per internal time step,
 the number of OpenCL kernel launches and of host<->device copies (blocking or not) per
-time step, and the state of the GPU (temperature, SM clock, power) before and after,
-to spot thermal throttling. GeForce cards change their clock with temperature, hence
+time step, what ran (backend, numeric mode, CUDA kernel set and shots per batch:
+``engine_description``), and the state of the GPU (temperature, SM clock, power) before and
+after, to spot thermal throttling. GeForce cards change their clock with temperature, hence
 the warm-up and the median.
 
 Scenarios (from the analysis document)
@@ -176,6 +177,24 @@ def _forward_and_gradient(scenario, tools, process):
     return forward_seconds, gradient_seconds, forward_counts, gradient_counts, W
 
 
+def engine_description(W):
+    """What ran a propagator ``W``, for the result file (the default backend is ``auto`` since step 3.11).
+
+    Returns
+    -------
+    dict
+        ``backend`` (``Selection.describe`` of ``PyFWI.backends.selection``), ``numerics``,
+        ``cuda_kernels`` (``"native"``, ``"parity"`` or None on OpenCL) and ``batch`` (shots run at
+        once, step 3.9). PyFWI 0.1.10 has none of these: OpenCL, the legacy arithmetic, one shot at a
+        time.
+    """
+    attributes = vars(W)  # not getattr: WavePropagator forwards unknown names to its engine
+    selection, engine = attributes.get("backend_selection"), attributes.get("_engine")
+    return {"backend": selection.describe() if selection is not None else "opencl (PyFWI 0.1.10)",
+            "numerics": attributes.get("numerics", "legacy"), "cuda_kernels": attributes.get("cuda_kernels"),
+            "batch": getattr(engine, "batch", 1)}
+
+
 def run_scenario(scenario, repeats, guard=True):
     """Warm-up run, then ``repeats`` measured runs; returns the scenario's results."""
     s = SCENARIOS[scenario]
@@ -201,6 +220,7 @@ def run_scenario(scenario, repeats, guard=True):
                      "forward_copies": fc["copies"] / steps, "gradient_copies": gc["copies"] / steps,
                      "blocking_copies": (fc["blocking_copies"] + gc["blocking_copies"]) / steps},
         "launches_by_kernel": {k[7:]: v for k, v in (fc + gc).items() if k.startswith("launch:")},
+        "engine": engine_description(W),
         "gpu_before": before, "gpu_after": after, "guard_bands": guard,
     }
 

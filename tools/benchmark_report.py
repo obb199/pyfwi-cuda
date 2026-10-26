@@ -26,6 +26,24 @@ def load(paths):
     return runs
 
 
+def engine(run):
+    """What ran, from the first scenario of ``run`` (``engine_description`` of ``tools/benchmark.py``).
+
+    For example ``cuda device 0 (auto, the default), fixed, native kernels, batches of 4``; files
+    written before the engine was recorded (step 3.11) give ``not recorded``.
+    """
+    described = next(iter(run["scenarios"].values()), {}).get("engine")
+    if described is None:
+        return "not recorded"
+    text = f"{described['backend']}, {described['numerics']}"
+    if described.get("cuda_kernels"):
+        text += f", {described['cuda_kernels']} kernels"
+    batches = {s.get("engine", {}).get("batch", 1) for s in run["scenarios"].values()}
+    if batches != {1}:
+        text += ", batches of " + "/".join(str(b) for b in sorted(batches))
+    return text
+
+
 def render(runs):
     """Markdown text: a description of each run and one comparison table.
 
@@ -38,11 +56,12 @@ def render(runs):
     -------
     str
     """
-    lines = ["| Run | Device | PyFWI | PyOpenCL | NumPy | Date |", "| --- | --- | --- | --- | --- | --- |"]
+    lines = ["| Run | Device | PyFWI | Engine | PyOpenCL | NumPy | Date |",
+             "| --- | --- | --- | --- | --- | --- | --- |"]
     for run in runs:
         m = run["machine"]
         lines.append(f"| {run['label']} | {m['opencl_device']} (driver {m['driver']}) | {m['pyfwi']} | "
-                     f"{m['pyopencl']} | {m['numpy']} | {run['date']} |")
+                     f"{engine(run)} | {m['pyopencl']} | {m['numpy']} | {run['date']} |")
     note = ("Times are medians of the measured runs, scaled to the number of shots of the scenario. "
             "Speed-up is relative to the first run.")
     header = ("| Scenario | Run | Forward (s) | Gradient (s) | Speed-up fwd / grad | Host ms per step fwd / grad | "
