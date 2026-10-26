@@ -1,8 +1,7 @@
 """The native CUDA kernels of Phase 3 (``PyFWI/kernels/elastic.cu``), test type OTM.
 
-In the fixed numeric mode the CUDA backend runs the native kernels: the stencil kernels written for
-CUDA, which the steps of Phase 3 optimise one at a time (the injection kernels still come from the
-OpenCL files). Every step is checked against the *parity* kernels, the OpenCL files compiled for CUDA
+In the fixed numeric mode the CUDA backend runs the native kernels, written for CUDA, which the
+steps of Phase 3 optimise one at a time. Every step is checked against the *parity* kernels, the OpenCL files compiled for CUDA
 in the same mode (``PYFWI_CUDA_KERNELS=parity``), on the 16 propagation cases of the golden masters,
 with the tolerance of the roadmap (OTM: seismograms 1e-5, gradients 1e-4, relative L2).
 
@@ -11,7 +10,8 @@ Measured, the largest difference on the 16 cases:
 * step 3.2 (the order as a template parameter, the expressions in the order of elastic.cl): none,
   bit for bit equal to the parity kernels;
 * step 3.3 (multiplications by 1 / dx and 1 / dz instead of divisions): seismograms 9.3e-7, misfit
-  5.6e-6, gradients 3.8e-5 (rounding).
+  5.6e-6, gradients 3.8e-5 (rounding);
+* step 3.4 (source, receivers and residual handled one thread per receiver): the same.
 """
 import numpy as np
 import pytest
@@ -61,7 +61,7 @@ def test_the_fixed_mode_runs_the_native_kernels(cuda_device, monkeypatch):
     W = tiny_case(inpa_extra={"numerics": "fixed"}).W
     assert W.cuda_kernels == "native" and W.prg_native is not None
     assert all(getattr(W.knl, name).function_name == name for name in NATIVE)
-    assert W.knl.injSrc.function_name == "injSrc"  # from the OpenCL files, until step 3.4
+    assert W.native_injection and W.knl.inject_and_record.function_name == "inject_and_record"
     legacy = tiny_case(inpa_extra={"numerics": "legacy"}).W
     assert legacy.cuda_kernels == "parity" and legacy.prg_native is None
     monkeypatch.setenv("PYFWI_CUDA_KERNELS", "parity")
@@ -90,3 +90,30 @@ def test_order_4_reads_fewer_cells_than_order_8(cuda_device):
         return body.count("ld.global")
 
     assert loads(4) + 8 <= loads(8), (loads(4), loads(8))
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("acq_type", [0, 1, 2])
+def test_receiver_table_finds_the_cells_the_opencl_kernels_record(cuda_device, monkeypatch, acq_type):
+    # Step 3.4: the native kernels read the cell of every receiver from receiver_table. Fill vx with
+    # 1 + the flat index of each cell, record one row with injSrc of the parity kernels: the seismogram
+    # then holds 1 + the cell each receiver reads (0 where no work item records).
+    from PyFWI.engine.propagation import receiver_table
+
+    monkeypatch.setenv("PYFWI_BACKEND", "cuda:strict")
+    monkeypatch.setenv("PYFWI_NUMERICS", "fixed")
+    monkeypatch.setenv("PYFWI_CUDA_KERNELS", "parity")
+    W = tiny_case(acq_type=acq_type, components=4).W
+    engine = W._engine
+    cells = np.arange(1, W.tnz * W.tnx + 1, dtype=np.float32).reshape(W.tnz, W.tnx)
+    engine.backend.to_device(engine.vx_b, cells)
+    engine._set_injection_args(0)
+    engine._inject(np.zeros(5, np.float32), 0)
+    engine.backend.finish()
+    recorded = np.empty(int(W.nt_ext) * int(W.nr), np.float32)
+    engine.backend.to_host(recorded, engine.seismogramid_vx_b)
+    table, _, _ = receiver_table(W.acq_type, int(W.tnz), int(W.tnx), int(W.nr), int(W.dxr), int(W.n_surface_rec),
+                                 int(W.n_well_rec), (int(W.rec_surface_const), int(W.rec_surface_var)),
+                                 (int(W.rec_top_left_const), int(W.rec_top_left_var)),
+                                 (int(W.rec_top_right_const), int(W.rec_top_right_var)))
+    np.testing.assert_array_equal(recorded[:int(W.nr)].astype(np.int64) - 1, table)

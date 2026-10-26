@@ -111,6 +111,76 @@ def internal_source(source, nt, dt_scale):
     return (resampled[:nt] / up).astype(np.float32)
 
 
+def receiver_table(acq_type, tnz, tnx, nr, dxr, n_surface, n_well, surface, left, right):
+    """The cell of every receiver, as the injection kernels of the OpenCL files find it (step 3.4).
+
+    The OpenCL kernels injSrc and Adj_injSrc run on the whole grid, and the work item of each
+    receiver recognises itself from the acquisition constants of the ``#define`` block. The native
+    CUDA kernels run one thread per receiver instead, which reads its cell from this table. The loops
+    below are those of the kernels of the fixed mode (bounded receiver loops, step 2.4): the work
+    items are the rows ``i < tnz`` and columns ``j < tnx`` of the grid.
+
+    Parameters
+    ----------
+    acq_type : int
+        0 crosswell (``elastic_crosswell.cl``: every receiver in the right well), 1 surface
+        (``elastic_surface.cl``), 2 both wells and the surface (``elastic.cl``: left well, surface,
+        right well, in that order).
+    tnz, tnx : int
+        Grid size, absorbing layer included.
+    nr : int
+        Number of receivers (``Nr``).
+    dxr : int
+        Receiver spacing in cells.
+    n_surface, n_well : int
+        Receivers on the surface (``n_main_rec``) and in each well (``n_extera_rec``).
+    surface, left, right : tuple of int
+        ``(const, var)`` of the surface line (``rec_surface_const``: its row; ``rec_surface_var``:
+        the column of its first receiver), of the left well and of the right well
+        (``rec_top_*_const``: the column; ``rec_top_*_var``: the row of the first receiver).
+
+    Returns
+    -------
+    cells, first, following : numpy.ndarray
+        int32 arrays of ``nr`` values: the flat index of the cell of receiver ``r`` (-1 when no work
+        item records it); 1 when ``r`` is the first receiver of its cell, else 0; the next receiver
+        on the same cell after ``r``, or -1. With these, the residual of receivers that share a cell
+        is added by one thread, in a fixed order (``inject_residual`` of ``elastic.cu``).
+    """
+    cells = np.full(nr, -1, np.int64)
+
+    def well(start, const, var, count):
+        for i in range(0, tnz, dxr):
+            if i // dxr < count:
+                cells[start + i // dxr] = (i + var) * tnx + const
+
+    def surface_line(start):
+        for j in range(0, tnx, dxr):
+            if j // dxr < n_surface:
+                cells[start + j // dxr] = surface[0] * tnx + j + surface[1]
+
+    if acq_type == 0:
+        well(0, right[0], right[1], nr)
+    elif acq_type == 1:
+        surface_line(0)
+    else:
+        well(0, left[0], left[1], n_well)
+        surface_line(n_well)
+        well(n_well + n_surface, right[0], right[1], n_well)
+    first = np.zeros(nr, np.int32)
+    following = np.full(nr, -1, np.int32)
+    last = {}  # cell -> the last receiver seen on it
+    for r, cell in enumerate(cells):
+        if cell < 0:
+            continue
+        if cell in last:
+            following[last[cell]] = r
+        else:
+            first[r] = 1
+        last[cell] = r
+    return cells.astype(np.int32), first, following
+
+
 def checkpoint_steps(chpr, nt):
     """Time steps at which the forward field is stored for the gradient, as in PyFWI 0.1.10.
 
@@ -184,10 +254,14 @@ class PropagationEngine:
         Numeric mode of the kernel sources (``PyFWI.backends.selection.select_numerics``):
         ``"legacy"`` (default) runs the time loops of 0.1.10; ``"fixed"`` injects the source at
         every internal step and the residual at the very step where it was recorded (step 2.4).
+    receivers : tuple of numpy.ndarray, optional
+        ``receiver_table`` of the acquisition. With a native program, the source and the receivers
+        are then handled one thread per receiver (step 3.4) instead of by the OpenCL injection
+        kernels on the whole grid.
     """
 
     def __init__(self, backend, sources, injection, *, tnz, tnx, ns, nr, nt, nt_ext, dt_scale, chp, dxr,
-                 srcx, srcz, source, rec_top_right_var, numerics="legacy"):
+                 srcx, srcz, source, rec_top_right_var, numerics="legacy", receivers=None):
         self.backend = backend
         self.tnz, self.tnx, self.ns, self.nr = tnz, tnx, ns, nr
         self.nt, self.nt_ext, self.dt_scale = nt, nt_ext, dt_scale
@@ -217,6 +291,16 @@ class PropagationEngine:
         if self.prg_native is not None:
             for name in NATIVE_KERNELS:
                 setattr(self.knl, name, backend.kernel(self.prg_native, name))
+        #: Step 3.4: the native kernels inject and record one thread per receiver, reading the cells
+        #: of ``receivers`` (``receiver_table``); launched on a grid of 1 row and ``nr`` columns.
+        self.native_injection = self.prg_native is not None and receivers is not None
+        if self.native_injection:
+            self.knl.inject_and_record = backend.kernel(self.prg_native, "inject_and_record")
+            self.knl.inject_residual = backend.kernel(self.prg_native, "inject_residual")
+            # Read-only tables: no margins (they would hold the float MARGIN_FILL in int32 buffers).
+            self.receiver_cells_b, self.receiver_first_b, self.receiver_following_b = (
+                self._table(table) for table in receivers)
+            self.receiver_size = (1, max(int(nr), 1))
 
         self.margin_bytes = margin_bytes(tnz, tnx, rec_top_right_var, backend.alignment)
         # The allocation (margins included) of every device buffer, by attribute name.
@@ -257,6 +341,14 @@ class PropagationEngine:
         """
         buffer, self._allocations[name] = self.backend.allocate(host, self.margin_bytes, MARGIN_FILL)
         setattr(self, name, buffer)
+
+    def _table(self, host):
+        """A device copy of the int32 array ``host``, without margins (the receiver tables)."""
+        host = np.ascontiguousarray(host, np.int32)
+        buffer = self.backend.allocate_empty(max(host.nbytes, 4))
+        if host.size:
+            self.backend.to_device(buffer, host)
+        return buffer
 
     def margins_changed(self):
         """Names of the device buffers whose margins no longer hold ``MARGIN_FILL`` (step 1.7).
@@ -333,10 +425,15 @@ class PropagationEngine:
         are set by ``_inject``; zeros are placeholders until then.
         """
         zero = np.float32(0)
-        self.backend.set_args(self.knl.injSrc, *self._field_buffers(),
-                              self.seismogramid_vx_b, self.seismogramid_vz_b,
-                              self.seismogramid_taux_b, self.seismogramid_tauz_b, self.seismogramid_tauxz_b,
-                              self.dxr, self.srcx[s], self.srcz[s], zero, zero, zero, zero, np.int32(0))
+        seismograms = (self.seismogramid_vx_b, self.seismogramid_vz_b, self.seismogramid_taux_b,
+                       self.seismogramid_tauz_b, self.seismogramid_tauxz_b)
+        if self.native_injection:  # inject_and_record of elastic.cu (step 3.4)
+            source_cell = np.int32(int(self.srcz[s]) * int(self.tnx) + int(self.srcx[s]))
+            self.backend.set_args(self.knl.inject_and_record, *self._field_buffers(), *seismograms,
+                                  self.receiver_cells_b, source_cell, zero, zero, zero, zero, np.int32(0))
+        else:
+            self.backend.set_args(self.knl.injSrc, *self._field_buffers(), *seismograms,
+                                  self.dxr, self.srcx[s], self.srcz[s], zero, zero, zero, zero, np.int32(0))
 
     def _set_adjoint_args(self):
         """Set the arguments of Adj_injSrc, Adj_update_tau, Adj_update_v and Grad for a gradient.
@@ -346,8 +443,12 @@ class PropagationEngine:
         """
         set_args, k = self.backend.set_args, self.knl
         adjoint = (self.avx_b, self.avz_b, self.ataux_b, self.atauz_b, self.atauxz_b)
-        set_args(k.Adj_injSrc, *adjoint, self.res_vx_b, self.res_vz_b,
-                 self.res_taux_b, self.res_tauz_b, self.res_tauxz_b, self.dxr)
+        residuals = (self.res_vx_b, self.res_vz_b, self.res_taux_b, self.res_tauz_b, self.res_tauxz_b)
+        if self.native_injection:  # inject_residual of elastic.cu (step 3.4)
+            set_args(k.inject_residual, *adjoint, *residuals, self.receiver_cells_b, self.receiver_first_b,
+                     self.receiver_following_b)
+        else:
+            set_args(k.Adj_injSrc, *adjoint, *residuals, self.dxr)
         set_args(k.Adj_update_tau, *adjoint, self.rho_b, self.vdx_pml_b, self.vdz_pml_b)
         set_args(k.Adj_update_v, *adjoint, self.lam_b, self.mu_b, self.vdx_pml_b, self.vdz_pml_b)
         set_args(k.Grad, *self._field_buffers(), *adjoint, self.lam_b, self.mu_b, self.rho_b,
@@ -367,11 +468,23 @@ class PropagationEngine:
             without recording.
         """
         src_kv_x, src_kv_z, src_kt_x, src_kt_z, _ = np.float32(samples)
-        # Arguments 13 to 17: the source samples and the row (the others are set once per shot by
-        # _set_injection_args).
-        for index, value in enumerate((src_kv_x, src_kv_z, src_kt_x, src_kt_z, np.int32(row)), start=13):
-            self.backend.set_arg(self.knl.injSrc, index, value)
-        self._launch(self.knl.injSrc)
+        # The source samples and the row are the last five arguments (the others are set once per
+        # shot by _set_injection_args): 13 to 17 of injSrc, 12 to 16 of inject_and_record.
+        kernel = self.knl.inject_and_record if self.native_injection else self.knl.injSrc
+        start = 12 if self.native_injection else 13
+        for index, value in enumerate((src_kv_x, src_kv_z, src_kt_x, src_kt_z, np.int32(row)), start=start):
+            self.backend.set_arg(kernel, index, value)
+        if self.native_injection:
+            self.backend.launch(kernel, self.receiver_size)
+        else:
+            self._launch(kernel)
+
+    def _inject_residual(self):
+        """Add the residual sample set by ``residual_sample`` to the adjoint fields (Adj_injSrc)."""
+        if self.native_injection:
+            self.backend.launch(self.knl.inject_residual, self.receiver_size)
+        else:
+            self._launch(self.knl.Adj_injSrc)
 
     # ------------------------------------------------------------------ forward modelling
 
@@ -505,7 +618,7 @@ class PropagationEngine:
                 # As in 0.1.10: the residual, the adjoint updates, then the gradient.
                 if t % self.dt_scale == 0:
                     self.residual_sample(t_src)
-                    self._launch(self.knl.Adj_injSrc)
+                    self._inject_residual()
                     t_src -= 1
                 self._adjoint_updates()
                 self._launch(self.knl.Grad)
@@ -565,7 +678,7 @@ class PropagationEngine:
         sample, offset = divmod(t, self.steps_per_sample)
         if offset == 0 and sample < self.nt_ext:
             self.residual_sample(sample + 1)
-            self._launch(self.knl.Adj_injSrc)
+            self._inject_residual()
             t_src = np.int32(sample)
         return t_src
 

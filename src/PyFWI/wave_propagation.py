@@ -8,7 +8,7 @@ from scipy.ndimage import gaussian_filter
 import PyFWI.fwi_tools as tools
 from PyFWI.backends.opencl import OpenCLBackend
 from PyFWI.backends.selection import select_backend, select_cuda_kernels, select_numerics
-from PyFWI.engine.propagation import PropagationEngine, checkpoint_steps
+from PyFWI.engine.propagation import PropagationEngine, checkpoint_steps, receiver_table
 import PyFWI._info as _info
 from PyFWI.fwi_tools import expand_model
 import PyFWI.acquisition as acq
@@ -183,14 +183,21 @@ class WavePreparation:
         # W.knl, W.prg...) are shown as attributes of the propagator (__getattr__ below).
         kernel, kernel_crosswell, kernel_surface = self.kernel_caller()
         sources = {"elastic": kernel, "crosswell": kernel_crosswell, "surface": kernel_surface}
+        receivers = None
         if self.cuda_kernels == "native":
             sources["native"] = self.native_kernel_source()
+            # The cell of every receiver, for the injection kernels of one thread per receiver (step 3.4).
+            receivers = receiver_table(self.acq_type, int(self.tnz), int(self.tnx), int(self.nr), int(self.dxr),
+                                       int(self.n_surface_rec), int(self.n_well_rec),
+                                       (int(self.rec_surface_const), int(self.rec_surface_var)),
+                                       (int(self.rec_top_left_const), int(self.rec_top_left_var)),
+                                       (int(self.rec_top_right_const), int(self.rec_top_right_var)))
         injection = {0: "crosswell", 1: "surface"}.get(self.acq_type, "elastic")
         self._engine = PropagationEngine(
             self._backend, sources,
             injection, tnz=self.tnz, tnx=self.tnx, ns=self.ns, nr=self.nr, nt=self.nt, nt_ext=self.nt_ext,
             dt_scale=self.dt_scale, chp=self.chp, dxr=self.dxr, srcx=self.srcx, srcz=self.srcz, source=self.src,
-            rec_top_right_var=self.rec_top_right_var, numerics=self.numerics)
+            rec_top_right_var=self.rec_top_right_var, numerics=self.numerics, receivers=receivers)
 
         # Make a list for seismograms (filled by the engine)
         self.seismogram = self._engine.seismogram

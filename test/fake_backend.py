@@ -19,6 +19,10 @@ update_tauxz       ``tauxz += c * mu[0]``
 Adj_injSrc         ``a<component>[0] += res_<component>[0]`` (the first receiver)
 Adj_update_*       nothing
 Grad               ``Gmu += vx``, ``Glam += avx``, ``Grho += 1``, ``g_mu_precond += 1``
+inject_and_record  (native, step 3.4) add the four samples at the source cell; then, unless the row
+                   is -1, record every component at the cell of each receiver (``cells``)
+inject_residual    (native) add the residual of each receiver at its cell, receivers sharing a cell
+                   added by the first one (``first``, ``following``)
 =================  ==============================================================================
 
 Used by ``test/test_engine.py``.
@@ -90,7 +94,11 @@ class FakeBackend:
 
     # copies
     def to_device(self, buffer, host, blocking=True):
-        buffer[:] = np.asarray(host, np.float32).reshape(-1)
+        host = np.asarray(host)
+        if host.dtype.kind in "iu":  # an integer table: its bytes, as a device copy does
+            buffer.view(host.dtype)[:host.size] = host.reshape(-1)
+        else:
+            buffer[:] = host.astype(np.float32).reshape(-1)
         self.log.append(("to_device", blocking))
         return FakeEvent()
 
@@ -169,6 +177,30 @@ def _inject(backend, vx, vz, taux, tauz, tauxz, s_vx, s_vz, s_taux, s_tauz, s_ta
         _write(record, int(t) * nr, field[cell] + np.arange(nr) + 100 * int(srcx))
 
 
+def _inject_and_record(backend, vx, vz, taux, tauz, tauxz, s_vx, s_vz, s_taux, s_tauz, s_tauxz, cells,
+                       source_cell, sample_vx, sample_vz, sample_taux, sample_tauz, row):
+    for field, sample in ((vx, sample_vx), (vz, sample_vz), (taux, sample_taux), (tauz, sample_tauz)):
+        field[int(source_cell)] += sample
+    if int(row) < 0:
+        return
+    table = cells.view(np.int32)
+    for field, record in ((vx, s_vx), (vz, s_vz), (taux, s_taux), (tauz, s_tauz), (tauxz, s_tauxz)):
+        _write(record, int(row) * backend.nr, field[table])
+
+
+def _inject_residual(backend, avx, avz, ataux, atauz, atauxz, res_vx, res_vz, res_taux, res_tauz, res_tauxz,
+                     cells, first, following):
+    table, owner, nxt = cells.view(np.int32), first.view(np.int32), following.view(np.int32)
+    for field, res in ((avx, res_vx), (avz, res_vz), (ataux, res_taux), (atauz, res_tauz), (atauxz, res_tauxz)):
+        for r in range(backend.nr):
+            if table[r] < 0 or not owner[r]:
+                continue
+            total, q = res[r], nxt[r]
+            while q >= 0:
+                total, q = total + res[q], nxt[q]
+            field[table[r]] += total
+
+
 def _update_vel(backend, coeff, own, stress1, stress2, rho, vdx, vdz):
     own += coeff * rho[0]
 
@@ -203,4 +235,5 @@ def _grad(backend, vx, vz, taux, tauz, tauxz, avx, avz, ataux, atauz, atauxz, la
 TOY_KERNELS = {"MakeAllZero": _zero, "MakeGradZero": _zero, "injSrc": _inject,
                "update_velx": _update_vel, "update_velz": _update_vel,
                "update_tauz": _update_tauz, "update_tauxz": _update_tauxz, "Adj_injSrc": _adjoint_inject,
-               "Adj_update_tau": _nothing, "Adj_update_v": _nothing, "Grad": _grad}
+               "Adj_update_tau": _nothing, "Adj_update_v": _nothing, "Grad": _grad,
+               "inject_and_record": _inject_and_record, "inject_residual": _inject_residual}

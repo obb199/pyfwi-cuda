@@ -1,9 +1,9 @@
 // Native CUDA kernels of PyFWI for the fixed numeric mode (roadmap Phase 3, from step 3.2).
 //
 // The CUDA backend runs these kernels instead of the OpenCL files (elastic.cl...) when the numeric
-// mode is "fixed" (PyFWI/backends/cuda.py, PYFWI_CUDA_KERNELS). They compute what the fixed branch
-// of elastic.cl computes, written for CUDA so that the optimisations of Phase 3 can change them one
-// at a time, each checked against the OpenCL files compiled for CUDA (the "parity" kernels, OTM
+// mode is "fixed" (PyFWI/backends/cuda.py, PYFWI_CUDA_KERNELS). They compute what the fixed branches
+// of the OpenCL files compute, written for CUDA so that the optimisations of Phase 3 can change them
+// one at a time, each checked against the OpenCL files compiled for CUDA (the "parity" kernels, OTM
 // tests of test/test_native_kernels.py).
 //
 // The source is compiled after the #define block of WavePreparation.kernel_caller, the same as for
@@ -245,4 +245,61 @@ extern "C" __global__ void Grad(const float *vx, const float *vz, const float *t
     Grho[k] += -(dt * (rho_b[k] * rho_b[k])) * (Avx[k] * (DxmPx + DzmPxz) + Avz[k] * (DzpPz + DxpPxz));
     Grho_precond[k] += dt * dt * (vx[k] * vx[k] * (DxmPx * DxmPx + DzmPxz * DzmPxz)
                                   + vz[k] * vz[k] * (DzpPz * DzpPz + DxpPxz * DxpPxz));
+}
+
+// ------------------------------------------------------------------ source and receivers
+//
+// Step 3.4: one thread per receiver instead of the whole grid. The cell of every receiver comes
+// from a table made on the host (PyFWI.engine.propagation.receiver_table, the loops of the OpenCL
+// kernels); the engine launches these kernels on a grid of 1 row and Nr columns.
+
+// Add the source samples at its cell (thread 0) and, when row >= 0, record every receiver in that row
+// of the seismograms (thread r for receiver r): what injSrc of the OpenCL files does, in one launch.
+extern "C" __global__ void inject_and_record(float *vx, float *vz, float *taux, float *tauz, const float *tauxz,
+                                             float *seismogram_vxi, float *seismogram_vzi,
+                                             float *seismogram_tauxi, float *seismogram_tauzi,
+                                             float *seismogram_tauxzi, const int *cells, int source_cell,
+                                             float vsrcx, float vsrcz, float tsrcx, float tsrcz, int row) {
+    const int r = column_of_thread();
+    if (row_of_thread() != 0) return;
+    if (r == 0) {
+        vx[source_cell] += vsrcx;
+        vz[source_cell] += vsrcz;
+        taux[source_cell] += tsrcx;
+        tauz[source_cell] += tsrcz;
+    }
+    if (row < 0 || r >= Nr || cells[r] < 0) return;
+    const int cell = cells[r];
+    seismogram_vxi[row * Nr + r] = vx[cell];
+    seismogram_vzi[row * Nr + r] = vz[cell];
+    seismogram_tauxi[row * Nr + r] = taux[cell];
+    seismogram_tauzi[row * Nr + r] = tauz[cell];
+    seismogram_tauxzi[row * Nr + r] = tauxz[cell];
+}
+
+// Add the residual of every receiver to the adjoint fields at its cell (Adj_injSrc of the OpenCL
+// files). The first receiver of a cell adds those of the receivers that share it, in their order
+// (first, following: PyFWI.engine.propagation.receiver_table), so that no two threads write one
+// cell: deterministic without atomic operations.
+extern "C" __global__ void inject_residual(float *Avx, float *Avz, float *Ataux, float *Atauz, float *Atauxz,
+                                           const float *res_vx, const float *res_vz, const float *res_taux,
+                                           const float *res_tauz, const float *res_tauxz, const int *cells,
+                                           const int *first, const int *following) {
+    const int r = column_of_thread();
+    if (row_of_thread() != 0 || r >= Nr || cells[r] < 0 || !first[r]) return;
+    float sum_vx = res_vx[r], sum_vz = res_vz[r], sum_taux = res_taux[r], sum_tauz = res_tauz[r],
+          sum_tauxz = res_tauxz[r];
+    for (int q = following[r]; q >= 0; q = following[q]) {
+        sum_vx += res_vx[q];
+        sum_vz += res_vz[q];
+        sum_taux += res_taux[q];
+        sum_tauz += res_tauz[q];
+        sum_tauxz += res_tauxz[q];
+    }
+    const int cell = cells[r];
+    Avx[cell] += sum_vx;
+    Avz[cell] += sum_vz;
+    Ataux[cell] += sum_taux;
+    Atauz[cell] += sum_tauz;
+    Atauxz[cell] += sum_tauxz;
 }

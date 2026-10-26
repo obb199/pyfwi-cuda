@@ -129,6 +129,66 @@ def test_a_native_program_provides_every_kernel_but_the_injection():
     assert make_engine().prg_native is None
 
 
+def test_receiver_table_follows_the_loops_of_the_opencl_kernels():
+    # Step 3.4. A 10 x 12 grid, receivers every 2 cells; (const, var) as in the #define block.
+    from PyFWI.engine.propagation import receiver_table
+    surface, left, right = (3, 1), (2, 4), (9, 0)
+    cells, first, following = receiver_table(1, 10, 12, 4, 2, 4, 0, surface, left, right)
+    assert list(cells) == [3 * 12 + 1, 3 * 12 + 3, 3 * 12 + 5, 3 * 12 + 7]  # row 3, columns 1, 3, 5, 7
+    assert list(first) == [1, 1, 1, 1] and list(following) == [-1] * 4
+    cells, _, _ = receiver_table(0, 10, 12, 3, 2, 0, 3, surface, left, right)
+    assert list(cells) == [0 * 12 + 9, 2 * 12 + 9, 4 * 12 + 9]  # right well: column 9 from row 0
+    # Both: left well (2 receivers), surface (2), right well (2); the second surface receiver sits
+    # on the cell of the first receiver of the left well, which adds both residuals.
+    cells, first, following = receiver_table(2, 10, 12, 6, 2, 2, 2, (4, 0), (2, 4), (9, 0))
+    assert list(cells) == [4 * 12 + 2, 6 * 12 + 2, 4 * 12 + 0, 4 * 12 + 2, 0 * 12 + 9, 2 * 12 + 9]
+    assert list(first) == [1, 1, 1, 0, 1, 1] and following[0] == 3 and following[3] == -1
+    # A receiver that no work item records keeps -1 (more receivers than surface columns).
+    cells, first, _ = receiver_table(1, 10, 4, 3, 2, 3, 0, surface, left, right)
+    assert cells[2] == -1 and first[2] == 0
+
+
+def _native_engine(nt_ext=NT_EXT):
+    """An engine on the fake backend with a native program and a receiver table (step 3.4)."""
+    from PyFWI.engine.propagation import PropagationEngine, checkpoint_steps
+    backend = FakeBackend(nr=NR, tnx=TNX)
+    sources = {"elastic": "elastic", "crosswell": "crosswell", "surface": "surface", "native": "native"}
+    cells = np.array([1 * TNX + 0, 1 * TNX + 2, 1 * TNX + 0], np.int32)  # receivers 0 and 2 share a cell
+    table = (cells, np.array([1, 1, 0], np.int32), np.array([2, -1, -1], np.int32))
+    engine = PropagationEngine(backend, sources, "surface", tnz=TNZ, tnx=TNX, ns=NS, nr=NR, nt=NT, nt_ext=nt_ext,
+                               dt_scale=DT_SCALE, chp=checkpoint_steps(30, NT), dxr=np.int32(1), srcx=SRCX,
+                               srcz=SRCZ, source=source, rec_top_right_var=0, numerics="fixed", receivers=table)
+    field = np.ones((TNZ, TNX), np.float32)
+    engine.set_pml(0 * field, 0 * field)
+    engine.set_model(RHO_INVERSE * field, MU * field, LAM * field)
+    return engine, cells
+
+
+def test_native_injection_records_and_injects_one_thread_per_receiver():
+    engine, _ = _native_engine()
+    assert engine.native_injection and engine.receiver_size == (1, NR)
+    engine.backend.log.clear()
+    seismogram = engine.forward()
+    names = launches(engine)
+    assert "injSrc" not in names and names.count("inject_and_record") == NS * NT
+    # The receivers are away from the sources: at the recorded steps they read 1 / rho per update.
+    for t in range(NT_EXT):
+        np.testing.assert_allclose(seismogram["vx"][t, :, 0], t * DT_SCALE * RHO_INVERSE)
+    engine.prepare_gradient()
+    engine.backend.log.clear()
+    res = residual()
+    engine.gradient(res)
+    assert "Adj_injSrc" not in launches(engine) and "inject_residual" in launches(engine)
+    adjoint = np.empty((TNZ, TNX), np.float32)
+    engine.read_field("avx_b", adjoint)
+    # The last shot: residual samples 3, 2, 1 at steps 9, 6, 3; receivers 0 and 2 share cell (1, 0).
+    s, columns = NS - 1, slice((NS - 1) * NR, NS * NR)
+    shared = sum(res["vx"][k, columns][0] + res["vx"][k, columns][2] for k in (1, 2, 3))
+    assert adjoint[1, 0] == pytest.approx(shared) and adjoint[1, 2] == pytest.approx(
+        sum(res["vx"][k, columns][1] for k in (1, 2, 3)))
+    assert s == 1
+
+
 def test_buffers_live_inside_allocations_with_margins():
     engine = make_engine()
     assert engine.margins_changed() == []

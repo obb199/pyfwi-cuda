@@ -788,6 +788,18 @@ Each optimisation is a separate commit, with a benchmark before and after, so th
   fused multiply-add per neighbour. OTM: seismograms 9.3e-7, misfit 5.6e-6, gradients 3.8e-5 (within
   1e-5 and 1e-4). DES (5 runs, `fixed`): medium gradient 5.86 s → 5.57 s, forward 3.06 s → 3.03 s;
   small unchanged (0.20 s / 0.19 s, limited by the host).
+- **3.4 (1D injection and recording):** with the native kernels the source, the receivers and the
+  residual are handled one thread per receiver instead of on the whole grid: `inject_and_record`
+  (thread 0 adds the source samples, every thread records its receiver at the recorded steps; one
+  launch, as `injSrc`) and `inject_residual`. Their cells come from `receiver_table`, made on the host
+  with the loops of the OpenCL kernels of each acquisition; a test fills a field with the index of
+  each cell and checks, on the GPU, that the parity `injSrc` records exactly those cells (crosswell,
+  surface, both). Receivers that share a cell (the wells crossing the surface line in `acq_type` 2)
+  are added by the first of them, in order: deterministic without atomic operations, where the OpenCL
+  kernel races. OTM unchanged (the same numbers as step 3.3). DES (5 runs, `fixed`): small 0.20 s /
+  0.19 s, medium 3.05 s / 5.57 s, unchanged: the whole-grid injection kernel cost about 4 µs of the
+  85 µs of a medium forward step and the number of launches is the same; the step prepares the fusion
+  of step 3.5, where injection and recording go into the update kernels.
 
 ### 3.11 `auto` default and release 0.3.0
 
