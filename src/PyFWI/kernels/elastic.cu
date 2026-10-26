@@ -247,6 +247,109 @@ extern "C" __global__ void Grad(const float *vx, const float *vz, const float *t
                                   + vz[k] * vz[k] * (DzpPz * DzpPz + DxpPxz * DxpPxz));
 }
 
+// ------------------------------------------------------------------ fused kernels (step 3.5)
+//
+// What the time loops run: the two velocity updates in one kernel, the two stress updates in one
+// kernel, and the gradient with the adjoint velocity update. Each thread does, for its cell, exactly
+// what the separate kernels above do, in the same order: the halves of each pair are independent
+// (update_velx and update_velz read different stresses, update_tauz and update_tauxz write different
+// stresses), and the gradient reads the adjoint velocities of its own cell before the adjoint update
+// changes them (no thread reads the adjoint velocities of another cell there). Fewer launches, and
+// every field read once per kernel instead of once per half (a forward step moves 29 % less data).
+
+extern "C" __global__ void update_v(int coeff, float *vx, float *vz, const float *taux, const float *tauz,
+                                    const float *tauxz, const float *rho_b, const float *dxpml,
+                                    const float *dzpml) {
+    const int i = row_of_thread() + sdo, j = column_of_thread() + sdo;
+    if (i > Nz - sdo || j > Nx - sdo) return;
+    const int k = i * Nx + j;
+    const float DxmTx = backward_difference<sdo>(field(taux), k, 1) * inv_dx;
+    const float DzmTxz = backward_difference<sdo>(field(tauxz), k, Nx) * inv_dz;
+    const float DxpTxz = forward_difference<sdo>(field(tauxz), k, 1) * inv_dx;
+    const float DzpTz = forward_difference<sdo>(field(tauz), k, Nx) * inv_dz;
+    if (coeff == 1) {
+        vx[k] += coeff * dt * (rho_b[k] * (DxmTx + DzmTxz));
+        vx[k] += coeff * dt * (-(dxpml[k] + dzpml[k]) * vx[k]);
+        vz[k] += coeff * dt * (rho_b[k] * (DzpTz + DxpTxz));
+        vz[k] += coeff * dt * (-(dzpml[k] + dxpml[k]) * vz[k]);
+    } else if (coeff == -1) {
+        vx[k] += coeff * dt * (+(dxpml[k] + dzpml[k]) * vx[k]);
+        vx[k] += coeff * dt * (rho_b[k] * (DxmTx + DzmTxz));
+        vz[k] += coeff * dt * (+(dzpml[k] + dxpml[k]) * vz[k]);
+        vz[k] += coeff * dt * (rho_b[k] * (DzpTz + DxpTxz));
+    }
+}
+
+extern "C" __global__ void update_tau(int coeff, const float *vx, const float *vz, float *taux, float *tauz,
+                                      float *tauxz, const float *lambda, const float *mu, const float *dxpml,
+                                      const float *dzpml) {
+    const int i = row_of_thread() + sdo, j = column_of_thread() + sdo;
+    if (i > Nz - sdo || j > Nx - sdo) return;
+    const int k = i * Nx + j;
+    const float DxpVx = forward_difference<sdo>(field(vx), k, 1) * inv_dx;
+    const float DzmVz = backward_difference<sdo>(field(vz), k, Nx) * inv_dz;
+    const float DxmVz = backward_difference<sdo>(field(vz), k, 1) * inv_dx;
+    const float DzpVx = forward_difference<sdo>(field(vx), k, Nx) * inv_dz;
+    if (coeff == 1) {
+        taux[k] += coeff * dt * ((lambda[k] + 2 * mu[k]) * DxpVx + lambda[k] * DzmVz);
+        tauz[k] += coeff * dt * ((lambda[k] + 2 * mu[k]) * DzmVz + lambda[k] * DxpVx);
+        taux[k] += coeff * dt * (-(dxpml[k] + dzpml[k]) * taux[k]);
+        tauz[k] += coeff * dt * (-(dxpml[k] + dzpml[k]) * tauz[k]);
+        tauxz[k] += coeff * dt * (mu[k] * (DxmVz + DzpVx));
+        tauxz[k] += coeff * dt * (-(dxpml[k] + dzpml[k]) * tauxz[k]);
+    } else if (coeff == -1) {
+        taux[k] += coeff * dt * (+(dxpml[k] + dzpml[k]) * taux[k]);
+        tauz[k] += coeff * dt * (+(dxpml[k] + dzpml[k]) * tauz[k]);
+        taux[k] += coeff * dt * ((lambda[k] + 2 * mu[k]) * DxpVx + lambda[k] * DzmVz);
+        tauz[k] += coeff * dt * ((lambda[k] + 2 * mu[k]) * DzmVz + lambda[k] * DxpVx);
+        tauxz[k] += coeff * dt * (+(dxpml[k] + dzpml[k]) * tauxz[k]);
+        tauxz[k] += coeff * dt * (mu[k] * (DxmVz + DzpVx));
+    }
+}
+
+// Grad on the cells outside the absorbing layer, then Adj_update_v on every updated cell.
+extern "C" __global__ void grad_adjoint_v(const float *vx, const float *vz, const float *taux, const float *tauz,
+                                          const float *tauxz, float *Avx, float *Avz, const float *Ataux,
+                                          const float *Atauz, const float *Atauxz, const float *lambda,
+                                          const float *mu, const float *rho_b, const float *dxpml,
+                                          const float *dzpml, float *Gmu, float *Gmu_precond, float *Glam,
+                                          float *Glam_precond, float *Grho, float *Grho_precond) {
+    const int i = row_of_thread() + sdo, j = column_of_thread() + sdo;
+    if (i > Nz - sdo || j > Nx - sdo) return;
+    const int k = i * Nx + j;
+    if (i >= npml + sdo && j >= npml + sdo && i <= Nz - sdo - npml && j <= Nx - sdo - npml) {
+        const float DzpVx = forward_difference<sdo>(field(vx), k, Nx) * inv_dz;
+        const float DxmVz = backward_difference<sdo>(field(vz), k, 1) * inv_dx;
+        const float DxpVx = forward_difference<sdo>(field(vx), k, 1) * inv_dx;
+        const float DzmVz = backward_difference<sdo>(field(vz), k, Nx) * inv_dz;
+        const float DzpPz = forward_difference<sdo>(field(tauz), k, Nx) * inv_dz;
+        const float DxmPx = backward_difference<sdo>(field(taux), k, 1) * inv_dx;
+        const float DxpPxz = forward_difference<sdo>(field(tauxz), k, 1) * inv_dx;
+        const float DzmPxz = backward_difference<sdo>(field(tauxz), k, Nx) * inv_dz;
+        Gmu[k] += 2 * dt * (Ataux[k] * DxpVx + Atauz[k] * DzmVz) + dt * Atauxz[k] * (DzpVx + DxmVz);
+        Gmu_precond[k] += 4 * dt * dt * (taux[k] * taux[k] * DxpVx * DxpVx + tauz[k] * tauz[k] * DzmVz * DzmVz)
+                          + dt * dt * tauxz[k] * tauxz[k] * (DzpVx * DzpVx + DxmVz * DxmVz);
+        Glam[k] += dt * (Ataux[k] + Atauz[k]) * (DxpVx + DzmVz);
+        Glam_precond[k] += dt * dt * (taux[k] * taux[k] + tauz[k] * tauz[k]) * (DxpVx * DxpVx + DzmVz * DzmVz);
+        Grho[k] += -(dt * (rho_b[k] * rho_b[k])) * (Avx[k] * (DxmPx + DzmPxz) + Avz[k] * (DzpPz + DxpPxz));
+        Grho_precond[k] += dt * dt * (vx[k] * vx[k] * (DxmPx * DxmPx + DzmPxz * DzmPxz)
+                                      + vz[k] * vz[k] * (DzpPz * DzpPz + DxpPxz * DxpPxz));
+    }
+    const auto p_ataux = [=](int n) { return (lambda[n] + 2 * mu[n]) * Ataux[n]; };
+    const auto p_atauz = [=](int n) { return (lambda[n] + 2 * mu[n]) * Atauz[n]; };
+    const auto l_ataux = [=](int n) { return lambda[n] * Ataux[n]; };
+    const auto l_atauz = [=](int n) { return lambda[n] * Atauz[n]; };
+    const auto m_atauxz = [=](int n) { return mu[n] * Atauxz[n]; };
+    const float DxmAtaux = backward_difference<sdo>(p_ataux, k, 1) * inv_dx;
+    const float DxmAtauz = backward_difference<sdo>(l_atauz, k, 1) * inv_dx;
+    const float DzmAtauxz = backward_difference<sdo>(m_atauxz, k, Nx) * inv_dz;
+    const float DzpAtauz = forward_difference<sdo>(p_atauz, k, Nx) * inv_dz;
+    const float DzpAtaux = forward_difference<sdo>(l_ataux, k, Nx) * inv_dz;
+    const float DxpAtauxz = forward_difference<sdo>(m_atauxz, k, 1) * inv_dx;
+    Avx[k] += -dt * ((dxpml[k] + dzpml[k]) * Avx[k] + (DxmAtaux + DxmAtauz + DzmAtauxz));
+    Avz[k] += -dt * ((dxpml[k] + dzpml[k]) * Avz[k] + (DzpAtaux + DzpAtauz + DxpAtauxz));
+}
+
 // ------------------------------------------------------------------ source and receivers
 //
 // Step 3.4: one thread per receiver instead of the whole grid. The cell of every receiver comes

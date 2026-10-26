@@ -41,6 +41,11 @@ KERNELS = ("MakeAllZero", "MakeGradZero", "injSrc", "Adj_injSrc", "update_velx",
 #: include one: every kernel but the injection ones, which still come from the OpenCL files.
 NATIVE_KERNELS = tuple(name for name in KERNELS if name not in ("injSrc", "Adj_injSrc"))
 
+#: The fused kernels of the native program, which the time loops run instead of the separate ones
+#: (step 3.5): ``update_v`` (update_velx + update_velz), ``update_tau`` (update_tauz + update_tauxz)
+#: and ``grad_adjoint_v`` (Grad + Adj_update_v).
+FUSED_KERNELS = ("update_v", "update_tau", "grad_adjoint_v")
+
 #: Value of the margins around every device buffer (step 1.7): what the out-of-bounds reads of the
 #: kernels of 0.1.10 return. 0 reproduces the golden masters, which 0.1.10 computed inside zero
 #: guard bands; the tests set NaN or 1.0 to see where the kernels read and write.
@@ -289,8 +294,10 @@ class PropagationEngine:
         #: those of elastic.cl, so that the time loops launch either set the same way.
         self.prg_native = backend.build_native(sources["native"]) if "native" in sources else None
         if self.prg_native is not None:
-            for name in NATIVE_KERNELS:
+            for name in NATIVE_KERNELS + FUSED_KERNELS:
                 setattr(self.knl, name, backend.kernel(self.prg_native, name))
+        #: Step 3.5: with a native program the loops launch its fused kernels.
+        self.fused = self.prg_native is not None
         #: Step 3.4: the native kernels inject and record one thread per receiver, reading the cells
         #: of ``receivers`` (``receiver_table``); launched on a grid of 1 row and ``nr`` columns.
         self.native_injection = self.prg_native is not None and receivers is not None
@@ -417,6 +424,11 @@ class PropagationEngine:
                  self.lam_b, self.mu_b, self.vdx_pml_b, self.vdz_pml_b)
         set_args(k.update_tauxz, coeff, self.vx_b, self.vz_b, self.tauxz_b, self.mu_b,
                  self.vdx_pml_b, self.vdz_pml_b)
+        if self.fused:
+            set_args(k.update_v, coeff, self.vx_b, self.vz_b, self.taux_b, self.tauz_b, self.tauxz_b, self.rho_b,
+                     self.vdx_pml_b, self.vdz_pml_b)
+            set_args(k.update_tau, coeff, *self._field_buffers(), self.lam_b, self.mu_b, self.vdx_pml_b,
+                     self.vdz_pml_b)
 
     def _set_injection_args(self, s):
         """Set the arguments of injSrc that stay the same for every time step of shot ``s``.
@@ -454,6 +466,10 @@ class PropagationEngine:
         set_args(k.Grad, *self._field_buffers(), *adjoint, self.lam_b, self.mu_b, self.rho_b,
                  self.Gmu_b, self.g_mu_precond_b, self.Glam_b, self.g_lam_precond_b,
                  self.Grho_b, self.g_rho_precond_b)
+        if self.fused:
+            set_args(k.grad_adjoint_v, *self._field_buffers(), *adjoint, self.lam_b, self.mu_b, self.rho_b,
+                     self.vdx_pml_b, self.vdz_pml_b, self.Gmu_b, self.g_mu_precond_b, self.Glam_b,
+                     self.g_lam_precond_b, self.Grho_b, self.g_rho_precond_b)
 
     def _inject(self, samples, row):
         """Add ``samples`` to the fields at the source and record the receivers in ``row`` (injSrc).
@@ -544,12 +560,28 @@ class PropagationEngine:
 
         The velocities from the stresses (V: update_velx, update_velz), then the stresses from the
         new velocities (T: update_tauz, update_tauxz): with the source added before, the step is
-        u(t + 1) = T(V(u(t) + source(t))).
+        u(t + 1) = T(V(u(t) + source(t))). With the native kernels, one launch for each half
+        (update_v, update_tau: step 3.5).
         """
+        if self.fused:
+            self._launch(self.knl.update_v)
+            self._launch(self.knl.update_tau)
+            return
         self._launch(self.knl.update_velx)
         self._launch(self.knl.update_velz)
         self._launch(self.knl.update_tauz)
         self._launch(self.knl.update_tauxz)
+
+    def _backward_step(self):
+        """Undo one forward step (``_set_update_args`` with coeff = -1): the stresses, then the velocities."""
+        if self.fused:
+            self._launch(self.knl.update_tau)
+            self._launch(self.knl.update_v)
+            return
+        self._launch(self.knl.update_tauxz)
+        self._launch(self.knl.update_tauz)
+        self._launch(self.knl.update_velz)
+        self._launch(self.knl.update_velx)
 
     def make_seismogram(self, s):
         """Read the seismograms of shot ``s`` from the device into ``self.seismogram[...][:, :, s]``.
@@ -606,10 +638,7 @@ class PropagationEngine:
                 chpc -= 1
             else:
                 # Backward propagation; arguments (coeff = -1) set by _set_update_args.
-                self._launch(self.knl.update_tauxz)
-                self._launch(self.knl.update_tauz)
-                self._launch(self.knl.update_velz)
-                self._launch(self.knl.update_velx)
+                self._backward_step()
 
             # Adjoint modelling; arguments set by _set_adjoint_args.
             if self.fixed:
@@ -634,9 +663,14 @@ class PropagationEngine:
         adjoint stresses from the new adjoint velocities (Adj_update_tau, the transpose of V). The
         fixed mode runs them in that order. 0.1.10 (the legacy mode) runs Adj_update_tau first: its
         adjoint step is not the transpose of the forward one (measured on random fields, one step:
-        <A u, v> and <u, A^T v> differ by 4e-3 in relative terms, against 1e-7 in that order).
+        <A u, v> and <u, A^T v> differ by 4e-3 in relative terms, against 1e-7 in that order). The
+        native kernels run Adj_update_v fused with Grad (grad_adjoint_v, step 3.5): with them this
+        also accumulates the gradient, which ``_adjoint_step`` then does not launch separately.
         """
-        if self.fixed:
+        if self.fused:  # Grad + Adj_update_v in one launch (step 3.5): the gradient accumulates too
+            self._launch(self.knl.grad_adjoint_v)
+            self._launch(self.knl.Adj_update_tau)
+        elif self.fixed:
             self._launch(self.knl.Adj_update_v)
             self._launch(self.knl.Adj_update_tau)
         else:
@@ -673,7 +707,8 @@ class PropagationEngine:
         t_src : numpy.int32
             The last recorded sample injected (``nt_ext`` before the first).
         """
-        self._launch(self.knl.Grad)
+        if not self.fused:  # the fused kernel of _adjoint_updates accumulates the gradient itself
+            self._launch(self.knl.Grad)
         self._adjoint_updates()
         sample, offset = divmod(t, self.steps_per_sample)
         if offset == 0 and sample < self.nt_ext:

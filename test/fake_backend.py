@@ -23,6 +23,9 @@ inject_and_record  (native, step 3.4) add the four samples at the source cell; t
                    is -1, record every component at the cell of each receiver (``cells``)
 inject_residual    (native) add the residual of each receiver at its cell, receivers sharing a cell
                    added by the first one (``first``, ``following``)
+update_v           (native, fused, step 3.5) update_velx and update_velz
+update_tau         (native, fused) update_tauz and update_tauxz
+grad_adjoint_v     (native, fused) Grad, then Adj_update_v (nothing)
 =================  ==============================================================================
 
 Used by ``test/test_engine.py``.
@@ -201,6 +204,22 @@ def _inject_residual(backend, avx, avz, ataux, atauz, atauxz, res_vx, res_vz, re
             field[table[r]] += total
 
 
+def _update_v(backend, coeff, vx, vz, taux, tauz, tauxz, rho, vdx, vdz):
+    _update_vel(backend, coeff, vx, taux, tauxz, rho, vdx, vdz)
+    _update_vel(backend, coeff, vz, tauz, tauxz, rho, vdx, vdz)
+
+
+def _update_tau(backend, coeff, vx, vz, taux, tauz, tauxz, lam, mu, vdx, vdz):
+    _update_tauz(backend, coeff, vx, vz, taux, tauz, lam, mu, vdx, vdz)
+    _update_tauxz(backend, coeff, vx, vz, tauxz, mu, vdx, vdz)
+
+
+def _grad_adjoint_v(backend, vx, vz, taux, tauz, tauxz, avx, avz, ataux, atauz, atauxz, lam, mu, rho, vdx, vdz,
+                    g_mu, mu_precond, g_lam, lam_precond, g_rho, rho_precond):
+    _grad(backend, vx, vz, taux, tauz, tauxz, avx, avz, ataux, atauz, atauxz, lam, mu, rho,
+          g_mu, mu_precond, g_lam, lam_precond, g_rho, rho_precond)
+
+
 def _update_vel(backend, coeff, own, stress1, stress2, rho, vdx, vdz):
     own += coeff * rho[0]
 
@@ -236,4 +255,5 @@ TOY_KERNELS = {"MakeAllZero": _zero, "MakeGradZero": _zero, "injSrc": _inject,
                "update_velx": _update_vel, "update_velz": _update_vel,
                "update_tauz": _update_tauz, "update_tauxz": _update_tauxz, "Adj_injSrc": _adjoint_inject,
                "Adj_update_tau": _nothing, "Adj_update_v": _nothing, "Grad": _grad,
-               "inject_and_record": _inject_and_record, "inject_residual": _inject_residual}
+               "inject_and_record": _inject_and_record, "inject_residual": _inject_residual,
+               "update_v": _update_v, "update_tau": _update_tau, "grad_adjoint_v": _grad_adjoint_v}

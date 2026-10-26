@@ -11,7 +11,9 @@ Measured, the largest difference on the 16 cases:
   bit for bit equal to the parity kernels;
 * step 3.3 (multiplications by 1 / dx and 1 / dz instead of divisions): seismograms 9.3e-7, misfit
   5.6e-6, gradients 3.8e-5 (rounding);
-* step 3.4 (source, receivers and residual handled one thread per receiver): the same.
+* step 3.4 (source, receivers and residual handled one thread per receiver): the same;
+* step 3.5 (fused kernels): the same; the fused kernels give the same bits as the separate native
+  kernels (``test_fused_kernels_give_the_bits_of_the_separate_ones``).
 """
 import numpy as np
 import pytest
@@ -66,6 +68,25 @@ def test_the_fixed_mode_runs_the_native_kernels(cuda_device, monkeypatch):
     assert legacy.cuda_kernels == "parity" and legacy.prg_native is None
     monkeypatch.setenv("PYFWI_CUDA_KERNELS", "parity")
     assert tiny_case(inpa_extra={"numerics": "fixed"}).W.cuda_kernels == "parity"
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("kw", [{"sdo": 4}, {"sdo": 8, "acq_type": 2, "components": 4},
+                                {"sdo": 4, "acq_type": 0, "components": 4, "chpr": 0}])
+def test_fused_kernels_give_the_bits_of_the_separate_ones(cuda_device, monkeypatch, kw):
+    # Step 3.5: update_v, update_tau and grad_adjoint_v do, cell by cell, what the separate native
+    # kernels do; the engine runs the separate ones when its ``fused`` flag is off.
+    from helpers import forward_and_gradient
+
+    monkeypatch.setenv("PYFWI_BACKEND", "cuda:strict")
+    monkeypatch.setenv("PYFWI_NUMERICS", "fixed")
+    fused_case, separate_case = tiny_case(**kw), tiny_case(**kw)
+    assert fused_case.W._engine.fused
+    separate_case.W._engine.fused = False
+    fused, separate = forward_and_gradient(fused_case), forward_and_gradient(separate_case)
+    for a, b in zip(fused, separate):
+        for key in a:
+            np.testing.assert_array_equal(a[key], b[key], err_msg=key)
 
 
 @pytest.mark.gpu

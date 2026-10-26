@@ -171,6 +171,8 @@ def test_native_injection_records_and_injects_one_thread_per_receiver():
     seismogram = engine.forward()
     names = launches(engine)
     assert "injSrc" not in names and names.count("inject_and_record") == NS * NT
+    # Step 3.5: the fused updates, one launch for the velocities and one for the stresses.
+    assert names.count("update_v") == names.count("update_tau") == NS * NT and "update_velx" not in names
     # The receivers are away from the sources: at the recorded steps they read 1 / rho per update.
     for t in range(NT_EXT):
         np.testing.assert_allclose(seismogram["vx"][t, :, 0], t * DT_SCALE * RHO_INVERSE)
@@ -178,7 +180,10 @@ def test_native_injection_records_and_injects_one_thread_per_receiver():
     engine.backend.log.clear()
     res = residual()
     engine.gradient(res)
-    assert "Adj_injSrc" not in launches(engine) and "inject_residual" in launches(engine)
+    names = launches(engine)
+    assert "Adj_injSrc" not in names and "inject_residual" in names
+    assert "Grad" not in names and "Adj_update_v" not in names
+    assert names.count("grad_adjoint_v") == names.count("Adj_update_tau") == NS * (NT - 1)
     adjoint = np.empty((TNZ, TNX), np.float32)
     engine.read_field("avx_b", adjoint)
     # The last shot: residual samples 3, 2, 1 at steps 9, 6, 3; receivers 0 and 2 share cell (1, 0).

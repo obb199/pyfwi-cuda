@@ -800,6 +800,19 @@ Each optimisation is a separate commit, with a benchmark before and after, so th
   0.19 s, medium 3.05 s / 5.57 s, unchanged: the whole-grid injection kernel cost about 4 µs of the
   85 µs of a medium forward step and the number of launches is the same; the step prepares the fusion
   of step 3.5, where injection and recording go into the update kernels.
+- **3.5 (fusion):** the loops run `update_v` (`update_velx` + `update_velz`), `update_tau`
+  (`update_tauz` + `update_tauxz`) and `grad_adjoint_v` (`Grad` + `Adj_update_v`): each thread does
+  for its cell what the separate kernels do, in the same order (the halves are independent; the
+  gradient reads the adjoint velocities of its own cell before their update), so the fused kernels
+  give the same bits as the separate native ones (test) and OTM is unchanged. Kernels per step:
+  forward 5 → 3 (injection, velocities, stresses), gradient 8 → 5. Injection and recording stay in
+  `inject_and_record`: moving the stress injection of the next step into `update_tau` would put the
+  source into the stored checkpoints. GPU time per step, medium: forward 88 → 69 µs (`update_v` 29.4,
+  `update_tau` 36.9 µs: every field read once per kernel), gradient about 203 → 180 µs
+  (`grad_adjoint_v` 82 µs). DES (5 runs, `fixed`): small 0.20 s / 0.19 s → 0.17 s / 0.15 s, medium
+  gradient 5.57 s → 5.06 s; the medium forward stays at 3.04 s because it is now limited by the host
+  (127 µs of Python per step for 3 launches and their arguments, against 69 µs on the GPU), which steps
+  3.6 and 3.7 address.
 
 ### 3.11 `auto` default and release 0.3.0
 
