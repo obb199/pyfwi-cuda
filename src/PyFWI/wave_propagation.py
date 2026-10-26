@@ -381,15 +381,14 @@ class WavePreparation:
         # Decide on openCl file based on medium type
         cl_file_name = "elastic.cl"
 
-        # Call the openCl file
+        # Call the openCl file (closed after reading: 0.1.10 left the three files open)
         path = os.path.dirname(__file__) + "/"
-        f = open(path + cl_file_name, 'r')
-        f_cw = open(path + 'elastic_crosswell.cl', 'r')
-        f_surf = open(path + 'elastic_surface.cl', 'r')
-
-        fstr = "".join(f.readlines())
-        fstr_cw = "".join(f_cw.readlines())
-        fstr_surf = "".join(f_surf.readlines())
+        with open(path + cl_file_name, 'r') as f:
+            fstr = f.read()
+        with open(path + 'elastic_crosswell.cl', 'r') as f_cw:
+            fstr_cw = f_cw.read()
+        with open(path + 'elastic_surface.cl', 'r') as f_surf:
+            fstr_surf = f_surf.read()
 
         kernel_source = macro + fstr
         kernel_src_crosswell = macro + fstr_cw

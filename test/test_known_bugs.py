@@ -30,6 +30,7 @@ and must pass everywhere else.
 | ``test_default_geometry_is_deterministic`` | race conditions at source/receiver coincidences (non-strict: probabilistic) | 3.4 |
 | ``test_chpr_zero_gives_the_checkpointed_gradient`` | ``chpr=0`` (the default) rebuilds the field backwards through the PML: wrong gradient | 4.2 |
 | ``test_lbfgs_iterates_with_physically_scaled_data`` | absolute ``pgtol = 1e-8``: L-BFGS stops at iteration 0 on realistic data | 2.4 |
+| ``test_kernel_files_are_closed`` | ``kernel_caller`` leaves the three ``.cl`` files open (``ResourceWarning``) | 2.4 (done) |
 | ``test_pml_profile_does_not_depend_on_numpy`` | NumPy 2 type promotion changes the PML profile in the last bit | 1.1 (done) |
 | ``test_source_injection_does_not_excite_grid_noise`` | the source is added once every ``dt_scale`` steps: grid-scale noise at dh of 4-6 m | 2.4 |
 | ``test_crosswell_vz_seismogram_records_vz`` | the crosswell ``vz`` seismogram stores ``vx`` | 2.4 (``fixed`` mode) |
@@ -374,3 +375,17 @@ def test_wheel_contains_torch_and_data(built_distributions):
     assert "PyFWI/wave_propagation.py" in names  # sanity check of the build itself
     assert "PyFWI/torch/wave_propagation.py" in names, "PyFWI/torch is missing from the wheel"
     assert "PyFWI/data/Dupuy2011_Moduli_data.mat" in names, "PyFWI/data is missing from the wheel"
+
+
+@pytest.mark.xfail(condition=REFERENCE, strict=True, reason="0.1.10 opens the .cl files without closing them")
+def test_kernel_files_are_closed():
+    # Fixed in step 2.4: kernel_caller read the three kernel files without closing them, and Python
+    # warned (ResourceWarning) when the file objects were collected.
+    import gc
+    import warnings
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", ResourceWarning)
+        kernel_sources(4)
+        gc.collect()
+    leaks = [str(w.message) for w in caught if issubclass(w.category, ResourceWarning)]
+    assert not leaks, leaks
