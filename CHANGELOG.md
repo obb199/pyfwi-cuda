@@ -9,6 +9,21 @@ how much and in which numeric mode.
 
 ## [Unreleased]
 
+### Numerical changes
+
+- None so far.
+
+## [0.2.0] - 2026-10-26
+
+The CUDA backend (Phase 2 of the roadmap, gate [G2](docs/cuda-migration/gates/G2.md)): PyFWI on CUDA with
+the kernel files of OpenCL, chosen with `PYFWI_BACKEND=cuda` and installed with the `cuda13` or `cuda12`
+extra, within recorded tolerances of OpenCL on the whole matrix
+([parity report](docs/cuda-migration/reports/parity-0.2.0.md)) and faster than it in every scenario; and
+the `fixed` numeric mode, the default of CUDA, which corrects the numerical bugs of 0.1.10 found in this
+phase and runs 7.5 to 15.9 times faster than 0.1.10
+([benchmark](docs/cuda-migration/reports/benchmark-0.2.0.md)). OpenCL stays the default backend, in the
+`legacy` mode, with exactly the results of 0.1.10.
+
 ### Added
 
 - Choice of the backend (step 2.2, `PyFWI.backends.selection`): `inpa['backend']`, else the

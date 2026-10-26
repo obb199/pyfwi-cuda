@@ -6,7 +6,7 @@ The largest gradient differences, in the `fixed` mode, are those of one case (we
 
 ## Environment
 
-- PyFWI: 0.1.11
+- PyFWI: 0.2.0
 - GPU: NVIDIA GeForce RTX 3060 (CUDA device 0)
 - CUDA runtime: 13020
 - NVRTC: 13.4

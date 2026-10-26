@@ -32,11 +32,13 @@ the user's code.
 - [Execution and verification roadmap](docs/cuda-migration/execution-roadmap.md): every step from
   the current state to version 0.4, with the tests and checks of each step.
 
-**Status:** release 0.1.11, the end of Phase 1 ([gate G1](docs/cuda-migration/gates/G1.md)): the
-OpenCL engine of PyFWI 0.1.10 with exactly its results, installable with current NumPy and SciPy, and
-1.1 to 3.5 times faster ([benchmark](docs/cuda-migration/reports/benchmark-0.1.11.md)). Every change
-is listed in [CHANGELOG.md](CHANGELOG.md); the golden masters in `test/golden/` check that the results
-stay those of 0.1.10. Next: Phase 2, the CUDA backend.
+**Status:** release 0.2.0, the end of Phase 2 ([gate G2](docs/cuda-migration/gates/G2.md)): a CUDA
+backend running the kernel files of OpenCL within recorded tolerances of it
+([parity report](docs/cuda-migration/reports/parity-0.2.0.md)), and a `fixed` numeric mode that corrects
+the numerical bugs of 0.1.10; CUDA in that mode is 7.5 to 15.9 times faster than 0.1.10
+([benchmark](docs/cuda-migration/reports/benchmark-0.2.0.md)). OpenCL stays the default, in the `legacy`
+mode, with exactly the results of 0.1.10 (the golden masters in `test/golden/` check it). Every change
+is listed in [CHANGELOG.md](CHANGELOG.md). Next: Phase 3, optimised CUDA kernels.
 
 ## Repository layout
 

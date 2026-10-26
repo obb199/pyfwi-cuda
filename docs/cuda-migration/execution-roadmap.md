@@ -33,7 +33,7 @@ This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into 
 | 2.4 | `legacy` and `fixed` numeric modes | **done** |
 | 2.5 | API contract on the CUDA backend | **done** |
 | 2.6 | `[cuda13]` and `[cuda12]` extras | **done** |
-| 2.7 | Parity report and release 0.2.0 | **G2** |
+| 2.7 | Parity report and release 0.2.0 | **done** · **[G2](gates/G2.md) approved** |
 | 3.1–3.10 | CUDA optimisations, one per commit, with a benchmark before and after | Phase 3 |
 | 3.11 | `auto` default and release 0.3.0 | **G3** |
 | 4.1–4.6 | Cost function on the GPU, boundary saving, FP16, multi-GPU, DLPack, geophysical validation | Phase 4 |
@@ -718,6 +718,12 @@ CUDA comes in as an option; the default stays `opencl`.
   gradients 6e-5 (`legacy`) and 1e-3 (`fixed`), inverted models 1e-4, inversion misfits 2.5e-4. The
   parity test of the propagation cases runs in both modes, and a new slow test compares the 10
   inversions (FWI 2 iterations, time-lapse 1) between backends in both modes: all pass.
+- **Result (release):** version 0.2.0, tag `v0.2.0`. DES ([report](reports/benchmark-0.2.0.md), 5 runs
+  per scenario): the parity CUDA backend is faster than OpenCL everywhere (forward / gradient 1.48× /
+  1.17× small, 1.30× / 1.14× medium, 1.32× / 1.26× large), and CUDA in its default `fixed` mode is
+  7.5× / 10.2× (small), 15.9× / 9.8× (medium) and 10.4× / 9.3× (large) faster than 0.1.10; OpenCL is
+  unchanged since 0.1.11. EXA on both backends, PKG with both extras and on Python 3.10 to 3.13 (the
+  release tests), FWI between backends within tolerance. Gate report: [G2](gates/G2.md).
 
 ### Gate G2
 

@@ -178,3 +178,17 @@ def test_release_0_1_11_is_faster_than_0_1_10_in_every_scenario():
         for kind in ("forward_s", "gradient_s"):
             assert release[name][kind]["median"] < baseline[name][kind]["median"], (name, kind)
         assert release[name]["per_step"]["blocking_copies"] < 0.01, name
+
+
+def test_release_0_2_0_cuda_is_never_slower_than_opencl():
+    # Gate G2 (docs/cuda-migration/reports/benchmark-0.2.0.md): the parity CUDA backend (legacy mode,
+    # the arithmetic of OpenCL) is not slower than OpenCL in any scenario, and the fixed mode, the
+    # default of CUDA, is at least 7 times faster than 0.1.10. Recorded results.
+    baseline = _stored("baseline", "ref-0.1.10-pyopencl-2022")["scenarios"]
+    opencl, legacy, fixed = (_stored("release-0.2.0", f"fork-0.2.0-{run}")["scenarios"]
+                             for run in ("opencl", "cuda-legacy", "cuda-fixed"))
+    assert set(opencl) == set(legacy) == set(fixed) == {"small", "medium", "large"}
+    for name in opencl:
+        for kind in ("forward_s", "gradient_s"):
+            assert legacy[name][kind]["median"] < opencl[name][kind]["median"], (name, kind)
+            assert baseline[name][kind]["median"] / fixed[name][kind]["median"] > 7, (name, kind)
