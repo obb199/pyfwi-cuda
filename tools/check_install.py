@@ -10,7 +10,7 @@ without a GPU or an OpenCL device:
    the rock-physics data of ``model_dataset`` (``data/*.mat``);
 3. every module imports. Modules that need an optional dependency (extra) that is not installed
    are reported as skipped, not as failures: ``PyFWI.torchfwi`` and ``PyFWI.torch.*`` need
-   ``torch`` (extra ``torch``). ``segyio`` (extra ``segy``) is not needed to import anything.
+   ``torch`` (extra ``torch``), ``PyFWI.backends.cuda`` needs CuPy. ``segyio`` (extra ``segy``) is not needed to import anything.
 4. the installed data file is usable: ``ModelGenerator("dupuy")`` reads it (with the wheel of
    0.1.10 this failed with ``FileNotFoundError``).
 
@@ -35,10 +35,11 @@ import sys
 DISTRIBUTION = "pyfwi-cuda"
 
 #: Files of the ``PyFWI`` package that are not Python modules, relative to the package folder.
-DATA_FILES = ("elastic.cl", "elastic_crosswell.cl", "elastic_surface.cl", "data/Dupuy2011_Moduli_data.mat")
+DATA_FILES = ("elastic.cl", "elastic_crosswell.cl", "elastic_surface.cl", "data/Dupuy2011_Moduli_data.mat",
+              "kernels/opencl_on_cuda.h")
 
 #: Optional dependency (import name) that each module needs, for modules that need one.
-OPTIONAL = {"PyFWI.torchfwi": "torch", "PyFWI.torch.wave_propagation": "torch"}
+OPTIONAL = {"PyFWI.torchfwi": "torch", "PyFWI.torch.wave_propagation": "torch", "PyFWI.backends.cuda": "cupy"}
 
 
 def modules(folder):

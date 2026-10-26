@@ -71,16 +71,12 @@ FAILURES = []
 #: ``threadIdx.x`` makes neighbouring threads of a warp read neighbouring
 #: addresses (coalesced access).
 #:
-#: Used by ``compile_ptx()`` (this module) and the GPU tests.
-CUDA_PORT_HEADER = r"""
-#define __kernel extern "C" __global__
-#define __global
-#define __local __shared__
-__device__ __forceinline__ int get_global_id(int d) {
-    return d == 0 ? (int)(blockIdx.y * blockDim.y + threadIdx.y)
-                  : (int)(blockIdx.x * blockDim.x + threadIdx.x);
-}
-"""
+#: The header is the one of the package, ``src/PyFWI/kernels/opencl_on_cuda.h``, which the CUDA
+#: backend uses too (step 2.3); it is read from the repository, so that this tool also works in the
+#: reference environment. Used by ``compile_ptx()`` (this module) and the GPU tests.
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "PyFWI", "kernels",
+                       "opencl_on_cuda.h")) as _header:
+    CUDA_PORT_HEADER = _header.read()
 
 #: Explanation attached to the POCL warnings. In PyFWI 0.1.10 the finite
 #: difference stencils read outside the field buffers (row ``Nz``, past the end,

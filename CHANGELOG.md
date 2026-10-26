@@ -16,6 +16,11 @@ how much and in which numeric mode.
   the log, `cuda:strict` fails with the reason, `auto` takes CUDA only for an NVIDIA GPU chosen as
   OpenCL device (matched by PCI bus ID). Until the CUDA backend exists (step 2.3) everything runs on
   OpenCL. `W.backend_selection` and `PyFWI.info()` say what was chosen and why.
+- CUDA backend (step 2.3, `PyFWI.backends.cuda`, needs CuPy): the same kernel files as OpenCL,
+  compiled as CUDA with NVRTC after the portability header `PyFWI/kernels/opencl_on_cuda.h`, in the
+  `legacy` numeric mode; a guard at the start of every kernel runs exactly the work items of the
+  OpenCL launch; buffers with margins as in step 1.7. Chosen with `PYFWI_BACKEND=cuda` (or
+  `inpa['backend']`); OpenCL stays the default. With it `W.ctx` and `W.queue` are None.
 
 ### Changed
 
@@ -32,7 +37,9 @@ how much and in which numeric mode.
 
 ### Numerical changes
 
-- None.
+- None for the default backend (OpenCL). The CUDA backend agrees with OpenCL on the same GPU to a
+  relative L2 of 1.1e-6 (seismograms) and 1.9e-5 (gradients) on the propagation cases of the golden
+  masters: the two compilers emit different instruction sequences.
 
 ## [0.1.11] - 2026-10-25
 

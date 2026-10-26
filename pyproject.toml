@@ -64,9 +64,9 @@ package-dir = { "" = "src" }
 where = ["src"]  # finds PyFWI and its subpackage PyFWI.torch
 
 [tool.setuptools.package-data]
-# Files that are not Python modules: the OpenCL kernels, and the rock-physics data of
-# model_dataset (the "dupuy" model). 0.1.10 shipped the kernels only.
-PyFWI = ["*.cl", "data/*.mat"]
+# Files that are not Python modules: the OpenCL kernels, the rock-physics data of model_dataset
+# (the "dupuy" model) and the header that lets CUDA compile the kernels. 0.1.10 shipped the kernels only.
+PyFWI = ["*.cl", "data/*.mat", "kernels/*.h"]
 
 [tool.setuptools.dynamic]
 version = { attr = "PyFWI.version.version" }

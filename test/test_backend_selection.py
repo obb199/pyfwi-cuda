@@ -184,14 +184,19 @@ def test_opencl_bus_ids():
 # ---------------------------------------------------------------------------------- real machine
 
 def test_propagators_follow_the_selection(opencl_platform, monkeypatch, caplog):
+    from PyFWI.backends.selection import probe_cuda
+    cuda = probe_cuda().usable  # CuPy, a GPU and a recent enough driver (the CUDA backend exists since 2.3)
     monkeypatch.setenv("PYFWI_BACKEND", "cuda")
     with caplog.at_level(logging.WARNING, logger="PyFWI"):
         W = tiny_case().W
-    # No CUDA backend yet (step 2.3): the fallback is logged and OpenCL runs.
-    assert W.backend_selection.backend == "opencl" and W._backend.name == "opencl"
-    assert any("CUDA cannot run" in r.getMessage() for r in caplog.records)
-    with pytest.raises(RuntimeError, match="cuda:strict"):
-        tiny_case(inpa_extra={"backend": "cuda:strict"})
+    assert W.backend_selection.backend == W._backend.name == ("cuda" if cuda else "opencl")
+    if cuda:
+        assert W.ctx is None and W.queue is None  # OpenCL objects
+        assert tiny_case(inpa_extra={"backend": "cuda:strict"}).W._backend.name == "cuda"
+    else:  # the fallback is logged, and cuda:strict fails
+        assert any("CUDA cannot run" in r.getMessage() for r in caplog.records)
+        with pytest.raises(RuntimeError, match="cuda:strict"):
+            tiny_case(inpa_extra={"backend": "cuda:strict"})
     with pytest.raises(ValueError, match="Unknown backend"):
         tiny_case(inpa_extra={"backend": "vulkan"})
 

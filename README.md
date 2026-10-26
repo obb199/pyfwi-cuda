@@ -144,7 +144,10 @@ The backend that runs the kernels is chosen by `inpa['backend']`, else by the en
 | `cuda:strict` | CUDA, or an error that says why it cannot run |
 | `auto` | CUDA when the OpenCL device that would be used is an NVIDIA GPU and CUDA can run |
 
-The CUDA backend arrives during Phase 2; until then every choice runs on OpenCL.
+CUDA needs CuPy for the CUDA version of the driver (`pip install cupy-cuda13x` for drivers of the
+580 series or newer). The CUDA backend of Phase 2 runs the same kernels as OpenCL (its results agree
+with OpenCL to about 1e-6 for seismograms and 2e-5 for gradients); the faster CUDA kernels come in
+Phase 3.
 
 ## Citing PyFWI
 

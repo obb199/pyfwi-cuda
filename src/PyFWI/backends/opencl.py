@@ -44,6 +44,8 @@ class OpenCLBackend:
         In-order queue of this backend: commands run in the order they are enqueued.
     alignment : int
         Base-address alignment of the devices in bytes: sub-buffers must start at a multiple of it.
+    description : str
+        The device(s) and platform, for the log and ``PyFWI.info()``.
     """
 
     name = "opencl"
@@ -60,6 +62,7 @@ class OpenCLBackend:
         self.context = shared_context(devices)
         self.queue = cl.CommandQueue(self.context)
         self.alignment = max(max(d.mem_base_addr_align for d in self.context.devices) // 8, 4)
+        self.description = ", ".join(f"{d.name} on {d.platform.name}" for d in self.context.devices)
 
     # ------------------------------------------------------------------ memory
 

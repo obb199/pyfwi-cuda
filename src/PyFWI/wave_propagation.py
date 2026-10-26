@@ -158,10 +158,14 @@ class WavePreparation:
         # PYOPENCL_CTX environment variable, otherwise the first device of the first platform; one
         # context per device for the whole process, one queue per propagator.
         # Which backend runs this propagator (step 2.2 of the fork, PyFWI.backends.selection):
-        # inpa['backend'], else PYFWI_BACKEND, else OpenCL. The CUDA backend comes with step 2.3:
-        # until then "cuda" and "auto" fall back to OpenCL (logged) and "cuda:strict" fails.
+        # inpa['backend'], else PYFWI_BACKEND, else OpenCL. The CUDA backend (step 2.3) runs the
+        # same kernel files; with it W.ctx and W.queue, which are OpenCL objects, are None.
         self.backend_selection = select_backend(inpa)
-        self._backend = OpenCLBackend(inpa.get("platform"), inpa.get("device"))
+        if self.backend_selection.backend == "cuda":
+            from PyFWI.backends.cuda import CUDABackend
+            self._backend = CUDABackend(self.backend_selection.cuda_ordinal)
+        else:
+            self._backend = OpenCLBackend(inpa.get("platform"), inpa.get("device"))
         self.ctx = self._backend.context
         self.queue = self._backend.queue
         self.mf = cl.mem_flags
@@ -533,7 +537,7 @@ class WavePropagator(WavePreparation):
         """
         self.forward_show = show
         # The summary of PyFWI.info() goes to the "PyFWI" logger (INFO) at the first run (step 1.8).
-        _info.log_first_run(self.ctx.devices)
+        _info.log_first_run(self._backend.description)
         model = model0.copy()
 
         for params in model:

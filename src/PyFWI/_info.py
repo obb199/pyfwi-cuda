@@ -156,19 +156,20 @@ def format_info(summary):
     return "\n".join(lines)
 
 
-def log_first_run(devices):
+def log_first_run(device):
     """Log the summary at INFO level, once per process, for the first run while INFO is enabled.
 
     Parameters
     ----------
-    devices : list of pyopencl.Device
-        The devices of the propagator that runs, reported instead of the default choice.
+    device : str
+        The device of the propagator that runs (``description`` of its backend), reported instead
+        of the default choice.
     """
     global _logged
     if _logged or not logger.isEnabledFor(logging.INFO):
         return
     summary = info()
-    summary["device"] = ", ".join(f"{d.name} on {d.platform.name}" for d in devices)
+    summary["device"] = device
     logger.info("first propagation of this process\n%s", format_info(summary))
     _logged = True
 

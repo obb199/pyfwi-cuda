@@ -89,7 +89,7 @@ def test_the_setuptools_configuration_ships_the_kernels_and_the_data():
     setuptools = _pyproject()["tool"]["setuptools"]
     assert setuptools["package-dir"] == {"": "src"}
     assert setuptools["dynamic"]["version"] == {"attr": "PyFWI.version.version"}
-    assert set(setuptools["package-data"]["PyFWI"]) == {"*.cl", "data/*.mat"}
+    assert set(setuptools["package-data"]["PyFWI"]) == {"*.cl", "data/*.mat", "kernels/*.h"}
 
 
 def test_inherited_packaging_files_are_gone():
