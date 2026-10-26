@@ -35,6 +35,11 @@ class FWI(Wave):
     param_functions : dict, optional
         List of functions required in case of inversion with different parameterization than dv, by default None
         """
+    #: Tolerance of the optimisers on the largest gradient component (``gtol`` of ``cg``, ``pgtol``
+    #: of ``lbfgs``): absolute as in 0.1.10, relative to the gradient at the start of each stage in
+    #: the fixed numeric mode (``_stage_scale``).
+    GRADIENT_TOLERANCE = 1e-8
+
     def __init__(self, d_obs, 
                  inpa, src, 
                  rec_loc, 
@@ -171,6 +176,40 @@ class FWI(Wave):
 
         return method
 
+    def _stage_scale(self, jac, m_opt, args):
+        """The factor that makes the misfit of one stage of ``cg`` or ``lbfgs`` independent of the data amplitude.
+
+        The misfit and its gradient scale with the square of the source amplitude. 0.1.10 gives
+        both optimisers an absolute tolerance of 1e-8 on the largest gradient component; with a
+        unit-amplitude source the gradients of a realistic model are 1e-11 to 1e-8, so L-BFGS
+        stops at iteration 0. The conjugate gradient also takes a first trial step proportional
+        to the gradient: it changes the model by 1e-10 m/s, which the float32 model cannot
+        represent, the misfit does not change and the line search gives up, returning the
+        starting model. In the fixed numeric mode (step 2.4 of the fork) this returns one over
+        the largest gradient component at the start of the stage: the tolerances become relative
+        to it, and the conjugate gradient minimises the misfit times this factor (the same
+        minimum and directions; its first step changes the model by about 1 m/s). In the legacy
+        mode it returns 1.
+
+        Parameters
+        ----------
+        jac : callable
+            ``MemoizeJac.derivative`` of the stage. It keeps the misfit and the gradient of
+            ``m_opt``, so the optimiser, which starts there, does not compute them again.
+        m_opt : numpy.ndarray
+            Starting point of the stage.
+        args : list
+            The other arguments of ``fprime_single``: ``[m_1, m1, freq]``.
+
+        Returns
+        -------
+        float
+        """
+        if getattr(self, "numerics", "legacy") != "fixed":
+            return 1.0
+        largest = float(np.abs(jac(m_opt, *args)).max())
+        return 1.0 / largest if largest > 0 else 1.0
+
     def cg(self, m0, ITER, freq, n_params=1, k0=1, k_end=2):
         
         n_element = self.nz * self.nx
@@ -188,9 +227,17 @@ class FWI(Wave):
             m_opt = mtotal[k * n_element: (k + n_params) * n_element]
             m1 = mtotal[(k + n_params) * n_element:]
             
-            m_opt, hist, _, _, _ = fmin_cg(fun, m_opt, jac, args=[m_1, m1, freq],
-                                           gtol=1e-8, maxiter=ITER,
-                                           full_output = True, disp=None)
+            scale = self._stage_scale(jac, m_opt, [m_1, m1, freq])
+            if scale == 1.0:  # the legacy mode: as 0.1.10
+                m_opt, hist, _, _, _ = fmin_cg(fun, m_opt, jac, args=[m_1, m1, freq],
+                                               gtol=self.GRADIENT_TOLERANCE, maxiter=ITER,
+                                               full_output = True, disp=None)
+            else:  # fixed mode: the scaled misfit, then its last value unscaled
+                m_opt, hist, _, _, _ = fmin_cg(lambda x, *a: scale * fun(x, *a), m_opt,
+                                               lambda x, *a: scale * jac(x, *a), args=[m_1, m1, freq],
+                                               gtol=self.GRADIENT_TOLERANCE, maxiter=ITER,
+                                               full_output=True, disp=None)
+                hist = hist / scale
 
             # print(m_opt.max(), m_opt.min())
             rms_hist.append(hist)
@@ -215,8 +262,10 @@ class FWI(Wave):
             m_opt = mtotal[k * n_element: (k + n_params) * n_element]
             m1 = mtotal[(k + n_params) * n_element:]
 
+            # L-BFGS-B scales its own first step: only its tolerance needs the scale of the stage.
+            pgtol = self.GRADIENT_TOLERANCE / self._stage_scale(jac, m_opt, [m_1, m1, freq])
             m_opt, hist, d = fmin_l_bfgs_b(fun, m_opt, jac, args=[m_1, m1, freq],
-                                           m=10, factr=1e7, pgtol=1e-8, iprint=99,
+                                           m=10, factr=1e7, pgtol=pgtol, iprint=99,
                                            bounds=None, maxfun=15000, maxiter=ITER,
                                            disp=None, callback=None, maxls=10)
 

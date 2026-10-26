@@ -29,7 +29,8 @@ and must pass everywhere else.
 | ``test_receiver_loops_bound_the_receiver_index`` | 5 receiver loops have no bound on the receiver index | 2.4 (``fixed`` mode) |
 | ``test_default_geometry_is_deterministic`` | race conditions at source/receiver coincidences (non-strict: probabilistic) | 3.4 |
 | ``test_chpr_zero_gives_the_checkpointed_gradient`` | ``chpr=0`` (the default) rebuilds the field backwards through the PML: wrong gradient | 4.2 |
-| ``test_lbfgs_iterates_with_physically_scaled_data`` | absolute ``pgtol = 1e-8``: L-BFGS stops at iteration 0 on realistic data | 2.4 |
+| ``test_lbfgs_iterates_with_physically_scaled_data`` | absolute ``pgtol = 1e-8``: L-BFGS stops at iteration 0 on realistic data | 2.4 (``fixed`` mode) |
+| ``test_cg_iterates_with_physically_scaled_data`` | the same with the absolute ``gtol = 1e-8`` of the conjugate gradient | 2.4 (``fixed`` mode) |
 | ``test_kernel_files_are_closed`` | ``kernel_caller`` leaves the three ``.cl`` files open (``ResourceWarning``) | 2.4 (done) |
 | ``test_pml_profile_does_not_depend_on_numpy`` | NumPy 2 type promotion changes the PML profile in the last bit | 1.1 (done) |
 | ``test_source_injection_does_not_excite_grid_noise`` | the source is added once every ``dt_scale`` steps: grid-scale noise at dh of 4-6 m | 2.4 (``fixed`` mode) |
@@ -238,33 +239,64 @@ def test_chpr_zero_gives_the_checkpointed_gradient(opencl_platform):
     assert cosine > 0.999, f"cosine similarity with the checkpointed gradient: {cosine:.3f}"
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="FWI.lbfgs passes an absolute pgtol=1e-8 to L-BFGS-B; with a unit-amplitude "
-                          "source the gradients are smaller than that, so it 'converges' at iteration 0")
-def test_lbfgs_iterates_with_physically_scaled_data(opencl_platform, monkeypatch):
+def _small_inversion(method, numerics):
+    """Run 2 iterations of ``method`` ("lbfgs" or "cg") on a tiny case, unit-amplitude source.
+
+    Returns ``(m0, estimate, evaluations)``: the starting model, the estimated model and the
+    number of misfit-and-gradient evaluations (``FWI.fprime_single``).
+    """
     import io
     from contextlib import redirect_stdout
 
     import PyFWI.fwi as fwi_module
     from oob_guard import zero_guard_bands
 
-    iterations = []
+    with zero_guard_bands():
+        case = tiny_case(ns=2, inpa_extra={"energy_balancing": True, "numerics": numerics})
+        d_obs = case.W.forward_modeling(case.model, False)
+        fwi = fwi_module.FWI(d_obs, case.inpa, case.src, case.rec_loc, case.model["vp"].shape,
+                             components=0, chpr=20, n_well_rec=case.n_well_rec)
+        evaluations, evaluate = [], fwi.fprime_single
+
+        def counted(*args):
+            evaluations.append(1)
+            return evaluate(*args)
+        fwi.fprime_single = counted
+        with redirect_stdout(io.StringIO()):  # PyFWI prints the misfit of every evaluation
+            estimate, _ = fwi(case.m0, method=method, freqs=[25], iter=[2], n_params=1, k_0=1, k_end=2)
+    return case.m0, estimate, len(evaluations)
+
+
+@pytest.mark.parametrize("numerics", NUMERIC_MODES)
+def test_lbfgs_iterates_with_physically_scaled_data(opencl_platform, monkeypatch, numerics):
+    # FWI.lbfgs of 0.1.10 passes an absolute pgtol=1e-8 to L-BFGS-B; with a unit-amplitude source
+    # the gradients are smaller than that, so it "converges" at iteration 0. The fixed mode makes it
+    # relative to the gradient at the start of the stage (FWI._gradient_tolerance).
+    import PyFWI.fwi as fwi_module
+
+    stages = []
     original = fwi_module.fmin_l_bfgs_b
 
     def traced(*args, **kwargs):
         x, f, info = original(*args, **kwargs)
-        iterations.append(info["nit"])  # number of L-BFGS iterations of this stage
+        stages.append(info)  # nit: L-BFGS iterations of the stage; funcalls: its evaluations
         return x, f, info
 
     monkeypatch.setattr(fwi_module, "fmin_l_bfgs_b", traced)
-    with zero_guard_bands():
-        case = tiny_case(ns=2, inpa_extra={"energy_balancing": True})
-        d_obs = case.W.forward_modeling(case.model, False)
-        fwi = fwi_module.FWI(d_obs, case.inpa, case.src, case.rec_loc, case.model["vp"].shape,
-                             components=0, chpr=20, n_well_rec=case.n_well_rec)
-        with redirect_stdout(io.StringIO()):  # PyFWI prints the misfit of every evaluation
-            fwi(case.m0, method="lbfgs", freqs=[25], iter=[2], n_params=1, k_0=1, k_end=2)
-    assert iterations and iterations[0] >= 1, f"L-BFGS iterations per stage: {iterations}"
+    _, _, evaluations = _small_inversion("lbfgs", numerics)
+    assert stages and stages[0]["nit"] >= 1, f"L-BFGS iterations per stage: {[i['nit'] for i in stages]}"
+    # The gradient that sets the tolerance is the one L-BFGS-B starts from: no extra evaluation.
+    assert evaluations == stages[0]["funcalls"]
+
+
+@pytest.mark.parametrize("numerics", NUMERIC_MODES)
+def test_cg_iterates_with_physically_scaled_data(opencl_platform, numerics):
+    # FWI.cg of 0.1.10 returns the starting model with a unit-amplitude source: its gtol=1e-8 is
+    # absolute, and its first trial step, proportional to the gradient, changes the model by about
+    # 1e-10 m/s, which the float32 model cannot represent; the line search gives up. The fixed mode
+    # minimises the misfit divided by its first largest gradient component (FWI._stage_scale).
+    m0, estimate, _ = _small_inversion("cg", numerics)
+    assert not np.array_equal(estimate["vp"], m0["vp"]), "the conjugate gradient returned the starting model"
 
 
 def test_pml_profile_does_not_depend_on_numpy():

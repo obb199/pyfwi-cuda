@@ -24,7 +24,10 @@ What this example shows
   around 1e-11 to 1e-8, so L-BFGS declares convergence before the first iteration and
   returns the starting model. Scaling the wavelet by ``SOURCE_AMPLITUDE`` scales the
   observed and the predicted data alike: the misfit and its gradient grow by the square
-  of the factor, the problem itself does not change, and the optimiser can work.
+  of the factor, the problem itself does not change, and the optimiser can work. The
+  ``fixed`` numeric mode of the fork (``PYFWI_NUMERICS=fixed``, the default on CUDA) makes
+  the tolerances relative to the first gradient of each stage, so there any amplitude
+  works; the example keeps the factor so that it runs the same way in both modes.
 * How to judge the result: the vp model gets closer to the true one, and vs and rho,
   which are not inverted, do not change.
 

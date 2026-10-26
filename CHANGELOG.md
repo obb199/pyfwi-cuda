@@ -94,6 +94,14 @@ how much and in which numeric mode.
   with the Taylor coefficients (order 4 converges at order 4.1 in both modes). With the correction
   the order-8 traces of a homogeneous model agree with the analytic solution to a correlation of
   0.9990 (0.9987 in 0.1.10).
+- In the `fixed` mode the optimisers of `FWI` no longer depend on the amplitude of the data. 0.1.10
+  gives L-BFGS an absolute `pgtol = 1e-8` and the conjugate gradient an absolute `gtol = 1e-8`; with
+  a unit-amplitude source the gradients are 1e-11 to 1e-8, so L-BFGS stopped at iteration 0. The
+  conjugate gradient also takes a first trial step proportional to the gradient, which changed the
+  float32 model by about 1e-10 m/s, nothing: its line search gave up and returned the starting
+  model. `fixed` makes both tolerances relative to the largest gradient component at the start of
+  each stage, and the conjugate gradient minimises the misfit divided by that value (same minimum
+  and directions; a first step of about 1 m/s). The examples keep their scaled source.
 - In the `fixed` mode the crosswell kernels record `vz` in the `vz` seismogram; 0.1.10 (and the
   `legacy` mode) recorded `vx` there, so with `acq_type=0` the `vz` data, and the misfit and
   gradient of components 2 and 4, are a different quantity in `fixed`.
