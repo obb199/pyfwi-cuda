@@ -1,5 +1,4 @@
 import os 
-import copy
 import logging
 import pyopencl as cl
 import numpy as np
@@ -11,6 +10,7 @@ import scipy.sparse as sp
 from scipy.ndimage import gaussian_filter
 
 from PyFWI import rock_physics as rp
+from PyFWI import _device_arrays as device
 
 
 def derivative(nx, nz, dx, dz, order):
@@ -1175,13 +1175,13 @@ def cost_preparation(dpre, dobs,
     Returns:
         [type]: [description]
     """
-
-    x_pre = copy.deepcopy(dpre)
-    x_obs = copy.deepcopy(dobs)
-
+    # Step 4.1: the filter returns new arrays; the inputs are copied only when it does not run
+    # (0.1.10 deep-copied them first in every case). NumPy or CuPy arrays (PYFWI_CUDA_COST).
     if freq:
-        x_obs = lowpass(x_obs, freq, fn, order=order, axis=axis)
-        x_pre = lowpass(x_pre, freq, fn, order=order, axis=axis)
+        x_obs = lowpass(dobs, freq, fn, order=order, axis=axis)
+        x_pre = lowpass(dpre, freq, fn, order=order, axis=axis)
+    else:
+        x_obs, x_pre = dobs.copy(), dpre.copy()
 
     if params_oh is not None:
         x_obs = params_oh * x_obs
@@ -1204,11 +1204,15 @@ def _zero_phase_filter(x, highcut, fn, order, axis):
       spectrum) gives the same result, on every CPU core (``workers=-1``);
     * the zero padding is done by the FFT (``n``) instead of a padded copy of the data.
 
-    The results differ from those of 0.1.10 by about 1e-16 (rounding; ``test/test_lowpass.py``).
+    The results differ from those of 0.1.10 by about 1e-16 (rounding; ``test/test_lowpass.py``). A CuPy
+    array (``PYFWI_CUDA_COST=1``, step 4.1) is filtered on the GPU with ``cupy.fft``, the same
+    operations in float32, the precision of the seismograms: GeForce cards run FP64 at 1/64 of the FP32
+    rate, and the filter of the small benchmark data takes 0.4 ms in float32 against 2.5 ms in float64,
+    for a relative difference of about 1e-7 with the host; the result is a CuPy array.
 
     Parameters
     ----------
-    x : numpy.ndarray
+    x : numpy.ndarray or cupy.ndarray
         Data, filtered along ``axis``; the inversion passes ``(components, time samples, traces)``
         with ``axis=1``, the only axis 0.1.10 supported. Computed in float64 whatever its dtype,
         as in 0.1.10.
@@ -1223,13 +1227,14 @@ def _zero_phase_filter(x, highcut, fn, order, axis):
 
     Returns
     -------
-    numpy.ndarray
-        Filtered data, float64, same shape as ``x``.
+    numpy.ndarray or cupy.ndarray
+        Filtered data, float64 (float32 on the GPU), same shape as ``x``, on the device of ``x``.
     """
+    xp = device.array_module(x)  # numpy, or cupy for data on the GPU
     # Zero padding, so that the circular convolution of the FFT does not wrap around: the FFT
     # pads each trace with zeros up to nt samples.
     padding = 512
-    x = np.asarray(x, dtype=np.float64)
+    x = xp.asarray(x, dtype=np.float64 if xp is np else np.float32)
     n_samples = x.shape[axis]
     nt = n_samples + padding
 
@@ -1242,12 +1247,17 @@ def _zero_phase_filter(x, highcut, fn, order, axis):
     shape[axis] = gain.size
 
     # Filter in the frequency domain, element by element, and come back to the time domain.
-    x_fft = scipy_fft.rfft(x, n=nt, axis=axis, workers=-1)
-    x_fft *= gain.reshape(shape)
-    filtered = scipy_fft.irfft(x_fft, n=nt, axis=axis, workers=-1)
+    if xp is np:
+        x_fft = scipy_fft.rfft(x, n=nt, axis=axis, workers=-1)
+        x_fft *= gain.reshape(shape)
+        filtered = scipy_fft.irfft(x_fft, n=nt, axis=axis, workers=-1)
+    else:
+        x_fft = xp.fft.rfft(x, n=nt, axis=axis)
+        x_fft *= xp.asarray(gain.reshape(shape), dtype=np.float32)
+        filtered = xp.fft.irfft(x_fft, n=nt, axis=axis)
 
     # Remove the padding
-    return np.take(filtered, np.arange(n_samples), axis=axis)
+    return xp.take(filtered, xp.arange(n_samples), axis=axis)
 
 
 def lowpass(x1, highcut, fn, order=1, axis=1, show=False):
@@ -1272,7 +1282,7 @@ def adj_cost_preparation(res,
                          fn, freq=False, order=None, axis=None,
                          params_oh=None):
 
-    x_res = np.copy(res)
+    x_res = res.copy()  # NumPy or CuPy (step 4.1)
 
     if params_oh is not None:
         x_res = params_oh * x_res
@@ -1323,14 +1333,17 @@ def cost_seismic(d_pre0, d_obs0, fun,
     Returns:
         rms (float): The cost
         adj_src: Adjoint source to propagate through the model in adjoint wave equation
+
+    With ``PYFWI_CUDA_COST=1`` (step 4.1, ``PyFWI._device_arrays``), the L2 cost, its filters and its
+    residual are computed on the GPU; the arguments and the results stay NumPy arrays.
     """
-
-
-    d_pre = copy.deepcopy(d_pre0)
-    d_obs = copy.deepcopy(d_obs0)
-
-    dpre = np.array(list(d_pre.values()))
-    dobs = np.array(list(d_obs.values()))
+    # np.array copies the data (0.1.10 deep-copied the dictionaries first, then copied them again).
+    dpre = np.array(list(d_pre0.values()))
+    dobs = np.array(list(d_obs0.values()))
+    if device.cost_on_gpu() and fun.cost_function_method == "self.l2" and not sourc_weight:
+        dpre, dobs = device.to_device(dpre), device.to_device(dobs)
+        if params_oh is not None:
+            params_oh = device.to_device(np.asarray(params_oh))
     # TODO: Treat as dict
     x_pre_cost, x_obs_cost = cost_preparation(dpre, dobs,
                                               fn, freq=freq, order=order, axis=axis,
@@ -1345,12 +1358,13 @@ def cost_seismic(d_pre0, d_obs0, fun,
     adj_src_ndarray = adj_cost_preparation(res, fn, freq=freq, order=order, axis=axis,
                                    params_oh=params_oh)
 
+    adj_src_ndarray = device.to_host(adj_src_ndarray.astype(np.float32))  # one copy back from the GPU
     adj_src = {}
-    adj_src['vx'] = adj_src_ndarray[0, :, :].astype(np.float32)
-    adj_src['vz'] = adj_src_ndarray[1, :, :].astype(np.float32)
-    adj_src['taux'] = adj_src_ndarray[2, :, :].astype(np.float32)
-    adj_src['tauz'] = adj_src_ndarray[3, :, :].astype(np.float32)
-    adj_src['tauxz'] = adj_src_ndarray[4, :, :].astype(np.float32)
+    adj_src['vx'] = adj_src_ndarray[0, :, :]
+    adj_src['vz'] = adj_src_ndarray[1, :, :]
+    adj_src['taux'] = adj_src_ndarray[2, :, :]
+    adj_src['tauz'] = adj_src_ndarray[3, :, :]
+    adj_src['tauxz'] = adj_src_ndarray[4, :, :]
 
     return rms, adj_src
 
@@ -1410,24 +1424,28 @@ class CostFunction:
         return rms, adj_src
 
     def l2(self, dest0, dobs0):
+        """Half the squared L2 norm of ``dest0 - dobs0`` and the residual (float32).
 
-        dest = copy.deepcopy(dest0)
-        dobs = copy.deepcopy(dobs0)
-
-        if type(dest0).__name__ == 'ndarray':
+        ``dest0`` and ``dobs0`` are dictionaries of the components, or arrays ``(5, samples, traces)``
+        (NumPy, or CuPy with ``PYFWI_CUDA_COST=1``, step 4.1). They are only read: 0.1.10 deep-copied
+        them first.
+        """
+        dest, dobs = dest0, dobs0
+        array = type(dest0).__name__ == 'ndarray'  # numpy.ndarray or cupy.ndarray
+        if array:
             dest = self.list2dict(dest)
             dobs = self.list2dict(dobs)
 
         rms = 0
         res = {}
         for param in dest:
-            res[param] = np.float32(dest[param] - dobs[param])
+            res[param] = (dest[param] - dobs[param]).astype(np.float32)
             # float64 explicitly: with NumPy 1.x, 0.5 * (float32 dot product) was promoted to float64;
             # NumPy 2 (NEP 50) would keep the misfit in float32. This keeps the value and type of 0.1.10.
-            rms += 0.5 * np.float64(res[param].reshape(-1).T @ res[param].reshape(-1))
+            rms += 0.5 * np.float64(float(res[param].reshape(-1).T @ res[param].reshape(-1)))
 
-        if type(dest0).__name__ == 'ndarray':
-            adj_src = np.array(list(res.values()))
+        if array:
+            adj_src = device.array_module(dest0).stack(list(res.values()))
         else:
             adj_src = res
 

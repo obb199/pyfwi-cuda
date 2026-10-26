@@ -954,6 +954,23 @@ Everything here is optional and off by default. Each feature has its own toleran
 
 - **Goes in:** `cupy.fft` and `cupyx.scipy.ndimage.gaussian_filter`; no more repeated `deepcopy`.
 - **Tests:** UNI (cost and adjoint residual against the NumPy version, ≤ 1e-6); FWI; EXA; DES (the CPU leaves the critical path, checked with PRF).
+- **Result** (version 0.4.0.dev0 from this step on): measured first, an inversion of the size of the small
+  scenario (the example `fwi.py`, full size) spent 38 ms of its 120 ms per evaluation in the cost function
+  on the host, almost all in the multi-scale low-pass filters (three FFTs of every trace per evaluation,
+  the observed data included), against 20 ms of forward modelling and 60 ms of gradient.
+  `PYFWI_CUDA_COST=1` (off by default, `PyFWI/_device_arrays.py`) runs the L2 cost, its residual, the
+  filters (`cupy.fft`) and the smoothing of the gradient (`cupyx.scipy.ndimage.gaussian_filter`) on the
+  GPU; the functions keep taking and returning NumPy arrays; the other cost functions and the source
+  weighting stay on the host. The filters run in float32 on the GPU: GeForce cards run FP64 at 1/64 of
+  the rate (2.5 ms per filter in float64, 0.4 ms in float32, the trace length 663 = 3 × 13 × 17 being
+  slow for cuFFT), for a relative difference of 1.1e-7 with the float64 filter of the host. The repeated
+  `deepcopy` of the cost path is gone on both paths (the values are the same: the golden masters pass).
+  UNI: cost and residual within 1e-6 of the host (with and without filter and offset weights), the
+  smoothing within 1e-6, the other cost functions identical; FWI: the multi-scale inversion of the
+  example gives the model of the host within 1e-4 and the same misfits within 1e-4; EXA: the example
+  scripts and the API suite pass with the variable on both backends. DES: cost 38.5 ms → 3.6 ms per
+  evaluation, the whole inversion 1.56 s → 1.08 s (−31 %); the first evaluation of a process also
+  creates the cuFFT plans (11 ms).
 
 ### 4.2 Boundary saving
 

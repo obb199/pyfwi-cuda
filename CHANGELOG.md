@@ -9,9 +9,21 @@ how much and in which numeric mode.
 
 ## [Unreleased]
 
+### Added
+
+- `PYFWI_CUDA_COST=1` (step 4.1, off by default): the L2 cost function, its multi-scale low-pass filters
+  and the smoothing of the gradient run on the GPU with CuPy, within 1e-6 of the host (the filters in
+  float32 there). An inversion of the size of the small benchmark scenario spends 3.6 ms instead of
+  38.5 ms per evaluation in the cost function (the whole inversion −31 %).
+
+### Changed
+
+- The cost function no longer deep-copies its inputs three times (same values).
+
 ### Numerical changes
 
-- None so far.
+- None so far (`PYFWI_CUDA_COST=1` changes the results by float32 rounding of the filters, 1e-7, on request
+  only).
 
 ## [0.3.0] - 2026-10-26
 

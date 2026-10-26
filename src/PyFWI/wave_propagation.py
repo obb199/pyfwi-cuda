@@ -4,6 +4,7 @@ import numpy as np
 import pyopencl as cl
 import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter
+from PyFWI import _device_arrays as device
 
 import PyFWI.fwi_tools as tools
 from PyFWI.backends.opencl import OpenCLBackend
@@ -661,14 +662,15 @@ class WavePropagator(WavePreparation):
                                               self.lam[self.npml: self.tnz-self.npml, self.npml: self.tnx-self.npml],
                                               self.mu[self.npml: self.tnz-self.npml, self.npml: self.tnx-self.npml],
                                               self.rho[self.npml: self.tnz-self.npml, self.npml: self.tnx-self.npml])
-            final_grad = {'vp': gaussian_filter(gvp, self.g_smooth),
-                          'vs': gaussian_filter(gvs, self.g_smooth),
-                          'rho': gaussian_filter(grho, self.g_smooth)
+            # Smoothing on the GPU with PYFWI_CUDA_COST=1 (step 4.1, PyFWI._device_arrays).
+            final_grad = {'vp': device.gaussian_filter(gvp, self.g_smooth),
+                          'vs': device.gaussian_filter(gvs, self.g_smooth),
+                          'rho': device.gaussian_filter(grho, self.g_smooth)
                           }
         else:
-            final_grad = {'lam': gaussian_filter(glam, self.g_smooth),
-                          'mu': gaussian_filter(gmu, self.g_smooth),
-                          'rho': gaussian_filter(grho0, self.g_smooth)
+            final_grad = {'lam': device.gaussian_filter(glam, self.g_smooth),
+                          'mu': device.gaussian_filter(gmu, self.g_smooth),
+                          'rho': device.gaussian_filter(grho0, self.g_smooth)
                           }
 
         return final_grad
