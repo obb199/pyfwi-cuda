@@ -144,6 +144,10 @@ The backend that runs the kernels is chosen by `inpa['backend']`, else by the en
 | `cuda:strict` | CUDA, or an error that says why it cannot run |
 | `auto` | CUDA when the OpenCL device that would be used is an NVIDIA GPU and CUDA can run |
 
+The numeric mode is chosen the same way, with `inpa['numerics']` or `PYFWI_NUMERICS`: `legacy` gives the
+results of PyFWI 0.1.10 (default on OpenCL), `fixed` corrects its numerical bugs (default on CUDA;
+see [CHANGELOG.md](CHANGELOG.md) for what changes and by how much).
+
 CUDA needs CuPy for the CUDA version of the driver (`pip install cupy-cuda13x` for drivers of the
 580 series or newer). The CUDA backend of Phase 2 runs the same kernels as OpenCL (its results agree
 with OpenCL to about 1e-6 for seismograms and 2e-5 for gradients); the faster CUDA kernels come in

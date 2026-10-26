@@ -230,3 +230,41 @@ def _opencl_device(inpa, environ):
         return choose_devices(inpa.get("platform"), inpa.get("device"), environ=environ)[0]
     except Exception:  # noqa: BLE001 (no OpenCL: nothing to match)
         return None
+
+
+#: Numeric modes (step 2.4): ``legacy`` computes what PyFWI 0.1.10 computes, ``fixed`` corrects it.
+NUMERICS = ("legacy", "fixed")
+
+#: Numeric mode of each backend when none is asked: OpenCL keeps the results of 0.1.10, the CUDA
+#: backend starts in the corrected mode.
+DEFAULT_NUMERICS = {"opencl": "legacy", "cuda": "fixed"}
+
+
+def select_numerics(inpa, backend, environ=None):
+    """The numeric mode of a propagator: ``inpa['numerics']``, else ``PYFWI_NUMERICS``, else the backend's default.
+
+    Parameters
+    ----------
+    inpa : dict
+        Inputs of the propagator (``numerics`` is read).
+    backend : str
+        ``"opencl"`` or ``"cuda"``, the backend that runs (``Selection.backend``).
+    environ : mapping, optional
+        Where ``PYFWI_NUMERICS`` is read; ``os.environ`` by default.
+
+    Returns
+    -------
+    str
+        ``"legacy"`` or ``"fixed"``.
+
+    Raises
+    ------
+    ValueError
+        A mode that is not one of ``NUMERICS``.
+    """
+    environ = os.environ if environ is None else environ
+    value = inpa.get("numerics") or environ.get("PYFWI_NUMERICS") or DEFAULT_NUMERICS[backend]
+    value = str(value).strip().lower()
+    if value not in NUMERICS:
+        raise ValueError(f"Unknown numeric mode {value!r}; choose one of {', '.join(NUMERICS)}.")
+    return value

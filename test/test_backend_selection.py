@@ -69,6 +69,17 @@ def test_an_unknown_backend_lists_the_choices(select):
         select({"backend": "metal"})
 
 
+def test_numeric_mode_precedence_and_defaults():
+    # Step 2.4: inpa['numerics'], else PYFWI_NUMERICS, else the default of the backend.
+    from PyFWI.backends.selection import select_numerics
+    assert select_numerics({}, "opencl", {}) == "legacy" and select_numerics({}, "cuda", {}) == "fixed"
+    assert select_numerics({}, "opencl", {"PYFWI_NUMERICS": " Fixed "}) == "fixed"
+    assert select_numerics({"numerics": "legacy"}, "cuda", {"PYFWI_NUMERICS": "fixed"}) == "legacy"
+    with pytest.raises(ValueError, match="Unknown numeric mode 'exact'; choose one of legacy, fixed"):
+        select_numerics({"numerics": "exact"}, "opencl", {})
+    assert select_numerics({}, "opencl") == os.environ.get("PYFWI_NUMERICS", "legacy").strip().lower()
+
+
 def test_opencl_never_probes_cuda(select):
     assert select({"backend": "opencl"}, probe=never).backend == "opencl"
     assert select(probe=never).describe() == "opencl"

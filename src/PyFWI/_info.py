@@ -26,8 +26,8 @@ logger = logging.getLogger("PyFWI")
 #: What this package is, for users who may confuse it with the original PyFWI.
 ORIGIN = "pyfwi-cuda, a fork of PyFWI 0.1.10 (github.com/AmirMardan/PyFWI) towards a CUDA backend"
 
-#: The numeric mode: the results of PyFWI 0.1.10. The "fixed" mode comes with step 2.4.
-NUMERIC_MODE = "legacy"
+#: What each numeric mode means (step 2.4, ``PyFWI.backends.selection.select_numerics``).
+NUMERIC_MODES = {"legacy": "the results of PyFWI 0.1.10", "fixed": "corrected kernels, step 2.4 of the fork"}
 
 #: Libraries whose versions are reported, by distribution name (some are optional).
 LIBRARIES = ("numpy", "scipy", "pyopencl", "matplotlib", "hdf5storage", "segyio", "torch")
@@ -123,15 +123,16 @@ def info(platform=None, device=None):
     from PyFWI.version import version
     folder = os.path.dirname(os.path.abspath(__file__))
     platforms, selected, error = _opencl(platform, device)
-    try:  # the backend a propagator would use (step 2.2): never fails, the error is reported instead
-        from PyFWI.backends.selection import select_backend
-        backend = select_backend({"platform": platform, "device": device}).describe()
+    try:  # the backend and numeric mode a propagator would use (steps 2.2, 2.4); errors are reported
+        from PyFWI.backends.selection import select_backend, select_numerics
+        selection = select_backend({"platform": platform, "device": device})
+        backend, numerics = selection.describe(), select_numerics({}, selection.backend)
     except Exception as failure:  # noqa: BLE001
-        backend = f"error: {failure}"
+        backend = numerics = f"error: {failure}"
     versions = {"python": platform_version()}
     versions.update({name: _version(name) for name in LIBRARIES})
     return Info(pyfwi=version, origin=ORIGIN, source=folder, commit=_commit(folder), backend=backend,
-                numeric_mode=NUMERIC_MODE, device=selected, opencl_platforms=platforms, opencl_error=error,
+                numeric_mode=numerics, device=selected, opencl_platforms=platforms, opencl_error=error,
                 versions=versions)
 
 
@@ -146,7 +147,7 @@ def format_info(summary):
              f"  source        {summary['source']}"
              + (f" (git commit {summary['commit']})" if summary["commit"] else " (not a git checkout)"),
              f"  backend       {summary['backend']}",
-             f"  numeric mode  {summary['numeric_mode']} (results of PyFWI 0.1.10)",
+             f"  numeric mode  {summary['numeric_mode']} ({NUMERIC_MODES.get(summary['numeric_mode'], '?')})",
              f"  device        {summary['device'] or 'none: ' + str(summary['opencl_error'])}"]
     for i, p in enumerate(summary["opencl_platforms"]):
         devices = "; ".join(f"[{j}] {d['name']} ({d['type']}, {d['memory_gb']} GB)" for j, d in enumerate(p["devices"]))

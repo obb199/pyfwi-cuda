@@ -21,6 +21,12 @@ how much and in which numeric mode.
   `legacy` numeric mode; a guard at the start of every kernel runs exactly the work items of the
   OpenCL launch; buffers with margins as in step 1.7. Chosen with `PYFWI_BACKEND=cuda` (or
   `inpa['backend']`); OpenCL stays the default. With it `W.ctx` and `W.queue` are None.
+- Numeric modes (step 2.4): `inpa['numerics']`, else `PYFWI_NUMERICS`, else the default of the
+  backend (OpenCL: `legacy`, the results of 0.1.10; CUDA: `fixed`). `W.numerics` and `PyFWI.info()`
+  say which. The `fixed` mode writes the floating-point constants as float literals with 9 significant
+  digits: the kernels compute in FP32 only, and `dt` is no longer truncated to 6 decimals. With it the
+  CUDA backend runs the medium scenario of the benchmark in 4.5 s (forward) and 6.5 s (gradient),
+  against 47.3 s and 57.3 s for 0.1.10.
 
 ### Changed
 
@@ -40,6 +46,11 @@ how much and in which numeric mode.
 - None for the default backend (OpenCL). The CUDA backend agrees with OpenCL on the same GPU to a
   relative L2 of 1.1e-6 (seismograms) and 1.9e-5 (gradients) on the propagation cases of the golden
   masters: the two compilers emit different instruction sequences.
+- The `fixed` mode (default of the CUDA backend) differs from `legacy` by up to 2 % on seismograms
+  and 6 % on gradients (relative L2, propagation cases of the golden masters). Almost all of it is the
+  full `dt`: 0.1.10 samples the source with the true step but propagates with a step truncated to
+  6 decimals (0.075 % shorter for a user `dt` of 4 ms). FP32 arithmetic alone changes results by
+  rounding (1e-6 on seismograms, 5e-5 on gradients).
 
 ## [0.1.11] - 2026-10-25
 

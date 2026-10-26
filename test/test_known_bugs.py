@@ -34,8 +34,8 @@ and must pass everywhere else.
 | ``test_source_injection_does_not_excite_grid_noise`` | the source is added once every ``dt_scale`` steps: grid-scale noise at dh of 4-6 m | 2.4 |
 | ``test_crosswell_vz_seismogram_records_vz`` | the crosswell ``vz`` seismogram stores ``vx`` | 2.4 |
 | ``test_crosswell_kernels_assign_vz_to_vz_seismograms`` | same bug, lines 27 and 74 of ``elastic_crosswell.cl`` | 2.4 |
-| ``test_dt_define_is_not_truncated`` | ``#define dt`` keeps only 6 decimals | 2.4 |
-| ``test_float_constants_have_the_f_suffix`` | literals without ``f`` make the kernels compute in FP64 | 2.4 |
+| ``test_dt_define_is_not_truncated`` | ``#define dt`` keeps only 6 decimals | 2.4 (``fixed`` mode) |
+| ``test_float_constants_have_the_f_suffix`` | literals without ``f`` make the kernels compute in FP64 | 2.4 (``fixed`` mode) |
 | ``test_device_choice_works_with_a_single_device_platform`` | ``inpa['device']`` fails on single-device platforms (PyOpenCL 2022 only) | 1.2 (done) |
 | ``test_optimizer_modules_import`` | ``MemoizeJac`` no longer exported by SciPy | 1.1 (done) |
 | ``test_numpy2_modules_import`` | ``numpy.lib.function_base`` removed in NumPy 2 | 1.1 (done) |
@@ -274,17 +274,26 @@ def test_crosswell_kernels_assign_vz_to_vz_seismograms():
     assert rhs == ["vz", "vz"], f"seismogram_vzi is assigned from {rhs}"
 
 
-@pytest.mark.xfail(strict=True, reason="'#define dt %f' keeps 6 decimals: 0.000571 instead of 0.000571428...")
-def test_dt_define_is_not_truncated():
+#: The two numeric modes of the fork (step 2.4): the legacy mode keeps the bugs of 0.1.10 on
+#: purpose, the fixed mode corrects them (in the reference environment both are 0.1.10).
+NUMERIC_MODES = [pytest.param("legacy", marks=pytest.mark.xfail(strict=True, reason="legacy mode: as 0.1.10")),
+                 pytest.param("fixed", marks=pytest.mark.xfail(condition=REFERENCE, strict=True,
+                                                               reason="0.1.10 has no fixed mode"))]
+
+
+@pytest.mark.parametrize("numerics", NUMERIC_MODES)
+def test_dt_define_is_not_truncated(numerics):
+    # 0.1.10: '#define dt %f' keeps 6 decimals, 0.000571 instead of 0.000571428...
     dt = 0.004 / 7  # internal step for a user dt of 4 ms
-    value = float(_defines(kernel_sources(8, dt=dt)[0])["dt"].rstrip("fF"))
+    value = float(_defines(kernel_sources(8, dt=dt, numerics=numerics)[0])["dt"].rstrip("fF"))
     assert abs(value - dt) / dt < 1e-7, f"dt in the kernel is {value!r}, should be {dt!r}"
 
 
-@pytest.mark.xfail(strict=True, reason="float constants are written without the f suffix, so they are double "
-                                       "and the hot kernels compute in FP64")
-def test_float_constants_have_the_f_suffix():
-    defines = _defines(kernel_sources(8)[0])
+@pytest.mark.parametrize("numerics", NUMERIC_MODES)
+def test_float_constants_have_the_f_suffix(numerics):
+    # 0.1.10 writes the float constants without the f suffix: they are double, and the hot
+    # kernels compute in FP64 (1/64 of the FP32 rate on GeForce).
+    defines = _defines(kernel_sources(8, numerics=numerics)[0])
     floats = {name: defines[name] for name in ("dt", "dx", "dz", "c1", "c2", "c3", "c4")}
     assert all(v.endswith("f") for v in floats.values()), floats
 

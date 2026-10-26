@@ -36,17 +36,18 @@ def test_import_has_no_side_effects():
 
 @fork_only
 def test_info_reports_the_package_and_versions(monkeypatch):
-    monkeypatch.delenv("PYFWI_BACKEND", raising=False)  # the default backend
+    monkeypatch.delenv("PYFWI_BACKEND", raising=False)  # the default backend and numeric mode
+    monkeypatch.delenv("PYFWI_NUMERICS", raising=False)
     import numpy
     import scipy
 
     import PyFWI
-    from PyFWI._info import NUMERIC_MODE, ORIGIN
+    from PyFWI._info import ORIGIN
     summary = PyFWI.info()
     assert set(summary) == {"pyfwi", "origin", "source", "commit", "backend", "numeric_mode", "device",
                             "opencl_platforms", "opencl_error", "versions"}
     assert summary["pyfwi"] == PyFWI.__version__ and summary["origin"] == ORIGIN
-    assert (summary["backend"], summary["numeric_mode"]) == ("opencl", NUMERIC_MODE) == ("opencl", "legacy")
+    assert (summary["backend"], summary["numeric_mode"]) == ("opencl", "legacy")  # the defaults
     assert summary["source"] == os.path.dirname(os.path.abspath(PyFWI.__file__))
     assert summary["versions"]["numpy"] == numpy.__version__ and summary["versions"]["scipy"] == scipy.__version__
     assert repr(summary).startswith(f"PyFWI {PyFWI.__version__}: pyfwi-cuda")  # printed as the summary

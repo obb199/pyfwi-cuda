@@ -1,6 +1,7 @@
 """Parity of the CUDA backend with OpenCL on the same GPU (roadmap step 2.3, test type PAR).
 
-The CUDA backend runs the same kernel files as OpenCL, in the ``legacy`` numeric mode. The two
+The CUDA backend runs the same kernel files as OpenCL; parity is checked in the ``legacy`` numeric
+mode of both (CUDA defaults to ``fixed`` since step 2.4, see ``test_numerics.py``). The two
 compilers (NVRTC and NVIDIA's OpenCL compiler) do not emit the same instructions (contractions
 into fused multiply-adds, ordering), so the results are not identical bit for bit: measured on the
 16 propagation cases of the golden masters, the seismograms differ by at most 1.1e-6 and the
@@ -49,8 +50,9 @@ def _on(backend, monkeypatch, run):
 
 @pytest.fixture
 def both(nvidia_opencl_platform, cuda_device, monkeypatch):
-    """Run a function on OpenCL and on CUDA (the same GPU); returns ``(opencl, cuda)``."""
+    """Run a function on OpenCL and on CUDA (the same GPU), both in the legacy mode; returns ``(opencl, cuda)``."""
     monkeypatch.setenv("PYOPENCL_CTX", str(nvidia_opencl_platform))
+    monkeypatch.setenv("PYFWI_NUMERICS", "legacy")  # CUDA defaults to the fixed mode (step 2.4)
     return lambda run: (_on("opencl", monkeypatch, run), _on("cuda:strict", monkeypatch, run))
 
 

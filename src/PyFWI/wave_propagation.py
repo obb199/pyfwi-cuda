@@ -7,7 +7,7 @@ from scipy.ndimage import gaussian_filter
 
 import PyFWI.fwi_tools as tools
 from PyFWI.backends.opencl import OpenCLBackend
-from PyFWI.backends.selection import select_backend
+from PyFWI.backends.selection import select_backend, select_numerics
 from PyFWI.engine.propagation import PropagationEngine, checkpoint_steps
 import PyFWI._info as _info
 from PyFWI.fwi_tools import expand_model
@@ -161,6 +161,10 @@ class WavePreparation:
         # inpa['backend'], else PYFWI_BACKEND, else OpenCL. The CUDA backend (step 2.3) runs the
         # same kernel files; with it W.ctx and W.queue, which are OpenCL objects, are None.
         self.backend_selection = select_backend(inpa)
+        # The numeric mode (step 2.4 of the fork): "legacy" computes what PyFWI 0.1.10 computes,
+        # "fixed" corrects it (see kernel_caller); inpa['numerics'], else PYFWI_NUMERICS, else the
+        # default of the backend (OpenCL: legacy, CUDA: fixed).
+        self.numerics = select_numerics(inpa, self.backend_selection.backend)
         if self.backend_selection.backend == "cuda":
             from PyFWI.backends.cuda import CUDABackend
             self._backend = CUDABackend(self.backend_selection.cuda_ordinal)
@@ -307,23 +311,30 @@ class WavePreparation:
             c3 = 14 / 1434  # 0.018063  #
             c4 = -1 / 1434  # - 0.0026274  #
 
-        macro = """
+        # The fixed numeric mode (step 2.4 of the fork) writes the floating-point constants as float
+        # literals (suffix f) with 9 significant digits, so that the kernels compute in FP32 only
+        # and dt is not truncated: 0.1.10 wrote them with "%f", 6 decimals and no suffix, i.e. as
+        # doubles (FP64 arithmetic, 1/64 of the FP32 rate on GeForce) and dt = 0.000571 instead of
+        # 0.000571428... The legacy text below is exactly that of 0.1.10.
+        fixed = getattr(self, "numerics", "legacy") == "fixed"
+        real = "%.9ef" if fixed else "%f"
+        macro = ("""
             #define Nz	   %d
             #define Nx     %d
             #define Ns     %d
             #define Nr     %d
-            #define dt     %f
-            #define dx     %f
-            #define dz     %f
+            #define dt     REAL
+            #define dx     REAL
+            #define dz     REAL
             #define npml   %d
             #define n_main_rec %d
             #define n_extera_rec %d
 
             #define sdo     %d
-            #define c1     %f
-            #define c2     %f
-            #define c3     %f
-            #define c4     %f
+            #define c1     REAL
+            #define c2     REAL
+            #define c3     REAL
+            #define c4     REAL
 
             #define center	   (i)*Nx + (j)
 
@@ -358,12 +369,14 @@ class WavePreparation:
 
                 //float Diff_Forward(float , float , float , float , int );
                 //float Diff_Backward(float , float , float , float , int );
-        """ % (self.tnz, self.tnx, self.ns, self.nr, self.dt, self.dh, self.dh, self.npml,
+        """).replace("REAL", real) % (self.tnz, self.tnx, self.ns, self.nr, self.dt, self.dh, self.dh, self.npml,
                self.n_surface_rec, self.n_well_rec, self.sdo,
                c1, c2, c3, c4, self.src_cts,
                self.rec_top_left_const, self.rec_top_left_var,
                self.rec_top_right_const, self.rec_top_right_var,
                self.rec_surface_const, self.rec_surface_var)
+        if fixed:
+            macro += "\n            #define PYFWI_FIXED 1\n"
 
         # Decide on openCl file based on medium type
         cl_file_name = "elastic.cl"

@@ -502,6 +502,15 @@ CUDA comes in as an option; the default stays `opencl`.
   - MAT in `fixed` (the adjoint dot product must improve or stay the same);
   - SAN.
 - **Criterion:** PRE zero; differences published; MAT not worse.
+- **Result (part 1, literals):** `select_numerics` (`inpa['numerics']` → `PYFWI_NUMERICS` → backend
+  default) and the `fixed` constants (suffix `f`, 9 significant digits, `#define PYFWI_FIXED 1`); the
+  `legacy` sources are byte for byte those of 0.1.10. PRE: no FP64 instruction left in any kernel in
+  `fixed` (`test/test_numerics.py`). The `dt` and literal known-bug tests pass in `fixed` and stay
+  expected failures in `legacy`. `fixed` × `legacy` on the 16 propagation cases: 2 % (seismograms) and
+  6 % (gradients), from the full `dt` (the truncated one made the propagation 0.075 % slower than the
+  sampled source); FP32 alone: 1e-6 and 5e-5. DES (3 runs): CUDA `fixed` medium 4.5 s / 6.5 s, small
+  0.17 s / 0.18 s (CUDA `legacy` 15.2 s / 35.5 s; 0.1.10 47.3 s / 57.3 s); OpenCL `fixed` is not faster
+  than `legacy` (18.3 s / 43.6 s). Next: `vz` in the well, loop bounds, source injection.
 
 ### 2.5 API contract on CUDA
 
