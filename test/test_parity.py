@@ -114,3 +114,22 @@ def test_compute_sanitizer_finds_no_error_in_the_cuda_kernels(cuda_device, tmp_p
                          capture_output=True, text=True, timeout=1800, check=False)
     assert run.returncode == 0 and "ERROR SUMMARY: 0 errors" in run.stdout, run.stdout[-3000:] + run.stderr[-3000:]
 
+
+#: The CUDA 12 environment of tools/setup_envs.sh (roadmap step 2.6): the [cuda12] extra.
+CUDA12_PYTHON = os.path.join(os.path.dirname(REPO), "envs", "cuda12", "bin", "python")
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not os.path.exists(CUDA12_PYTHON), reason="envs/cuda12 not created (tools/setup_envs.sh cuda12)")
+def test_fast_parity_tests_pass_with_cuda_12(cuda_device):
+    # The fast PAR tests and the CUDA backend tests with the CUDA 12 runtime and NVRTC 12 of
+    # cupy-cuda12x, against NVIDIA OpenCL on the same GPU (this repository, installed editable there).
+    program = "import cupy; print(cupy.cuda.runtime.runtimeGetVersion(), cupy.cuda.nvrtc.getVersion())"
+    versions = subprocess.run([CUDA12_PYTHON, "-c", program], capture_output=True, text=True, check=True)
+    runtime, nvrtc = versions.stdout.split(maxsplit=1)
+    assert runtime.startswith("12") and nvrtc.startswith("(12,"), versions.stdout
+    run = subprocess.run([CUDA12_PYTHON, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-m", "not slow",
+                          os.path.join("test", "test_parity.py"), os.path.join("test", "test_cuda_backend.py")],
+                         cwd=REPO, capture_output=True, text=True, timeout=1800, check=False)
+    assert run.returncode == 0, run.stdout[-3000:]
+    assert " passed" in run.stdout and "skipped" not in run.stdout, run.stdout[-1000:]

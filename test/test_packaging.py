@@ -5,12 +5,14 @@ The fork is installed with ``pip install pyfwi-cuda`` (once published) but impor
 
 * the metadata in ``pyproject.toml``: name, supported Python versions, the dependencies that
   0.1.10 forgot (``pyopencl``) or declared by mistake (``datetime``, ``setuptools``, ``wheel``),
-  and the optional dependencies (extras ``segy`` and ``torch``);
+  and the optional dependencies (extras ``segy``, ``torch``, and ``cuda13`` and ``cuda12`` for the
+  CUDA backend, roadmap step 2.6);
 * that the version is written in one place only (``src/PyFWI/version.py``);
 * the content of the wheel and of the source distribution, built from a copy of the sources by
   the ``built_distributions`` fixture of ``conftest.py``;
 * that the wheel installs in a fresh virtual environment and that every module then imports
-  (``tools/check_install.py``), without segyio or torch.
+  (``tools/check_install.py``), without segyio or torch; and, with each CUDA extra, that the CUDA
+  backend then runs (slow).
 
 Skipped in the reference environment, which has the published 0.1.10 and no build tools.
 """
@@ -82,7 +84,9 @@ def test_pyproject_declares_the_fork():
     dependencies = {_name(r) for r in project["dependencies"]}
     assert dependencies == {"numpy", "scipy", "matplotlib", "hdf5storage", "requests", "pyopencl"}
     extras = {extra: {_name(r) for r in reqs} for extra, reqs in project["optional-dependencies"].items()}
-    assert extras == {"segy": {"segyio"}, "torch": {"torch"}}
+    assert extras == {"segy": {"segyio"}, "torch": {"torch"}, "cuda13": {"cupy-cuda13x"}, "cuda12": {"cupy-cuda12x"}}
+    # [ctk]: the CUDA runtime and NVRTC from PyPI, so that only a driver is needed.
+    assert all("[ctk]" in r for extra in ("cuda13", "cuda12") for r in project["optional-dependencies"][extra])
 
 
 def test_the_setuptools_configuration_ships_the_kernels_and_the_data():
@@ -129,7 +133,9 @@ def test_wheel_metadata(built_distributions):
     assert base == {"numpy", "scipy", "matplotlib", "hdf5storage", "requests", "pyopencl"}
     assert any(_name(r) == "segyio" and "extra == \"segy\"" in r for r in requires)
     assert any(_name(r) == "torch" and "extra == \"torch\"" in r for r in requires)
-    assert {value for key, value in fields if key == "Provides-Extra"} == {"segy", "torch"}
+    assert any(_name(r) == "cupy-cuda13x" and "extra == \"cuda13\"" in r for r in requires)
+    assert any(_name(r) == "cupy-cuda12x" and "extra == \"cuda12\"" in r for r in requires)
+    assert {value for key, value in fields if key == "Provides-Extra"} == {"segy", "torch", "cuda13", "cuda12"}
     assert any(n.endswith(".dist-info/licenses/LICENSE") for n in names)
 
 
@@ -171,3 +177,40 @@ def test_wheel_installs_and_imports_in_a_clean_environment(built_distributions, 
     assert "[skip] import PyFWI.torchfwi" in check.stdout  # torch is an extra, not installed
     assert "[  ok] import PyFWI.seismic_io" in check.stdout and "[  ok] import PyFWI.model_dataset" in check.stdout
     assert "[  ok] model 'dupuy'" in check.stdout  # the data file is installed and readable
+
+
+#: The CUDA extras, with the requirements file whose versions they are installed at and the
+#: environment of tools/setup_envs.sh that put those versions in uv's cache.
+CUDA_EXTRAS = [("cuda13", "dev.txt", "dev"), ("cuda12", "cuda12.txt", "cuda12")]
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(shutil.which("uv") is None, reason="needs uv to create the environment offline")
+@pytest.mark.parametrize("extra, constraints, cached_by", CUDA_EXTRAS)
+def test_cuda_extra_installs_and_runs_the_cuda_backend(built_distributions, tmp_path, cuda_device, extra,
+                                                       constraints, cached_by):
+    # The wheel with one CUDA extra in a fresh environment (offline: the CUDA wheels come from uv's
+    # cache, filled when tools/setup_envs.sh created the environment), then the CUDA backend: the
+    # selection reports it and an example script runs on it.
+    if not os.path.isdir(os.path.join(os.path.dirname(REPO), "envs", cached_by)):
+        pytest.skip(f"envs/{cached_by} not created: its CUDA wheels are not in uv's cache")
+    env = tmp_path / extra
+    python = str(env / "bin" / "python")
+    subprocess.run(["uv", "venv", "--quiet", "--python", sys.executable, str(env)], check=True)
+    install = subprocess.run(
+        ["uv", "pip", "install", "--quiet", "--offline", "--python", python,
+         "--constraint", os.path.join(REPO, "requirements", constraints), f"{built_distributions['wheel']}[{extra}]"],
+        capture_output=True, text=True, check=False)
+    assert install.returncode == 0, install.stderr
+    check = subprocess.run([python, os.path.join(REPO, "tools", "check_install.py")], cwd=tmp_path,
+                           capture_output=True, text=True, check=False)
+    assert check.returncode == 0 and "[  ok] import PyFWI.backends.cuda" in check.stdout, check.stdout + check.stderr
+    run_env = {**os.environ, "PYFWI_BACKEND": "cuda:strict", "MPLBACKEND": "Agg"}
+    run_env.pop("PYTHONPATH", None)
+    info = subprocess.run([python, "-c", "import PyFWI; print(PyFWI.info())"], cwd=tmp_path, env=run_env,
+                          capture_output=True, text=True, check=False)
+    assert info.returncode == 0 and "CUDA" in info.stdout, info.stdout + info.stderr
+    script = os.path.join(REPO, "example", "scripts", "forward_surface.py")
+    run = subprocess.run([python, script, "--size", "small", "--no-show"], cwd=tmp_path, env=run_env,
+                         capture_output=True, text=True, timeout=900, check=False)
+    assert run.returncode == 0, run.stderr[-3000:]

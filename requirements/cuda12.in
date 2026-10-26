@@ -1,0 +1,22 @@
+# Packages of the CUDA 12 environment, envs/cuda12 (roadmap step 2.6): the fork with CuPy for
+# CUDA 12 and its toolkit from PyPI (the [cuda12] extra), to run the parity tests with a CUDA 12
+# runtime and NVRTC 12 on the same GPU. Compiled into cuda12.txt with the versions of dev.txt as
+# constraints, except its CUDA 13 packages, so that both environments run the same versions of
+# everything else:
+#   uv pip compile requirements/cuda12.in -c <(grep -vE '^(cuda-|cupy-|nvidia-)' requirements/dev.txt) \
+#       --python-version 3.12 -o requirements/cuda12.txt
+numpy
+scipy
+matplotlib
+hdf5storage
+requests
+segyio
+pyopencl
+pocl-binary-distribution
+cupy-cuda12x[ctk]
+cuda-core[cu12]
+pytest
+pytest-timeout
+ruff
+setuptools
+wheel

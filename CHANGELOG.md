@@ -24,6 +24,9 @@ how much and in which numeric mode.
   API is checked on both backends (step 2.5): sections and gradients, `W.W` and `W.seismogram`, the
   `show=True` plots, the example scripts (with `torchfwi.Fwi` on CPU tensors) and the original
   example script of 0.1.10.
+- Extras for the CUDA backend (step 2.6): `pip install "pyfwi-cuda[cuda13]"` (CuPy for CUDA 13,
+  NVIDIA driver 580 or newer) or `[cuda12]` (CuPy for CUDA 12, driver 525 or newer). Both bring the
+  CUDA runtime and NVRTC from PyPI (`cupy-cuda1Xx[ctk]`): no CUDA Toolkit is needed on the system.
 - Numeric modes (step 2.4): `inpa['numerics']`, else `PYFWI_NUMERICS`, else the default of the
   backend (OpenCL: `legacy`, the results of 0.1.10; CUDA: `fixed`). `W.numerics` and `PyFWI.info()`
   say which. The `fixed` mode writes the floating-point constants as float literals with 9 significant

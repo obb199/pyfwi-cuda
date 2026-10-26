@@ -8,7 +8,9 @@ The migration of PyFWI from OpenCL to CUDA uses two Python environments
 * ``envs/ref-0.1.10`` -- the frozen *reference* environment, with PyFWI 0.1.10
   exactly as published on PyPI. It produces the reference ("golden") results.
 * ``envs/dev`` -- the *development* environment, with this repository installed
-  in editable mode plus CuPy / CUDA 13.
+  in editable mode plus CuPy / CUDA 13;
+* ``envs/cuda12`` -- the same with CuPy / CUDA 12 (roadmap step 2.6), to check the
+  CUDA backend with a CUDA 12 runtime and NVRTC 12.
 
 This script answers one question: "is this environment able to run PyFWI and the
 CUDA tool chain correctly?" It runs five groups of checks and prints one line

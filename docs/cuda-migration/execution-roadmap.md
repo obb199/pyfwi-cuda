@@ -32,7 +32,7 @@ This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into 
 | 2.3 | Parity CUDA backend (single source, `legacy` mode) | **done** |
 | 2.4 | `legacy` and `fixed` numeric modes | **done** |
 | 2.5 | API contract on the CUDA backend | **done** |
-| 2.6 | `[cuda13]` and `[cuda12]` extras | |
+| 2.6 | `[cuda13]` and `[cuda12]` extras | **done** |
 | 2.7 | Parity report and release 0.2.0 | **G2** |
 | 3.1–3.10 | CUDA optimisations, one per commit, with a benchmark before and after | Phase 3 |
 | 3.11 | `auto` default and release 0.3.0 | **G3** |
@@ -677,6 +677,15 @@ CUDA comes in as an option; the default stays `opencl`.
 - **Goes in:** extras `[cuda13]` (`cupy-cuda13x`) and `[cuda12]` (`cupy-cuda12x`); `envs/cuda12` in `setup_envs.sh`.
 - **Tests:** PKG for each extra in a clean venv; fast PAR in `envs/cuda12`; `check_env.py` passing in the three environments.
 - **Criterion:** both extras install and pass PAR.
+- **Result:** `[cuda13]` = `cupy-cuda13x[ctk]>=14` and `[cuda12]` = `cupy-cuda12x[ctk]>=14`: the
+  `ctk` extra of CuPy brings the CUDA runtime and NVRTC from PyPI, so only the NVIDIA driver is
+  needed (580 or newer for CUDA 13, 525 or newer for CUDA 12). `envs/cuda12` (`tools/setup_envs.sh
+  cuda12`, part of `all`) installs `requirements/cuda12.txt`, compiled from `requirements/cuda12.in`
+  with the versions of `dev.txt` for everything but the CUDA stack (a test checks it): CuPy 14.2,
+  runtime and NVRTC 12.9. Tests: PKG for each extra (the wheel with the extra in a fresh environment,
+  offline from uv's cache; `check_install.py`, `PyFWI.info()` with CUDA, then an example script on
+  `cuda:strict`), the fast PAR and CUDA backend tests run inside `envs/cuda12` (all pass, none
+  skipped), and `check_env.py` in the three environments (all slow). Everything passes.
 
 ### 2.7 Parity report and release 0.2.0
 

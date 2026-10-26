@@ -118,6 +118,17 @@ def test_dev_env_has_cuda13_stack():
     assert "cupy-cuda12x" not in dev
 
 
+def test_cuda12_env_has_cuda12_stack_and_the_rest_of_dev():
+    # envs/cuda12 (roadmap step 2.6): CuPy and its toolkit for CUDA 12; everything else at the
+    # versions of dev.txt, so that a difference between the two environments is the CUDA version.
+    cuda12, dev = _pins("cuda12.txt"), _pins("dev.txt")
+    assert cuda12["cupy-cuda12x"].startswith("14.") and cuda12["nvidia-cuda-nvrtc-cu12"].startswith("12.")
+    assert "cupy-cuda13x" not in cuda12 and cuda12["cuda-core"] and cuda12["pyopencl"]
+    shared = {name for name in cuda12 if name in dev and not re.match(r"(cuda-|cupy-|nvidia-)", name)}
+    assert {"numpy", "scipy", "pyopencl", "pocl-binary-distribution", "pytest"} <= shared
+    assert {name: cuda12[name] for name in shared} == {name: dev[name] for name in shared}
+
+
 def test_both_envs_pin_same_pocl():
     # Bit-for-bit comparisons on the CPU OpenCL need the same POCL compiler on both sides.
     assert _pins("ref-0.1.10.txt")["pocl-binary-distribution"] == _pins("dev.txt")["pocl-binary-distribution"]
@@ -128,7 +139,7 @@ def test_setup_envs_script_is_valid_bash():
     assert os.access(script, os.X_OK)
     subprocess.run(["bash", "-n", script], check=True)  # -n: parse only, run nothing
     r = subprocess.run(["bash", script, "nothing"], check=False, capture_output=True, text=True)
-    assert r.returncode == 2 and "usage:" in r.stderr
+    assert r.returncode == 2 and "usage:" in r.stderr and "cuda12" in r.stderr
 
 
 def _run_check_env(*args, env=None):
@@ -196,3 +207,19 @@ def test_pyfwi_smoke_on_nvidia_opencl_is_finite_and_deterministic(nvidia_opencl_
     assert check_env.outputs_ok(a)
     for k in a:
         np.testing.assert_array_equal(a[k], b[k], err_msg=k)
+
+
+#: The environments of tools/setup_envs.sh, next to the repository.
+ENVS = os.path.join(os.path.dirname(REPO), "envs")
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("name", ["ref-0.1.10", "dev", "cuda12"])
+def test_check_env_passes_in_every_environment(nvidia_opencl_platform, name):
+    # Roadmap steps 0.1 and 2.6: the full check (with the PyFWI smoke run) in each environment.
+    python = os.path.join(ENVS, name, "bin", "python")
+    if not os.path.exists(python):
+        pytest.skip(f"envs/{name} not created (tools/setup_envs.sh {name})")
+    r = subprocess.run([python, "-W", "ignore", os.path.join(REPO, "tools", "check_env.py")], cwd=REPO,
+                       check=False, capture_output=True, text=True, timeout=900)
+    assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-2000:]

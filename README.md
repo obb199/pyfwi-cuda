@@ -54,17 +54,18 @@ stay those of 0.1.10. Next: Phase 2, the CUDA backend.
 
 ## Development setup
 
-The project uses two Python environments, created next to the repository (in `../envs/`) by
+The project uses three Python environments, created next to the repository (in `../envs/`) by
 [uv](https://docs.astral.sh/uv/), without sudo:
 
 - `ref-0.1.10`: Python 3.10 with PyFWI 0.1.10 exactly as published on PyPI and the package versions
   of its original `requirements.txt`. It produces the reference results the fork is compared with.
 - `dev`: Python 3.12 with this repository installed in editable mode, CuPy for CUDA 13, PyOpenCL
   and the test tools.
+- `cuda12`: the same with CuPy for CUDA 12, to check the CUDA backend with a CUDA 12 runtime.
 
 ```bash
 pipx install uv                                  # once
-tools/setup_envs.sh all                          # creates ../envs/ref-0.1.10 and ../envs/dev
+tools/setup_envs.sh all                          # creates ../envs/ref-0.1.10, ../envs/dev and ../envs/cuda12
 ../envs/dev/bin/python tools/check_env.py        # checks GPU, CUDA, OpenCL and a PyFWI run
 ../envs/dev/bin/python -m pytest -m "not slow"   # fast test suite
 ```
@@ -104,6 +105,8 @@ PyPI yet; install it from a checkout of this repository:
 python3 -m pip install .                  # PyFWI with its OpenCL engine (Python 3.10 or newer)
 python3 -m pip install ".[segy]"          # also reads SEG-Y files (segyio)
 python3 -m pip install ".[torch]"         # also PyFWI.torchfwi, gradients through PyTorch
+python3 -m pip install ".[cuda13]"        # also the CUDA backend, NVIDIA driver 580 or newer
+python3 -m pip install ".[cuda12]"        # the CUDA backend with CUDA 12, NVIDIA driver 525 or newer
 python3 tools/check_install.py            # checks the installed copy (run it outside src/)
 ```
 
@@ -113,6 +116,11 @@ Optional dependencies (extras):
 | --- | --- | --- |
 | `segy` | `segyio` | `seismic_io.read_segy` and the Marmousi model of `model_dataset` |
 | `torch` | `torch` | `PyFWI.torchfwi` and `PyFWI.torch` |
+| `cuda13` | `cupy-cuda13x` with the CUDA 13 runtime and NVRTC from PyPI | the CUDA backend (driver 580 or newer) |
+| `cuda12` | `cupy-cuda12x` with the CUDA 12 runtime and NVRTC from PyPI | the CUDA backend (driver 525 or newer) |
+
+The CUDA extras need no CUDA Toolkit on the system, only the NVIDIA driver. Install one of them,
+not both.
 
 The original PyFWI (`python3 -m pip install PyFWI`) and the fork both provide the `PyFWI` package,
 so they cannot be installed in the same environment: uninstall one before installing the other.
@@ -150,8 +158,8 @@ see [CHANGELOG.md](CHANGELOG.md) for what changes and by how much). The largest 
 the source at every internal time step instead of once per recorded sample, which removes a spurious
 grid-scale noise that 0.1.10 creates at grid spacings of a few metres.
 
-CUDA needs CuPy for the CUDA version of the driver (`pip install cupy-cuda13x` for drivers of the
-580 series or newer). The CUDA backend of Phase 2 runs the same kernels as OpenCL (its results agree
+CUDA needs CuPy for the CUDA version of the driver: the `cuda13` extra for drivers of the 580 series
+or newer, `cuda12` for older ones (see [Installing the fork](#installing-the-fork)). The CUDA backend of Phase 2 runs the same kernels as OpenCL (its results agree
 with OpenCL to about 1e-6 for seismograms and 2e-5 for gradients); the faster CUDA kernels come in
 Phase 3.
 

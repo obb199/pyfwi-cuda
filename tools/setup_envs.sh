@@ -9,8 +9,10 @@
 #               receive code from this fork.
 #   dev         Python 3.12 + this repository in editable mode + CuPy/CUDA 13 + PyOpenCL.
 #               Used for development and for running the tests.
+#   cuda12      The same with CuPy/CUDA 12 instead (the [cuda12] extra, roadmap step 2.6), to run
+#               the parity tests with a CUDA 12 runtime and NVRTC 12; same versions of the rest.
 #
-# Usage:     tools/setup_envs.sh [ref|dev|all]        (default: all)
+# Usage:     tools/setup_envs.sh [ref|dev|cuda12|all]        (default: all)
 #
 # Variables: ENVS_DIR  where the environments go (default: <folder above the repo>/envs)
 #            UV        path of the uv executable (default: uv on PATH, else ~/.local/bin/uv)
@@ -63,10 +65,19 @@ make_dev() {
   pip_install "$env" --no-deps --no-build-isolation -e "$REPO"
 }
 
+# make_cuda12: dev with CuPy for CUDA 12 (requirements/cuda12.txt), the repository in editable mode.
+make_cuda12() {
+  local env="$ENVS_DIR/cuda12"
+  new_venv 3.12 "$env" || return 0
+  pip_install "$env" -r "$REPO/requirements/cuda12.txt"
+  pip_install "$env" --no-deps --no-build-isolation -e "$REPO"
+}
+
 case "${1:-all}" in
   ref) make_ref ;;
   dev) make_dev ;;
-  all) make_ref; make_dev ;;
-  *) echo "usage: $0 [ref|dev|all]" >&2; exit 2 ;;
+  cuda12) make_cuda12 ;;
+  all) make_ref; make_dev; make_cuda12 ;;
+  *) echo "usage: $0 [ref|dev|cuda12|all]" >&2; exit 2 ;;
 esac
 echo "Environments in $ENVS_DIR. Check them with: \$ENV/bin/python $REPO/tools/check_env.py"

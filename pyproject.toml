@@ -50,6 +50,11 @@ dependencies = [
 [project.optional-dependencies]
 segy = ["segyio"]  # reading SEG-Y files: seismic_io.read_segy and the Marmousi model of model_dataset
 torch = ["torch"]  # PyFWI.torchfwi (gradients through PyTorch) and PyFWI.torch
+# The CUDA backend (PYFWI_BACKEND=cuda): CuPy with the CUDA toolkit from PyPI ([ctk]: runtime and
+# NVRTC), so that no system CUDA Toolkit is needed, only an NVIDIA driver. [cuda13] needs a driver
+# for CUDA 13 (580 or newer); [cuda12] one for CUDA 12 (525 or newer, 580 included).
+cuda13 = ["cupy-cuda13x[ctk]>=14"]
+cuda12 = ["cupy-cuda12x[ctk]>=14"]
 
 [project.urls]
 Source = "https://github.com/obb199/pyfwi-cuda"
