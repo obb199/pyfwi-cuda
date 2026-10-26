@@ -1,0 +1,212 @@
+{
+ "date": "2026-10-26T19:50:03+00:00",
+ "label": "fork-0.3.0-cuda-fixed",
+ "machine": {
+  "cpu": "x86_64",
+  "driver": "580.95.05",
+  "numpy": "2.5.4",
+  "opencl_device": "NVIDIA GeForce RTX 3060",
+  "pyfwi": "0.3.0",
+  "pyfwi_path": "/home/user/Desktop/apps/cuda_pyfwi/pyfwi-cuda/src/PyFWI",
+  "pyopencl": "2026.1.4",
+  "python": "3.12.15"
+ },
+ "repeats": 5,
+ "scenarios": {
+  "large": {
+   "cv_forward": 0.007042727953587995,
+   "cv_gradient": 0.0044478407714725,
+   "definition": {
+    "chpr": 5,
+    "dh": 7.0,
+    "ns_run": 1,
+    "ns_target": 50,
+    "nx": 750,
+    "nz": 600,
+    "t": 3.427
+   },
+   "engine": {
+    "backend": "cuda device 0 (auto, the default)",
+    "batch": 1,
+    "cuda_kernels": "native",
+    "numerics": "fixed"
+   },
+   "forward_s": {
+    "median": 48.4204526999747,
+    "runs": [
+     0.9669475810005679,
+     0.9768757940000796,
+     0.9824321609994513,
+     0.9640315860015107,
+     0.9684090539994941
+    ]
+   },
+   "gpu_after": {
+    "power_w": 156.99,
+    "sm_clock_mhz": 1897.0,
+    "temperature_c": 75.0
+   },
+   "gpu_before": {
+    "power_w": 157.01,
+    "sm_clock_mhz": 1897.0,
+    "temperature_c": 73.0
+   },
+   "gradient_s": {
+    "median": 139.74713790012174,
+    "runs": [
+     2.794942758002435,
+     2.7799394329995266,
+     2.81722777899995,
+     2.7878071359991736,
+     2.7953954500007967
+    ]
+   },
+   "guard_bands": false,
+   "host_ms_per_step": {
+    "forward": 0.16145532744239646,
+    "gradient": 0.4659791193735303
+   },
+   "internal_steps_per_shot": 5998,
+   "launches_by_kernel": {},
+   "per_step": {
+    "blocking_copies": 0.0,
+    "forward_copies": 0.0,
+    "forward_launches": 0.0,
+    "gradient_copies": 0.0,
+    "gradient_launches": 0.0
+   },
+   "scale": 50.0,
+   "scaled_to_shots": 50
+  },
+  "medium": {
+   "cv_forward": 0.006691031731127982,
+   "cv_gradient": 0.0068666010849696745,
+   "definition": {
+    "chpr": 20,
+    "dh": 7.0,
+    "ns_run": 2,
+    "ns_target": 8,
+    "nx": 400,
+    "nz": 400,
+    "t": 1.713
+   },
+   "engine": {
+    "backend": "cuda device 0 (auto, the default)",
+    "batch": 2,
+    "cuda_kernels": "native",
+    "numerics": "fixed"
+   },
+   "forward_s": {
+    "median": 1.6610946239961777,
+    "runs": [
+     0.41489760799959186,
+     0.41779095899983076,
+     0.41132800500054145,
+     0.4152736559990444,
+     0.41949439000018174
+    ]
+   },
+   "gpu_after": {
+    "power_w": 150.88,
+    "sm_clock_mhz": 1905.0,
+    "temperature_c": 72.0
+   },
+   "gpu_before": {
+    "power_w": 149.17,
+    "sm_clock_mhz": 1905.0,
+    "temperature_c": 70.0
+   },
+   "gradient_s": {
+    "median": 4.171307672004332,
+    "runs": [
+     1.0500182619980478,
+     1.0543017749987484,
+     1.0393511570000555,
+     1.042826918001083,
+     1.0344147920004616
+    ]
+   },
+   "guard_bands": false,
+   "host_ms_per_step": {
+    "forward": 0.06925844829870655,
+    "gradient": 0.17392043328903986
+   },
+   "internal_steps_per_shot": 2998,
+   "launches_by_kernel": {},
+   "per_step": {
+    "blocking_copies": 0.0,
+    "forward_copies": 0.0,
+    "forward_launches": 0.0,
+    "gradient_copies": 0.0,
+    "gradient_launches": 0.0
+   },
+   "scale": 4.0,
+   "scaled_to_shots": 8
+  },
+  "small": {
+   "cv_forward": 0.025332417087223412,
+   "cv_gradient": 0.010579838807810984,
+   "definition": {
+    "chpr": 20,
+    "dh": 7.0,
+    "ns_run": 4,
+    "ns_target": 4,
+    "nx": 100,
+    "nz": 100,
+    "t": 0.6
+   },
+   "engine": {
+    "backend": "cuda device 0 (auto, the default)",
+    "batch": 4,
+    "cuda_kernels": "native",
+    "numerics": "fixed"
+   },
+   "forward_s": {
+    "median": 0.021520267997402698,
+    "runs": [
+     0.022304156998870894,
+     0.020991392997530056,
+     0.021520267997402698,
+     0.022277616000792477,
+     0.0211684290006815
+    ]
+   },
+   "gpu_after": {
+    "power_w": 110.42,
+    "sm_clock_mhz": 1920.0,
+    "temperature_c": 65.0
+   },
+   "gpu_before": {
+    "power_w": 65.16,
+    "sm_clock_mhz": 1920.0,
+    "temperature_c": 59.0
+   },
+   "gradient_s": {
+    "median": 0.06561439399956726,
+    "runs": [
+     0.06580489599946304,
+     0.06518382700232905,
+     0.06454597399715567,
+     0.06561439399956726,
+     0.0666429179982515
+    ]
+   },
+   "guard_bands": false,
+   "host_ms_per_step": {
+    "forward": 0.005123873332714928,
+    "gradient": 0.015622474761801727
+   },
+   "internal_steps_per_shot": 1050,
+   "launches_by_kernel": {},
+   "per_step": {
+    "blocking_copies": 0.0,
+    "forward_copies": 0.0,
+    "forward_launches": 0.0,
+    "gradient_copies": 0.0,
+    "gradient_launches": 0.0
+   },
+   "scale": 1.0,
+   "scaled_to_shots": 4
+  }
+ }
+}

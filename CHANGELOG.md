@@ -9,6 +9,39 @@ how much and in which numeric mode.
 
 ## [Unreleased]
 
+### Numerical changes
+
+- None so far.
+
+## [0.3.0] - 2026-10-26
+
+Optimised CUDA kernels (Phase 3 of the roadmap, gate [G3](docs/cuda-migration/gates/G3.md)): in the
+`fixed` numeric mode the CUDA backend runs kernels written for CUDA, 71× / 30× (small scenario), 31× / 14×
+(medium) and 17.6× / 12.2× (large) faster than 0.1.10 for the forward modelling / gradient
+([benchmark](docs/cuda-migration/reports/benchmark-0.3.0.md)), within the tolerances
+of OpenCL on the whole matrix of the golden masters ([parity report](docs/cuda-migration/reports/parity-0.3.0.md)).
+`auto` becomes the default backend: CUDA on an NVIDIA GPU when CuPy is installed (a `cuda13` or `cuda12`
+extra), else the OpenCL engine and the results of 0.1.10.
+
+### Added
+
+- Native CUDA kernels (`PyFWI/kernels/elastic.cu`, steps 3.2 to 3.10), which the CUDA backend runs in
+  the `fixed` mode (`W.cuda_kernels == "native"`; `PYFWI_CUDA_KERNELS=parity` runs the kernel files of
+  OpenCL instead): the order of the finite differences as a template parameter, multiplications by
+  `1 / dx` instead of divisions, the source, the receivers and the residual handled one thread per
+  receiver, fused update and gradient kernels (5 launches per forward step become 3, 8 per gradient step
+  5), the time step kept on the device, the steps between two checkpoints replayed as CUDA graphs
+  (`PYFWI_CUDA_GRAPHS=0` to launch them one by one), the damping profiles read only in the absorbing
+  layer, and several shots run by the same launches (`PYFWI_CUDA_BATCH`).
+- Checkpoints on the GPU (step 3.8): the forward field stored for the gradient stays in GPU memory for
+  as many shots as fit (`PYFWI_CUDA_CHECKPOINT_BUDGET`, default 80 % of the free memory), the others in
+  host memory; `W.W` is copied from the GPU when read.
+- `PYFWI_CUDA_BLOCK` sets the CUDA block of every launch (step 3.1). The variables of the CUDA backend
+  are listed in the README, "Tuning the CUDA backend".
+- `tools/timeline.py`: the GPU timeline of a benchmark scenario with Nsight Systems (busy time, idle
+  gaps, estimated bandwidth per kernel; [report](docs/cuda-migration/reports/timeline-0.3.0.md)).
+  `tools/benchmark.py` records what ran (backend, numeric mode, kernel set, batch).
+
 ### Changed
 
 - The default backend is `auto` (step 3.11; `opencl` in 0.2.0): CUDA when the OpenCL device that would
@@ -17,13 +50,21 @@ how much and in which numeric mode.
   OpenCL engine and the results of 0.1.10; with one of them, on an NVIDIA GPU, PyFWI runs CUDA in the
   `fixed` numeric mode unless `PYFWI_NUMERICS=legacy` or `PYFWI_BACKEND=opencl`. `PyFWI.info()` shows
   `(auto, the default)` and, when it falls back to OpenCL, why.
+- With the native kernels, the device buffers of the fields, adjoint fields and gradients (`W.vx_b`...)
+  hold one field per shot of a batch, each followed by a row of margin, and keep their allocations from
+  run to run (so that the CUDA graphs stay valid). `show=True` runs one shot at a time and plots its
+  field, as before.
 
 ### Numerical changes
 
-- CUDA, `fixed` mode, batched shots (step 3.9): the native kernels run several shots at once
-  (`PYFWI_CUDA_BATCH`, else balanced batches of at most 2^20 grid cells) and add the gradients of the shots
-  of each batch at the end, so the gradient depends on the batch size by float32 rounding only
-  (measured: 1e-6 to 6e-6 relative between batches of 1, 2 and 4); the seismograms are the same bits.
+- CUDA, `fixed` mode, native kernels: results differ from those of the kernel files of OpenCL (0.2.0)
+  by float32 rounding only (multiplications by `1 / dx` instead of divisions): seismograms up to 9.3e-7,
+  gradients up to 3.8e-5 (relative L2, the 16 propagation cases); against OpenCL in the `fixed` mode the
+  largest differences are those of 0.2.0 (seismograms 1.1e-6, gradients 3.6e-4 on the case most
+  sensitive to rounding).
+- CUDA, `fixed` mode, batched shots (step 3.9): the gradients of the shots of a batch are added at the
+  end, so the gradient depends on the batch size by float32 rounding only (measured: 1e-6 to 6e-6
+  relative between batches of 1, 2 and 4); the seismograms are the same bits.
 
 ## [0.2.0] - 2026-10-26
 

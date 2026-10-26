@@ -32,13 +32,14 @@ the user's code.
 - [Execution and verification roadmap](docs/cuda-migration/execution-roadmap.md): every step from
   the current state to version 0.4, with the tests and checks of each step.
 
-**Status:** release 0.2.0, the end of Phase 2 ([gate G2](docs/cuda-migration/gates/G2.md)): a CUDA
-backend running the kernel files of OpenCL within recorded tolerances of it
-([parity report](docs/cuda-migration/reports/parity-0.2.0.md)), and a `fixed` numeric mode that corrects
-the numerical bugs of 0.1.10; CUDA in that mode is 7.5 to 15.9 times faster than 0.1.10
-([benchmark](docs/cuda-migration/reports/benchmark-0.2.0.md)). OpenCL stays the default, in the `legacy`
-mode, with exactly the results of 0.1.10 (the golden masters in `test/golden/` check it). Every change
-is listed in [CHANGELOG.md](CHANGELOG.md). Next: Phase 3, optimised CUDA kernels.
+**Status:** release 0.3.0, the end of Phase 3 ([gate G3](docs/cuda-migration/gates/G3.md)): on an NVIDIA
+GPU the CUDA backend runs kernels written for CUDA, in the `fixed` numeric mode that corrects the numerical
+bugs of 0.1.10, 18 to 71 times faster than 0.1.10 for the forward modelling and 12 to 30 times for the
+gradient ([benchmark](docs/cuda-migration/reports/benchmark-0.3.0.md)), within recorded tolerances of
+OpenCL ([parity report](docs/cuda-migration/reports/parity-0.3.0.md)). The default backend is `auto`: CUDA
+when CuPy is installed (a `cuda` extra) and the GPU is NVIDIA; otherwise the OpenCL engine, in the `legacy`
+mode, with exactly the results of 0.1.10 (the golden masters in `test/golden/` check it). Every change is
+listed in [CHANGELOG.md](CHANGELOG.md). Next: Phase 4, opt-in features.
 
 ## Repository layout
 
@@ -170,6 +171,19 @@ or newer, `cuda12` for older ones (see [Installing the fork](#installing-the-for
 the CUDA backend runs kernels written for CUDA (Phase 3), in the `legacy` mode the kernel files of
 OpenCL compiled for CUDA (its results agree with OpenCL to about 1e-6 for seismograms and 2e-5 for
 gradients).
+
+## Tuning the CUDA backend
+
+These environment variables tune the CUDA backend; none is needed. The results do not depend on them,
+except where the table says so.
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `PYFWI_CUDA_KERNELS` | `native` | In the `fixed` mode, `parity` runs the kernel files of OpenCL compiled for CUDA instead of the kernels written for CUDA (slower; results differ by rounding) |
+| `PYFWI_CUDA_BATCH` | as many shots as fit in 2^20 grid cells, in balanced batches | Shots run at once by the same launches (the gradients of a batch are added at the end: they differ by rounding with the batch size) |
+| `PYFWI_CUDA_GRAPHS` | `1` | `0` launches the kernels of every time step one by one instead of replaying CUDA graphs |
+| `PYFWI_CUDA_CHECKPOINT_BUDGET` | 80 % of the free GPU memory | Bytes of checkpoints (the forward field stored for the gradient) kept on the GPU; the others stay in host memory |
+| `PYFWI_CUDA_BLOCK` | 32 columns by 8, 4 or 2 rows, to fill the GPU | The CUDA block of every launch, `<columns>x<rows>` (for example `64x4`) |
 
 ## Citing PyFWI
 

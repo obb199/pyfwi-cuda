@@ -1,9 +1,11 @@
-"""Parity report of the CUDA backend (roadmap step 2.7): CUDA against OpenCL, case by case.
+"""Parity report of the CUDA backend (roadmap steps 2.7 and 3.11): CUDA against OpenCL, case by case.
 
-The CUDA backend of Phase 2 runs the kernel files of the OpenCL backend; the two compilers (NVRTC
-and NVIDIA's OpenCL compiler) do not emit the same instructions, so the results differ by
-rounding. This script measures by how much on the whole matrix of the golden masters
-(``test/golden_cases.py``), on the same GPU:
+In the ``legacy`` numeric mode the CUDA backend runs the kernel files of the OpenCL backend; in the
+``fixed`` mode, since 0.3.0, kernels written for CUDA (``PyFWI/kernels/elastic.cu``) that compute the
+same thing. The compilers (NVRTC and NVIDIA's OpenCL compiler) do not emit the same instructions,
+and the native kernels order some operations differently, so the results differ by rounding. This
+script measures by how much on the whole matrix of the golden masters (``test/golden_cases.py``), on
+the same GPU:
 
 * the 16 propagation cases (forward modelling and gradient: raw seismograms, data, misfit, raw and
   processed gradients, every component and parameter);
@@ -18,13 +20,13 @@ difference of every output of every case.
 
 Usage::
 
-    ../envs/dev/bin/python tools/parity_report.py                       # both modes, writes the report
+    ../envs/dev/bin/python tools/parity_report.py      # both modes: reports/parity-<version of PyFWI>.md
     ../envs/dev/bin/python tools/parity_report.py --modes legacy --out /tmp/parity.md
 
 Used by
 -------
-Release 0.2.0 (``docs/cuda-migration/reports/parity-0.2.0.md``). ``render`` is tested by
-``test/test_parity.py``.
+Releases 0.2.0 and 0.3.0 (``docs/cuda-migration/reports/parity-<version>.md``). ``render`` is tested
+by ``test/test_parity.py``.
 """
 import argparse
 import contextlib
@@ -37,8 +39,8 @@ import numpy as np
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path[:0] = [os.path.join(REPO, "test"), REPO]
 
-#: Where the report of the release goes.
-REPORT = os.path.join(REPO, "docs", "cuda-migration", "reports", "parity-0.2.0.md")
+#: Where the report of a release goes: ``REPORT.format(version)``.
+REPORT = os.path.join(REPO, "docs", "cuda-migration", "reports", "parity-{}.md")
 
 #: The backends compared: the reference, then the one measured against it (``PYFWI_BACKEND``).
 BACKENDS = ("opencl", "cuda:strict")
@@ -46,15 +48,17 @@ BACKENDS = ("opencl", "cuda:strict")
 #: The opening paragraphs of the report.
 INTRODUCTION = (
     ("CUDA against OpenCL on the same GPU, on the whole matrix of the golden masters (`tools/parity_report.py`): "
-     "relative L2 difference `||cuda - opencl|| / ||opencl||` of every output, in each numeric mode. Both backends "
-     "run the same kernel files; the compilers emit different instructions (contractions into fused multiply-adds, "
-     "ordering), hence differences of the order of rounding. The tolerances of `test/test_parity.py` (the final "
-     "tolerances of gate G2) are about 3 times the largest values below."),
+     "relative L2 difference `||cuda - opencl|| / ||opencl||` of every output, in each numeric mode, each backend "
+     "with its default settings. In the `legacy` mode both backends run the same kernel files; in the `fixed` mode "
+     "the CUDA backend runs, since 0.3.0, the native kernels of Phase 3, which compute the same thing with some "
+     "operations in another order (multiplications by 1 / dx instead of divisions, the shots in batches whose "
+     "gradients are added at the end). The compilers also emit different instructions (contractions into fused "
+     "multiply-adds), hence differences of the order of rounding, checked by the tolerances of `test/test_parity.py`."),
     ("The largest gradient differences, in the `fixed` mode, are those of one case (wells and surface, pressure "
-     "data, energy balancing), whose gradient is the most sensitive to rounding: compiling the CUDA kernels "
-     "without contraction into fused multiply-adds alone changes it by 7e-4, and NVIDIA OpenCL and POCL (OpenCL "
-     "on the CPU) differ by 3e-5 there. The `legacy` mode differs less because its double-precision constants make "
-     "part of its arithmetic FP64."),
+     "data, energy balancing), whose gradient is the most sensitive to rounding: in 0.2.0, compiling the CUDA "
+     "kernels without contraction into fused multiply-adds alone changed it by 7e-4, and NVIDIA OpenCL and POCL "
+     "(OpenCL on the CPU) differ by 3e-5 there. The `legacy` mode differs less because its double-precision "
+     "constants make part of its arithmetic FP64."),
 )
 
 
@@ -120,7 +124,7 @@ def summary(differences):
     return largest
 
 
-def render(results, environment):
+def render(results, environment, release):
     """The Markdown report.
 
     Parameters
@@ -129,8 +133,10 @@ def render(results, environment):
         As returned by ``measure``.
     environment : dict
         ``{label: value}`` lines describing the machine and the versions.
+    release : str
+        The version of PyFWI measured, for the title.
     """
-    lines = ["# Parity of the CUDA backend with OpenCL (release 0.2.0)", ""]
+    lines = [f"# Parity of the CUDA backend with OpenCL (release {release})", ""]
     for paragraph in INTRODUCTION:
         lines += [paragraph, ""]
     lines += ["## Environment", ""]
@@ -162,18 +168,20 @@ def environment():
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--modes", nargs="+", default=["legacy", "fixed"], choices=["legacy", "fixed"])
-    parser.add_argument("--out", default=REPORT, help="the Markdown report (default: %(default)s)")
+    parser.add_argument("--out", help="the Markdown report (default: reports/parity-<version of PyFWI>.md)")
     args = parser.parse_args()
+    import PyFWI
+    out = args.out or REPORT.format(PyFWI.__version__)
     if "PYOPENCL_CTX" not in os.environ:
         from tools.make_golden import default_opencl_context
         default_opencl_context()
     results = measure(args.modes)
-    with open(args.out, "w") as f:
-        f.write(render(results, environment()))
+    with open(out, "w") as f:
+        f.write(render(results, environment(), PyFWI.__version__))
     for mode, differences in results.items():
         for kind, (value, case, key) in sorted(summary(differences).items()):
             print(f"{mode:6} {kind:15} {value:.1e}  {case} {key}")
-    print(f"report: {args.out}")
+    print(f"report: {out}")
 
 
 if __name__ == "__main__":

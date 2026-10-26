@@ -17,6 +17,10 @@ difference measured on the whole matrix of the golden masters by ``tools/parity_
 * the inversions (FWI with L-BFGS and CG, 2 iterations; eight time-lapse strategies, 1 iteration):
   models 3.5e-5, misfits 8.2e-5.
 
+Release 0.3.0 (``parity-0.3.0.md``), where the ``fixed`` mode of CUDA runs the native kernels of Phase
+3 with the shots in batches: the same largest differences (seismograms and data 1.1e-6, gradients
+3.6e-4 on the same case, inverted models 3.4e-5, inversion misfits 4.7e-5), so the tolerances stay.
+
 Also here: grids that are not a multiple of the CUDA block, determinism and ``compute-sanitizer``
 on the CUDA kernels (no error: the padding of step 1.7 keeps the inherited out-of-bounds accesses
 inside the allocations). The example scripts and the rest of the public API run on both backends
@@ -112,8 +116,8 @@ def test_parity_report_renders_every_output():
         ["raw_gradient", "misfit", "model", "model", "model", "misfit"]
     assert summary(results["legacy"])["misfit"] == (3e-7, "a1_case", "misfit")
     assert summary(results["legacy"])["inversion misfit"] == (5e-5, "fwi_lbfgs", "misfit/0")
-    report = render(results, {"GPU": "test GPU"})
-    assert report.startswith("# Parity of the CUDA backend") and "- GPU: test GPU" in report
+    report = render(results, {"GPU": "test GPU"}, "9.9.9")
+    assert report.startswith("# Parity of the CUDA backend with OpenCL (release 9.9.9)") and "- GPU: test GPU" in report
     assert "| raw_gradient | 2.0e-05 | a1_case | `raw_gradient/vp` |" in report
     assert report.count("\n| a1_case |") == 3 and "| fwi_lbfgs | `model/vp` | 4.0e-06 |" in report
 
@@ -156,7 +160,8 @@ def test_cuda_runs_are_deterministic(cuda_device, monkeypatch):
 
 
 #: Forward modelling and gradient of the three acquisitions on CUDA, each CuPy array in its own
-#: allocation (no memory pool), so that compute-sanitizer sees the bounds of every allocation.
+#: allocation (no memory pool), so that compute-sanitizer sees the bounds of every allocation; then 3
+#: shots in one batch (step 3.9: the slots, the checkpoint copies of a batch, the sum of the slots).
 #: argv: <test folder>.
 SANITIZED = """
 import os, sys
@@ -167,6 +172,9 @@ cupy.cuda.set_allocator(None)
 from helpers import forward_and_gradient, tiny_case
 for acq_type in (0, 1, 2):
     forward_and_gradient(tiny_case(acq_type=acq_type, components=4, t=0.1))
+batched = tiny_case(acq_type=2, components=4, ns=3, t=0.1)
+assert batched.W._engine.batch == 3
+forward_and_gradient(batched)
 """
 
 

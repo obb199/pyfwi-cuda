@@ -210,3 +210,23 @@ def test_release_0_2_0_cuda_is_never_slower_than_opencl():
         for kind in ("forward_s", "gradient_s"):
             assert legacy[name][kind]["median"] < opencl[name][kind]["median"], (name, kind)
             assert baseline[name][kind]["median"] / fixed[name][kind]["median"] > 7, (name, kind)
+
+
+def test_release_0_3_0_meets_the_targets_of_gate_g3():
+    # Gate G3 (docs/cuda-migration/reports/benchmark-0.3.0.md): the default of the release (auto: CUDA,
+    # fixed mode, native kernels) against 0.1.10 measured in the same session, at least the lower end of
+    # the targets of the analysis (small 20x, medium 10x, large 3x), faster than the default CUDA run of
+    # 0.2.0, and the parity CUDA backend still not slower than OpenCL. Recorded results.
+    ref, opencl, legacy, fixed = (_stored("release-0.3.0", label)["scenarios"] for label in (
+        "ref-0.1.10-pyopencl-2022", "fork-0.3.0-opencl", "fork-0.3.0-cuda-legacy", "fork-0.3.0-cuda-fixed"))
+    previous = _stored("release-0.2.0", "fork-0.2.0-cuda-fixed")["scenarios"]
+    targets = {"small": 20, "medium": 10, "large": 3}
+    assert set(ref) == set(opencl) == set(legacy) == set(fixed) == set(targets)
+    for name, target in targets.items():
+        assert fixed[name]["engine"] == {"backend": "cuda device 0 (auto, the default)", "numerics": "fixed",
+                                         "cuda_kernels": "native", "batch": fixed[name]["engine"]["batch"]}
+        for kind in ("forward_s", "gradient_s"):
+            assert ref[name][kind]["median"] / fixed[name][kind]["median"] > target, (name, kind)
+            assert fixed[name][kind]["median"] < previous[name][kind]["median"], (name, kind)
+            assert legacy[name][kind]["median"] < opencl[name][kind]["median"], (name, kind)
+    assert {name: fixed[name]["engine"]["batch"] for name in fixed} == {"small": 4, "medium": 2, "large": 1}

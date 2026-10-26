@@ -34,8 +34,8 @@ This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into 
 | 2.5 | API contract on the CUDA backend | **done** |
 | 2.6 | `[cuda13]` and `[cuda12]` extras | **done** |
 | 2.7 | Parity report and release 0.2.0 | **done** · **[G2](gates/G2.md) approved** |
-| 3.1–3.10 | CUDA optimisations, one per commit, with a benchmark before and after | Phase 3 |
-| 3.11 | `auto` default and release 0.3.0 | **G3** |
+| 3.1–3.10 | CUDA optimisations, one per commit, with a benchmark before and after | Phase 3 · **done** |
+| 3.11 | `auto` default and release 0.3.0 | **done** · **[G3](gates/G3.md) approved** |
 | 4.1–4.6 | Cost function on the GPU, boundary saving, FP16, multi-GPU, DLPack, geophysical validation | Phase 4 |
 | 4.7 | Release 0.4.0 | **G4** |
 | 5.x | Final documentation, upstream, publication and conditional optimisations | Maintenance |
@@ -923,14 +923,27 @@ Each optimisation is a separate commit, with a benchmark before and after, so th
   whole tool on the tiny scenario. The bandwidth of the kernels is estimated from the timeline until the
   Nsight Compute counters are open (owner action): 205 to 266 GB/s on the medium scenario, at least 57 to
   74 % of the 360 GB/s of the RTX 3060, as fast as the plain copy of the checkpoints.
+- **Result, part 3 (release 0.3.0):** version 0.3.0. Full DES in one session
+  ([benchmark report](reports/benchmark-0.3.0.md), `bench/release-0.3.0/`, 0.1.10 measured again beside
+  it): the default configuration is 71× / 30× (small), 31× / 14× (medium) and 17.6× / 12.2× (large)
+  faster than 0.1.10, and 9.3× / 2.9×, 1.8× / 1.4×, 1.5× / 1.2× faster than the CUDA default of 0.2.0;
+  OpenCL and the parity CUDA backend unchanged. [Parity report](reports/parity-0.3.0.md) on the whole
+  matrix: the largest differences of 0.2.0, so the tolerances stay (`tools/parity_report.py` now names
+  the report after the version measured). SAN extended to a batch of 3 shots (the sanitizer catches errors
+  inside CUDA graphs: checked). EST: the real medium scenario (8 shots, 18.6 GB of checkpoints) runs in
+  batches of 4 with 4 shots of checkpoints on the GPU, at most 9.6 GB of the 12.3 GB used. PKG, EXA and FWI:
+  the suites (wheel and extras, every example on both backends, the inversions of the golden masters on
+  both backends). OpenCL keeps `legacy` as its default numeric mode ([G3](gates/G3.md)).
 
 ### Gate G3
 
-- [ ] Performance targets against the 0.1.10 baseline (estimates of the analysis): 20 to 100× in the small scenario, 10 to 40× in the medium one and 3 to 10× in the large one. Met, or the gap explained.
-- [ ] No regression above 5% between the commits of the phase.
-- [ ] OTM, DET, SAN, PRE and EXA on the whole matrix.
-- [ ] PRF: Nsight Systems timeline without relevant idle gaps in the small scenario; bandwidth per kernel from Nsight Compute recorded, with the hot kernels close to the memory ceiling of the RTX 3060.
-- [ ] EST close to the VRAM limit.
+**Approved** on Oct 26, 2026: [G3.md](gates/G3.md).
+
+- [x] Performance targets against the 0.1.10 baseline (estimates of the analysis): 20 to 100× in the small scenario, 10 to 40× in the medium one and 3 to 10× in the large one. Met, or the gap explained.
+- [x] No regression above 5% between the commits of the phase.
+- [x] OTM, DET, SAN, PRE and EXA on the whole matrix.
+- [x] PRF: Nsight Systems timeline without relevant idle gaps in the small scenario; bandwidth per kernel from Nsight Compute recorded, with the hot kernels close to the memory ceiling of the RTX 3060. (Nsight Compute blocked by the GPU counters: bandwidth estimated from the timeline, an open point of G3.)
+- [x] EST close to the VRAM limit.
 
 ## Phase 4: opt-in features (version 0.4.0)
 
