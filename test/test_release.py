@@ -1,7 +1,8 @@
 """Release checks of the fork (roadmap step 1.9): what a user of a new version does first.
 
 * The original example script of PyFWI 0.1.10, ``example/fwi_example_surface.py`` (forward
-  modelling and a two-band FWI of the documentation), runs unchanged as a program.
+  modelling and a two-band FWI of the documentation), runs unchanged as a program, on both
+  backends (``PYFWI_BACKEND``, the ``backend`` fixture).
 * The wheel installs in a fresh environment of every supported Python (3.10 to 3.13), with the
   dependencies resolved from the package index as a user gets them, and an example script then
   runs on OpenCL on the CPU (POCL).
@@ -37,7 +38,7 @@ with zero_guard_bands() if guard else contextlib.nullcontext():
 
 
 @pytest.mark.slow
-def test_original_example_script_runs_unchanged(opencl_platform):
+def test_original_example_script_runs_unchanged(backend):
     # The script imports from ./src (it was written to run from the repository root) and shows its
     # figures at the end: the Agg backend makes plt.show() return at once.
     env = {**os.environ, "MPLBACKEND": "Agg"}

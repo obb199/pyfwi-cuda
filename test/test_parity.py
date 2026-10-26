@@ -9,9 +9,10 @@ gradients by 1.9e-5 in relative L2 norm, the same order as the effect of a singl
 profile measured in step 0.5 (5.7e-7 and 2.8e-5). ``TOLERANCE`` leaves a margin of about 3; the
 final tolerance is set at gate G2.
 
-Also here: grids that are not a multiple of the CUDA block, determinism, ``compute-sanitizer`` on
-the CUDA kernels (no error: the padding of step 1.7 keeps the inherited out-of-bounds accesses
-inside the allocations), and the example scripts on CUDA.
+Also here: grids that are not a multiple of the CUDA block, determinism and ``compute-sanitizer``
+on the CUDA kernels (no error: the padding of step 1.7 keeps the inherited out-of-bounds accesses
+inside the allocations). The example scripts and the rest of the public API run on both backends
+through the ``backend`` fixture of ``conftest.py`` (step 2.5).
 """
 import os
 import shutil
@@ -113,13 +114,3 @@ def test_compute_sanitizer_finds_no_error_in_the_cuda_kernels(cuda_device, tmp_p
                          capture_output=True, text=True, timeout=1800, check=False)
     assert run.returncode == 0 and "ERROR SUMMARY: 0 errors" in run.stdout, run.stdout[-3000:] + run.stderr[-3000:]
 
-
-@pytest.mark.slow
-def test_examples_run_on_cuda(cuda_device):
-    # The example scripts with their physical checks (test_examples.py), with CUDA as the backend.
-    env = {**os.environ, "PYFWI_BACKEND": "cuda:strict", "MPLBACKEND": "Agg"}
-    run = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-m", "not slow",
-                          os.path.join(os.path.dirname(__file__), "test_examples.py")],
-                         cwd=REPO, env=env, capture_output=True, text=True, timeout=1800, check=False)
-    assert run.returncode == 0, run.stdout[-3000:]
-    assert " passed" in run.stdout and "failed" not in run.stdout

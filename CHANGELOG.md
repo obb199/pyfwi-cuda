@@ -20,7 +20,10 @@ how much and in which numeric mode.
   compiled as CUDA with NVRTC after the portability header `PyFWI/kernels/opencl_on_cuda.h`, in the
   `legacy` numeric mode; a guard at the start of every kernel runs exactly the work items of the
   OpenCL launch; buffers with margins as in step 1.7. Chosen with `PYFWI_BACKEND=cuda` (or
-  `inpa['backend']`); OpenCL stays the default. With it `W.ctx` and `W.queue` are None.
+  `inpa['backend']`); OpenCL stays the default. With it `W.ctx` and `W.queue` are None. The public
+  API is checked on both backends (step 2.5): sections and gradients, `W.W` and `W.seismogram`, the
+  `show=True` plots, the example scripts (with `torchfwi.Fwi` on CPU tensors) and the original
+  example script of 0.1.10.
 - Numeric modes (step 2.4): `inpa['numerics']`, else `PYFWI_NUMERICS`, else the default of the
   backend (OpenCL: `legacy`, the results of 0.1.10; CUDA: `fixed`). `W.numerics` and `PyFWI.info()`
   say which. The `fixed` mode writes the floating-point constants as float literals with 9 significant

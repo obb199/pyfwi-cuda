@@ -8,7 +8,8 @@ them as ``(ns, nchp, tnz, tnx)`` and copies each field straight from and to the 
 blocking; ``W.W`` is a property that shows the same arrays in the old layout, as views.
 
 The API tests run in both environments: what holds for the published 0.1.10 must hold for the
-fork (shape, dtype, axis order, values, writing into ``W.W`` and assigning it).
+fork (shape, dtype, axis order, values, writing into ``W.W`` and assigning it), on both backends
+of the fork (the ``backend`` fixture, roadmap step 2.5).
 """
 import tracemalloc
 
@@ -23,14 +24,19 @@ COMPONENTS = ["vx", "vz", "taux", "tauz", "tauxz"]
 
 
 def _device_field(W, name):
-    """The current content of the device buffer of one field component (e.g. ``W.vx_b``)."""
-    import pyopencl as cl
+    """The current content of the device buffer of one field component (e.g. ``W.vx_b``).
+
+    Through the engine of the fork, on any backend; with an OpenCL copy for the published 0.1.10.
+    """
     host = np.empty((W.tnz, W.tnx), np.float32)
+    if "_engine" in vars(W):
+        return W._engine.read_field(f"{name}_b", host)
+    import pyopencl as cl
     cl.enqueue_copy(W.queue, host, getattr(W, f"{name}_b"))
     return host
 
 
-def test_W_has_the_layout_of_0_1_10(opencl_platform):
+def test_W_has_the_layout_of_0_1_10(backend):
     # Inside zero guard bands: on POCL the out-of-bounds reads of 0.1.10 give NaN otherwise.
     with zero_guard_bands():
         case = tiny_case(ns=2)
@@ -77,7 +83,7 @@ def _assign_a_doubled_copy(W):
     W.W = copy
 
 
-def test_writing_into_W_or_assigning_it_changes_the_gradient(opencl_platform):
+def test_writing_into_W_or_assigning_it_changes_the_gradient(backend):
     with zero_guard_bands():
         plain = _gradient_after_forward(tiny_case())
         written = _gradient_after_forward(tiny_case(), _double_the_middle_checkpoint)
@@ -90,7 +96,7 @@ def test_writing_into_W_or_assigning_it_changes_the_gradient(opencl_platform):
 
 
 @pytest.mark.skipif(running_reference(), reason="the storage layout is the fork's (step 1.5)")
-def test_checkpoints_are_stored_contiguously_and_W_shows_views(opencl_platform):
+def test_checkpoints_are_stored_contiguously_and_W_shows_views(backend):
     case = tiny_case(ns=2)
     W = case.W
     W.forward_modeling(case.model, False)
@@ -101,7 +107,7 @@ def test_checkpoints_are_stored_contiguously_and_W_shows_views(opencl_platform):
 
 
 @pytest.mark.skipif(running_reference(), reason="measures the fork's copies (step 1.5)")
-def test_forward_and_gradient_make_no_copy_of_the_checkpoints(opencl_platform):
+def test_forward_and_gradient_make_no_copy_of_the_checkpoints(backend):
     # MEM: with every time step stored (chpr = 100) the checkpoints dominate the memory. Forward
     # and gradient copy fields straight from and to the storage, so the extra memory they need is a
     # small fraction of it (a temporary copy of the checkpoints would need as much again).

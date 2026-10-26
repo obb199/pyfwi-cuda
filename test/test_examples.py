@@ -71,8 +71,11 @@ def load_example(name):
 
 
 @pytest.fixture
-def run_example(opencl_platform):
-    """Return a function ``run(name)`` that runs ``main(size="small")`` of an example (see the module docstring)."""
+def run_example(backend):
+    """Return a function ``run(name)`` that runs ``main(size="small")`` of an example (see the module docstring).
+
+    Every example test runs on both backends of PyFWI (the ``backend`` fixture, roadmap step 2.5).
+    """
     from oob_guard import zero_guard_bands
 
     def run(name):
@@ -128,7 +131,7 @@ with zero_guard_bands() if guard else contextlib.nullcontext():
 
 
 @pytest.mark.parametrize("name", example_params())
-def test_example_runs_as_a_program(opencl_platform, name):
+def test_example_runs_as_a_program(backend, name):
     env = {**os.environ, "MPLBACKEND": "Agg"}  # never open a window
     script = os.path.join(EXAMPLES_DIR, f"{name}.py")
     mode = "guard" if running_reference() else "plain"

@@ -10,6 +10,9 @@ pytest loads this file automatically before the tests in ``test/``. It:
 
 Markers (declared in ``pyproject.toml``): ``gpu`` needs CuPy + an NVIDIA GPU +
 cuda.core; ``opencl`` needs the NVIDIA OpenCL platform.
+
+The ``backend`` fixture runs a test once per backend of PyFWI (OpenCL, then CUDA): the API
+suite of roadmap step 2.5 uses it, so that the public API is checked on both.
 """
 import json
 import os
@@ -159,6 +162,36 @@ def single_device_platform(monkeypatch):
         pytest.skip("no OpenCL platform with a single device")
     monkeypatch.delenv("PYOPENCL_CTX", raising=False)
     return platform[0]
+
+
+#: The backends of the API suite (roadmap step 2.5). The CUDA case carries the ``gpu`` marker.
+BACKENDS = ["opencl", pytest.param("cuda", marks=pytest.mark.gpu)]
+
+
+@pytest.fixture(params=BACKENDS)
+def backend(request, monkeypatch):
+    """Run the test with PyFWI on one backend; returns ``"opencl"`` or ``"cuda"``.
+
+    ``PYFWI_BACKEND`` is set for the test (``opencl``, or ``cuda:strict`` so that a CUDA problem
+    fails instead of falling back to OpenCL) and restored afterwards; each backend keeps its
+    default numeric mode (OpenCL ``legacy``, CUDA ``fixed``). OpenCL runs on the device of the
+    ``opencl_platform`` fixture. CUDA is skipped without CuPy or a GPU, and in the reference
+    environment (the published 0.1.10 has no CUDA backend).
+
+    Used by the API tests: ``test_api.py``, ``test_checkpoints.py``, ``test_examples.py`` and the
+    original example script of ``test_release.py``.
+    """
+    from helpers import running_reference
+
+    if request.param == "cuda":
+        if running_reference():
+            pytest.skip("the published 0.1.10 has no CUDA backend")
+        request.getfixturevalue("cuda_device")
+        monkeypatch.setenv("PYFWI_BACKEND", "cuda:strict")
+    else:
+        request.getfixturevalue("opencl_platform")
+        monkeypatch.setenv("PYFWI_BACKEND", "opencl")
+    return request.param
 
 
 @pytest.fixture(scope="session")

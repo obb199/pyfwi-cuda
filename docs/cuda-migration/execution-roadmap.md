@@ -31,7 +31,7 @@ This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into 
 | 2.2 | Backend selector and fallback | **done** |
 | 2.3 | Parity CUDA backend (single source, `legacy` mode) | **done** |
 | 2.4 | `legacy` and `fixed` numeric modes | **done** |
-| 2.5 | API contract on the CUDA backend | |
+| 2.5 | API contract on the CUDA backend | **done** |
 | 2.6 | `[cuda13]` and `[cuda12]` extras | |
 | 2.7 | Parity report and release 0.2.0 | **G2** |
 | 3.1–3.10 | CUDA optimisations, one per commit, with a benchmark before and after | Phase 3 |
@@ -655,6 +655,22 @@ CUDA comes in as an option; the default stays `opencl`.
 - **Goes in:** `W.W` and `W.seismogram` copied from the GPU only when accessed; the `show=True` path; `torchfwi.Fwi` with CPU tensors.
 - **Tests:** API with `PYFWI_BACKEND=cuda`, the same tests as OpenCL parametrised by backend; the original example scripts without edits; EXA; INT on the CPU.
 - **Criterion:** the same API suite passes on both backends.
+- **Result:** the `backend` fixture of `test/conftest.py` runs a test once on OpenCL and once on
+  CUDA (`PYFWI_BACKEND=opencl`, then `cuda:strict`, each backend in its default numeric mode; CUDA
+  skipped without CuPy or a GPU and in the reference environment). The API suite takes it:
+  `test/test_api.py` (new: the sections of the five `components` values and the `"3d"` shape,
+  `W.seismogram`, the gradient in the `dv` and `lmd` parameterisations, the `show=True` path of the
+  forward modelling and of the gradient, which plots every 20 steps and changes no result, and the
+  OpenCL handles, None on CUDA), `test/test_checkpoints.py` (`W.W`: layout, views, writing into it
+  and assigning it change the gradient, no copy of the checkpoints), `test/test_examples.py` (the
+  seven example scripts with their physical checks and as programs, `torchfwi.Fwi` with CPU tensors
+  included: EXA and INT on the CPU) and the original `example/fwi_example_surface.py` of 0.1.10,
+  run unchanged (`test/test_release.py`, slow). All pass on both backends; the OpenCL case also
+  passes against the published 0.1.10. The slow test that ran `test_examples.py` on CUDA in a
+  subprocess (step 2.3) is replaced by this. `W.W` and `W.seismogram` are NumPy arrays on both
+  backends, filled during the run: the gradient needs the checkpoints on the host as long as they
+  live there, and the sections are made from the seismograms at once. Copying them only when
+  accessed belongs with checkpoints kept on the device, step 3.8.
 
 ### 2.6 Installation extras
 
