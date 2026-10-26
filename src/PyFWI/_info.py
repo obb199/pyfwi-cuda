@@ -26,9 +26,6 @@ logger = logging.getLogger("PyFWI")
 #: What this package is, for users who may confuse it with the original PyFWI.
 ORIGIN = "pyfwi-cuda, a fork of PyFWI 0.1.10 (github.com/AmirMardan/PyFWI) towards a CUDA backend"
 
-#: The engine that runs the propagation: OpenCL only, until the CUDA backend of Phase 2.
-BACKEND = "opencl"
-
 #: The numeric mode: the results of PyFWI 0.1.10. The "fixed" mode comes with step 2.4.
 NUMERIC_MODE = "legacy"
 
@@ -119,15 +116,21 @@ def info(platform=None, device=None):
     -------
     Info
         A dict with the keys ``pyfwi``, ``origin``, ``source``, ``commit``, ``backend``,
-        ``numeric_mode``, ``device``, ``opencl_platforms``, ``opencl_error`` and ``versions``,
+        ``numeric_mode``, ``device``, ``opencl_platforms``, ``opencl_error`` and ``versions``
+        (``backend`` describes the choice of ``PyFWI.backends.selection``),
         displayed as a readable summary (``print(PyFWI.info())``).
     """
     from PyFWI.version import version
     folder = os.path.dirname(os.path.abspath(__file__))
     platforms, selected, error = _opencl(platform, device)
+    try:  # the backend a propagator would use (step 2.2): never fails, the error is reported instead
+        from PyFWI.backends.selection import select_backend
+        backend = select_backend({"platform": platform, "device": device}).describe()
+    except Exception as failure:  # noqa: BLE001
+        backend = f"error: {failure}"
     versions = {"python": platform_version()}
     versions.update({name: _version(name) for name in LIBRARIES})
-    return Info(pyfwi=version, origin=ORIGIN, source=folder, commit=_commit(folder), backend=BACKEND,
+    return Info(pyfwi=version, origin=ORIGIN, source=folder, commit=_commit(folder), backend=backend,
                 numeric_mode=NUMERIC_MODE, device=selected, opencl_platforms=platforms, opencl_error=error,
                 versions=versions)
 

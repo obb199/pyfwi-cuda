@@ -132,6 +132,20 @@ print(PyFWI.info())                        # inpa-like arguments: PyFWI.info(pla
 The same summary goes to the `"PyFWI"` logger, at level INFO, at the first forward modelling of
 the process; Python shows it with `logging.basicConfig(level=logging.INFO)`.
 
+## Choosing the backend
+
+The backend that runs the kernels is chosen by `inpa['backend']`, else by the environment variable
+`PYFWI_BACKEND`, else it is `opencl`:
+
+| Value | Meaning |
+| --- | --- |
+| `opencl` | The OpenCL engine of PyFWI 0.1.10 (default) |
+| `cuda` | CUDA when it can run here, otherwise OpenCL with the reason in the log |
+| `cuda:strict` | CUDA, or an error that says why it cannot run |
+| `auto` | CUDA when the OpenCL device that would be used is an NVIDIA GPU and CUDA can run |
+
+The CUDA backend arrives during Phase 2; until then every choice runs on OpenCL.
+
 ## Citing PyFWI
 
 If you use this software, please cite the original PyFWI paper:

@@ -28,7 +28,7 @@ This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into 
 | 1.8 | `PyFWI.info()` and diagnostic log | **done** |
 | 1.9 | Fork release 0.1.11 | **done** · **[G1](gates/G1.md) approved** |
 | 2.1 | Engine and backend interface; OpenCL behind the interface | Phase 2 · **done** |
-| 2.2 | Backend selector and fallback | |
+| 2.2 | Backend selector and fallback | **done** |
 | 2.3 | Parity CUDA backend (single source, `legacy` mode) | |
 | 2.4 | `legacy` and `fixed` numeric modes | |
 | 2.5 | API contract on the CUDA backend | |
@@ -454,6 +454,16 @@ CUDA comes in as an option; the default stays `opencl`.
 - **Goes in:** precedence `inpa['backend']` → `PYFWI_BACKEND` (`opencl`, `cuda`, `auto`, `cuda:strict`) → default `opencl`; fallback with the reason in the log; matching between OpenCL device and CUDA ordinal by PCI bus ID; a non-NVIDIA OpenCL device keeps `auto` on OpenCL.
 - **Tests:** SEL with every branch: no CuPy (import blocked by monkeypatch), no GPU, simulated old driver, `cuda:strict` failing with a clear message, and `inpa` pointing to a CPU or to NVIDIA.
 - **Criterion:** every branch covered and tested in the CPU CI.
+- **Result:** `PyFWI/backends/selection.py`: `requested_backend` (precedence and validation),
+  `probe_cuda` (CuPy, GPU count, driver against the CUDA version of CuPy, CUDA backend present;
+  never raises), `opencl_bus_id` (`cl_nv_device_attribute_query`) and `select_backend`. `cuda`
+  without an explicit device takes CUDA device 0; with `inpa` naming a device, or with `auto`, the
+  CUDA device is the one with the PCI bus ID of the chosen OpenCL device, and a CPU or non-NVIDIA
+  device keeps OpenCL. Fallbacks are logged (`cuda`: warning, `auto`: info). Until step 2.3 the probe
+  reports that this PyFWI has no CUDA backend, so everything runs on OpenCL. `test/test_backend_selection.py`
+  simulates CuPy (missing, no GPU, old driver, broken), GPUs and OpenCL devices; branch coverage of the
+  selector without a GPU: 100 % (a test requires it); on the RTX the OpenCL device and CUDA device 0
+  have the same PCI bus ID (`0000:04:00.0`).
 
 ### 2.3 Parity CUDA backend
 

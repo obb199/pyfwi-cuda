@@ -9,6 +9,14 @@ how much and in which numeric mode.
 
 ## [Unreleased]
 
+### Added
+
+- Choice of the backend (step 2.2, `PyFWI.backends.selection`): `inpa['backend']`, else the
+  `PYFWI_BACKEND` environment variable, else `opencl`. `cuda` falls back to OpenCL with the reason in
+  the log, `cuda:strict` fails with the reason, `auto` takes CUDA only for an NVIDIA GPU chosen as
+  OpenCL device (matched by PCI bus ID). Until the CUDA backend exists (step 2.3) everything runs on
+  OpenCL. `W.backend_selection` and `PyFWI.info()` say what was chosen and why.
+
 ### Changed
 
 - Every OpenCL call of `PyFWI.wave_propagation` goes through a backend object (step 2.1):

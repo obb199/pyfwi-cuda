@@ -7,6 +7,7 @@ from scipy.ndimage import gaussian_filter
 
 import PyFWI.fwi_tools as tools
 from PyFWI.backends.opencl import OpenCLBackend
+from PyFWI.backends.selection import select_backend
 from PyFWI.engine.propagation import PropagationEngine, checkpoint_steps
 import PyFWI._info as _info
 from PyFWI.fwi_tools import expand_model
@@ -156,6 +157,10 @@ class WavePreparation:
         # The device: inpa['platform'] and inpa['device'] (0 when missing), otherwise the
         # PYOPENCL_CTX environment variable, otherwise the first device of the first platform; one
         # context per device for the whole process, one queue per propagator.
+        # Which backend runs this propagator (step 2.2 of the fork, PyFWI.backends.selection):
+        # inpa['backend'], else PYFWI_BACKEND, else OpenCL. The CUDA backend comes with step 2.3:
+        # until then "cuda" and "auto" fall back to OpenCL (logged) and "cuda:strict" fails.
+        self.backend_selection = select_backend(inpa)
         self._backend = OpenCLBackend(inpa.get("platform"), inpa.get("device"))
         self.ctx = self._backend.context
         self.queue = self._backend.queue
