@@ -36,14 +36,14 @@ def source(t):
     return [10.0 * (t + 1)] * 5
 
 
-def make_engine(injection="surface", chpr=30, numerics="legacy", nt_ext=NT_EXT):
+def make_engine(injection="surface", chpr=30, numerics="legacy", nt_ext=NT_EXT, budget=0):
     """An engine on the fake backend, with a model (1 / rho = 1, lambda = 2, mu = 3) and a boundary.
 
     ``nt_ext`` (rows of the seismograms) can differ from the 4 recorded steps, as rounding makes it
     in PyFWI for some ``dt`` and ``t``.
     """
     from PyFWI.engine.propagation import PropagationEngine, checkpoint_steps
-    backend = FakeBackend(nr=NR, tnx=TNX)
+    backend = FakeBackend(nr=NR, tnx=TNX, budget=budget)
     sources = {"elastic": "elastic source", "crosswell": "crosswell source", "surface": "surface source"}
     engine = PropagationEngine(backend, sources, injection, tnz=TNZ, tnx=TNX, ns=NS, nr=NR, nt=NT, nt_ext=nt_ext,
                                dt_scale=DT_SCALE, chp=checkpoint_steps(chpr, NT), dxr=np.int32(1), srcx=SRCX,
@@ -237,6 +237,27 @@ def test_observed_native_runs_are_not_recorded():
     unobserved, _, _, _ = _native_run(True)
     for key in observed:
         np.testing.assert_array_equal(observed[key], unobserved[key], err_msg=key)
+
+
+@pytest.mark.parametrize("device_shots", [0, 1, 2])
+def test_checkpoints_on_the_device_give_the_results_of_the_host(device_shots):
+    # Step 3.8: the checkpoints of the first shots stay on the device, as many as the budget allows;
+    # the results are those of host checkpoints, and the tier stays during the runs.
+    per_shot = 5 * 3 * TNZ * TNX * 4  # 3 checkpoints (chpr 30)
+    reference = make_engine(budget=0)
+    engine = make_engine(budget=device_shots * per_shot + 3)
+    assert engine._device_shots == device_shots and reference._device_shots == 0
+    for e in (reference, engine):
+        e.forward()
+        e.prepare_gradient()
+        e.gradient(residual())
+    assert engine._device_shots == device_shots  # never switched by the runs themselves
+    for a, b in zip(reference.read_gradient(), engine.read_gradient()):
+        np.testing.assert_array_equal(a, b)
+    # Reading the checkpoints copies them to the host, which becomes their storage (W.W of 0.1.10).
+    for par in COMPONENTS:
+        np.testing.assert_array_equal(engine.checkpoints[par], reference.checkpoints[par])
+    assert engine._device_shots == 0 and engine._device_checkpoints is None
 
 
 def test_buffers_live_inside_allocations_with_margins():

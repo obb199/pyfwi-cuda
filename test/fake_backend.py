@@ -89,9 +89,11 @@ class FakeBackend:
     name = "fake"
     alignment = 16
 
-    def __init__(self, nr, tnx):
+    def __init__(self, nr, tnx, budget=0):
         self.nr, self.tnx = nr, tnx
         self.log = []
+        #: Bytes of checkpoints the engine may keep on the "device" (``checkpoint_budget``, step 3.8).
+        self.budget = budget
         #: While ``capture`` records: the launches, which then do not run.
         self._recording = None
 
@@ -126,6 +128,13 @@ class FakeBackend:
         host.reshape(-1)[:] = buffer
         self.log.append(("to_host", blocking))
         return FakeEvent()
+
+    def checkpoint_budget(self):
+        return self.budget
+
+    @staticmethod
+    def section(buffer, offset, nbytes):
+        return buffer[offset // 4:(offset + nbytes) // 4]
 
     def copy(self, target, source, nbytes, offset=0):
         target[:nbytes // 4] = source[offset // 4:(offset + nbytes) // 4]

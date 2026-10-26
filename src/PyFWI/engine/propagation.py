@@ -347,10 +347,48 @@ class PropagationEngine:
         #: The seismograms of the last forward modelling, ``{component: (nt_ext, nr, ns)}``.
         self.seismogram = {par: np.zeros((nt_ext, nr, ns), np.float32) for par in COMPONENTS}
 
-        #: The checkpoints of the forward field, ``{component: (ns, nchp, tnz, tnx)}``: the field of
-        #: one shot at one checkpoint is a contiguous block, copied straight from and to the device
-        #: without blocking (step 1.5). ``WavePropagator.W`` shows them as in 0.1.10.
-        self.checkpoints = {par: np.zeros((ns, self.nchp, tnz, tnx), np.float32) for par in COMPONENTS}
+        #: The checkpoints of the forward field. Those of the first ``_device_shots`` shots stay on the
+        #: device, as many as the backend has room for (step 3.8: ``checkpoint_budget``), in one buffer
+        #: of ``(5 components, _device_shots, nchp, tnz, tnx)`` values, stored and restored by device
+        #: copies; those of the other shots on the host (see ``checkpoints``).
+        self._plane = int(tnz) * int(tnx)  # values of one field
+        per_shot = 5 * self.nchp * self._plane * 4  # bytes of the checkpoints of one shot
+        budget = backend.checkpoint_budget() if hasattr(backend, "checkpoint_budget") else 0
+        self._device_shots = min(int(ns), budget // per_shot)
+        self._device_checkpoints = backend.allocate_empty(self._device_shots * per_shot) if self._device_shots else None
+        self._host_checkpoints = None if self._device_shots == int(ns) else {
+            par: np.zeros((ns, self.nchp, tnz, tnx), np.float32) for par in COMPONENTS}
+
+    @property
+    def checkpoints(self):
+        """The checkpoints on the host, ``{component: (ns, nchp, tnz, tnx)}`` (``WavePropagator.W``).
+
+        The field of one shot at one checkpoint is a contiguous block, copied straight from and to
+        the device without blocking (step 1.5). When checkpoints are on the device (step 3.8), the
+        first access copies them here and the host copy becomes the storage of every shot, which the
+        next runs use: writing into it changes the gradient, as in 0.1.10.
+        """
+        if self._device_checkpoints is not None:
+            self.backend.finish()
+            if self._host_checkpoints is None:
+                self._host_checkpoints = {par: np.empty((self.ns, self.nchp, self.tnz, self.tnx), np.float32)
+                                          for par in COMPONENTS}
+            block = self._device_shots * self.nchp * self._plane * 4  # Python ints: above 2 GB
+            for comp, par in enumerate(COMPONENTS):
+                self.backend.to_host(self._host_checkpoints[par][:self._device_shots],
+                                     self.backend.section(self._device_checkpoints, comp * block, block))
+            self._device_checkpoints, self._device_shots = None, 0
+        return self._host_checkpoints
+
+    @checkpoints.setter
+    def checkpoints(self, stores):
+        self._device_checkpoints, self._device_shots = None, 0  # the host copy is the storage from now on
+        self._host_checkpoints = stores
+
+    def _checkpoint_section(self, comp, s, chpc):
+        """The part of the device checkpoints holding component ``comp`` of shot ``s`` at checkpoint ``chpc``."""
+        offset = ((comp * self._device_shots + int(s)) * self.nchp + int(chpc)) * self._plane * 4  # no int32 overflow
+        return self.backend.section(self._device_checkpoints, offset, self._plane * 4)
 
     # ------------------------------------------------------------------ buffers
 
@@ -578,8 +616,7 @@ class PropagationEngine:
             if t in self.chp:
                 # Straight into the contiguous checkpoint storage, without blocking (step 1.5). The
                 # queue runs in order, so the next updates start after the copies.
-                for par, buffer in zip(COMPONENTS, self._field_buffers()):
-                    self.backend.to_host(self.checkpoints[par][s, chpc], buffer, blocking=False)
+                self._store_checkpoint(s, chpc)
                 chpc += 1
 
             if observe is not None:
@@ -626,9 +663,14 @@ class PropagationEngine:
         self.backend.launch(self.knl.advance, (1, 1))
 
     def _store_checkpoint(self, s, chpc):
-        """Copy the field into checkpoint ``chpc`` of shot ``s``, without blocking (step 1.5)."""
-        for par, buffer in zip(COMPONENTS, self._field_buffers()):
-            self.backend.to_host(self.checkpoints[par][s, chpc], buffer, blocking=False)
+        """Copy the field into checkpoint ``chpc`` of shot ``s``, without blocking (step 1.5): on the device
+        when the checkpoints of the shot are there (step 3.8), else on the host."""
+        if s < self._device_shots:
+            for comp, buffer in enumerate(self._field_buffers()):
+                self.backend.copy(self._checkpoint_section(comp, s, chpc), buffer, self._plane * 4)
+            return
+        for par, buffer in zip(COMPONENTS, self._field_buffers()):  # the storage, not the property
+            self.backend.to_host(self._host_checkpoints[par][s, chpc], buffer, blocking=False)
 
     def _forward_shot_native(self, s, observe):
         """The forward time loop of shot ``s`` with the native kernels and the step on the device.
@@ -669,9 +711,14 @@ class PropagationEngine:
         self.backend.launch(self.knl.advance, (1, 1))
 
     def _restore_checkpoint(self, s, chpc):
-        """Copy checkpoint ``chpc`` of shot ``s`` back into the field, without blocking (step 1.5)."""
-        for par, buffer in zip(COMPONENTS, self._field_buffers()):
-            self.backend.to_device(buffer, self.checkpoints[par][s, chpc], blocking=False)
+        """Copy checkpoint ``chpc`` of shot ``s`` back into the field, without blocking (step 1.5): from
+        the device when the checkpoints of the shot are there (step 3.8), else from the host."""
+        if s < self._device_shots:
+            for comp, buffer in enumerate(self._field_buffers()):
+                self.backend.copy(buffer, self._checkpoint_section(comp, s, chpc), self._plane * 4)
+            return
+        for par, buffer in zip(COMPONENTS, self._field_buffers()):  # the storage, not the property
+            self.backend.to_device(buffer, self._host_checkpoints[par][s, chpc], blocking=False)
 
     def _gradient_shot_native(self, s, observe):
         """The backward time loop of shot ``s`` with the native kernels and the step on the device.
@@ -792,8 +839,7 @@ class PropagationEngine:
             if t == self.chp[chpc]:
                 # Straight from the contiguous checkpoint storage, without blocking (step 1.5): the
                 # checkpoints do not change during the gradient.
-                for par, buffer in zip(COMPONENTS, self._field_buffers()):
-                    self.backend.to_device(buffer, self.checkpoints[par][s, chpc], blocking=False)
+                self._restore_checkpoint(s, chpc)
                 chpc -= 1
             else:
                 # Backward propagation; arguments (coeff = -1) set by _set_update_args.

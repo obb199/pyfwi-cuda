@@ -837,6 +837,23 @@ Each optimisation is a separate commit, with a benchmark before and after, so th
   `fixed`): small 0.14 s / 0.15 s → 0.08 s / 0.09 s (19 and 21 µs per step), medium 2.90 s / 5.11 s →
   2.76 s / 5.00 s. The medium scenario is now limited by the checkpoint copies: 3.9 MB every 5 steps
   over PCIe on the stream of the kernels, about 60 µs per step (step 3.8).
+- **3.8 (checkpoints on the device):** the checkpoints of the first shots stay on the GPU, as many as
+  fit in `checkpoint_budget` (80 % of the free memory, CuPy's pool included; `PYFWI_CUDA_CHECKPOINT_BUDGET`
+  sets it in bytes), in one buffer of `(5, shots, nchp, tnz, tnx)` values: stored and restored by
+  device copies (13 µs instead of about 320 µs over PCIe for a medium checkpoint); the other shots'
+  stay on the host as before. `W.W` and `W._engine.checkpoints` are copied from the device only when
+  accessed (the deferred item of step 2.5): the first access, or an assignment, makes the host copy the
+  storage of every shot, so that writing into `W.W` still changes the gradient. Not done: the
+  recomputation tier (checkpoints beyond both memories); OpenCL keeps host checkpoints. MEM: the
+  checkpoints on the host, split (2 of 3 shots on the device) or all on the device give the same bits,
+  and the tier holds during the runs (a first version switched every shot to the host at the first host
+  store, through the property; found by measuring the real medium scenario, now tested); the engine
+  tests run the three tiers on the fake backend. EST: the real medium scenario (8 shots, 18.6 GB of
+  checkpoints) keeps 4 shots (9.3 GB) on the 12 GB GPU and runs. DES (5 runs, `fixed`): small 0.08 s /
+  0.09 s → 0.04 s / 0.07 s; medium (2 shots, scaled to 8) 2.76 s / 5.00 s → 1.82 s / 4.10 s. The scaling
+  of the benchmark assumes the checkpoints of all 8 shots fit as those of 2 do; run for real with 8
+  shots, the medium scenario takes 2.62 s / 4.6 s (4 shots on the device, 4 on the host), against 2.95 s /
+  5.0 s with every checkpoint on the host.
 
 ### 3.11 `auto` default and release 0.3.0
 

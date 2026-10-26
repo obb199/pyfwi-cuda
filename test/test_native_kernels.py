@@ -16,7 +16,9 @@ Measured, the largest difference on the 16 cases:
   kernels (``test_fused_kernels_give_the_bits_of_the_separate_ones``);
 * step 3.6 (the time step on the device): the same;
 * step 3.7 (CUDA graphs): the same; replaying the graphs gives the bits of the step-by-step loops
-  (``test_cuda_graphs_give_the_bits_of_the_step_by_step_loops``).
+  (``test_cuda_graphs_give_the_bits_of_the_step_by_step_loops``);
+* step 3.8 (checkpoints on the device): the same, with the checkpoints on the device, on the host or
+  split (``test_checkpoints_give_the_same_bits_on_the_device_on_the_host_and_split``).
 """
 import numpy as np
 import pytest
@@ -110,6 +112,30 @@ def test_cuda_graphs_give_the_bits_of_the_step_by_step_loops(cuda_device, monkey
     for a, b in zip(*runs):
         for key in a:
             np.testing.assert_array_equal(a[key], b[key], err_msg=key)
+
+
+@pytest.mark.gpu
+def test_checkpoints_give_the_same_bits_on_the_device_on_the_host_and_split(cuda_device, monkeypatch):
+    # MEM, step 3.8: with a forced budget the checkpoints of the 3 shots stay on the host, of 2 of
+    # them on the device, or of all; the results are the same bits, and the tier holds during the runs.
+    from helpers import forward_and_gradient
+
+    monkeypatch.setenv("PYFWI_BACKEND", "cuda:strict")
+    monkeypatch.setenv("PYFWI_NUMERICS", "fixed")
+    kw = {"ns": 3, "sdo": 8, "acq_type": 2, "components": 4, "chpr": 50}
+    probe = tiny_case(**kw).W._engine
+    per_shot = 5 * probe.nchp * probe._plane * 4
+    runs = []
+    for shots in (0, 2, 3):
+        monkeypatch.setenv("PYFWI_CUDA_CHECKPOINT_BUDGET", str(shots * per_shot))
+        case = tiny_case(**kw)
+        assert case.W._engine._device_shots == shots
+        runs.append(forward_and_gradient(case))
+        assert case.W._engine._device_shots == shots
+    for other in runs[1:]:
+        for a, b in zip(runs[0], other):
+            for key in a:
+                np.testing.assert_array_equal(a[key], b[key], err_msg=key)
 
 
 @pytest.mark.gpu

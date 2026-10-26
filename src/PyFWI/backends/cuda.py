@@ -288,6 +288,25 @@ class CUDABackend:
         return slot[1]
 
     @staticmethod
+    def section(buffer, offset, nbytes):
+        """The ``nbytes`` bytes of ``buffer`` from byte ``offset``, as a buffer (a view: no copy)."""
+        return buffer[offset // buffer.itemsize:(offset + nbytes) // buffer.itemsize]
+
+    @staticmethod
+    def checkpoint_budget():
+        """Bytes of device memory the checkpoints of a propagator may take (step 3.8).
+
+        ``PYFWI_CUDA_CHECKPOINT_BUDGET`` (bytes) when set, else 80 % of the free memory: the
+        driver's, plus the blocks CuPy keeps in its memory pool for reuse. Above it, the
+        checkpoints stay on the host.
+        """
+        forced = os.environ.get("PYFWI_CUDA_CHECKPOINT_BUDGET")
+        if forced:
+            return int(float(forced))
+        free, _ = cp.cuda.runtime.memGetInfo()
+        return int(0.8 * (free + cp.get_default_memory_pool().free_bytes()))
+
+    @staticmethod
     def copy(target, source, nbytes, offset=0):
         """Copy ``nbytes`` bytes from byte ``offset`` of ``source`` to the start of ``target``, on the device."""
         n, start = nbytes // target.itemsize, offset // source.itemsize

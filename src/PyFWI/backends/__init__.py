@@ -25,6 +25,8 @@ Every backend offers the same small interface:
 ``call(kernel, global_size, *args)``        set every argument and run
 ``capture(record)`` (optional)              record the launches of ``record()`` into a graph that
                                             ``launch()`` replays (CUDA only, step 3.7)
+``checkpoint_budget()`` (optional)          bytes of device memory the checkpoints may take; with
+``section(buffer, offset, nbytes)``         it, a view of part of a buffer (CUDA only, step 3.8)
 ==========================================  ===============================================================
 
 A non-blocking copy keeps using the host array until its event completes: the caller keeps the
