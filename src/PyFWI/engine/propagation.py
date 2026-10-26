@@ -7,7 +7,8 @@ owns everything that lives on the device or follows the time loop:
 * the device buffers (fields, adjoint fields, model, absorbing boundary, seismograms, residuals,
   gradients), each inside an allocation with margins (step 1.7);
 * the kernels, retrieved once, with their constant arguments set once per run (step 1.3);
-* the forward loop: source injection every ``dt_scale`` steps, the four field updates, the
+* the forward loop: source injection (every ``dt_scale`` steps in the ``legacy`` numeric mode,
+  at every step in the ``fixed`` one, see ``internal_source``), the four field updates, the
   checkpoints of the forward field (stored as ``(ns, nchp, tnz, tnx)`` per component, step 1.5),
   and the seismograms read at the end of each shot (step 1.4);
 * the gradient loop: the forward field rebuilt backwards from the checkpoints, the residual
@@ -25,6 +26,7 @@ backend, without a device) and by every test that runs a propagation.
 from types import SimpleNamespace
 
 import numpy as np
+import scipy.signal
 
 #: The five recorded components, in the order of the seismogram and residual buffers.
 COMPONENTS = ("vx", "vz", "taux", "tauz", "tauxz")
@@ -42,6 +44,66 @@ MARGIN_FILL = 0.0
 #: Smallest margin before and after every device buffer, in bytes: the size of the guard bands
 #: with which the golden masters of 0.1.10 were made (test/oob_guard.py).
 MIN_MARGIN_BYTES = 1 << 16
+
+
+#: The windowed-sinc filter with which the fixed numeric mode resamples the source to the internal
+#: step (``internal_source``): its half-length in recorded samples and the beta of its Kaiser
+#: window. Measured for ``dt_scale`` 2 to 17: the wavelet is kept within 6e-6 up to 80 % of the
+#: recorded Nyquist frequency, and its images above it are attenuated by more than 100 dB.
+SOURCE_FILTER_HALF_LENGTH = 16
+SOURCE_FILTER_BETA = 10.0
+
+
+def internal_source(source, nt, dt_scale):
+    """The source to add at every internal step, in the ``fixed`` numeric mode (roadmap step 2.4).
+
+    The source wavelet is sampled at the user's ``dt``, ``dt_scale`` internal steps per sample.
+    0.1.10 adds sample ``k`` at internal step ``k * dt_scale`` only: a train of impulses, whose
+    spectrum repeats the wavelet around every multiple of the recorded sampling frequency (250 Hz
+    for ``dt`` = 4 ms). At grid spacings of a few metres these images excite a grid-scale mode
+    that never leaves the model (a known bug). The ``fixed`` mode resamples the wavelet to the
+    internal step instead, by band-limited interpolation (a windowed-sinc filter, which keeps the
+    wavelet and removes the images), and adds the result at every internal step, divided by
+    ``dt_scale``: every recorded interval receives the same amount of source as in 0.1.10, now
+    spread over its steps.
+
+    With ``dt_scale`` = 1 (a user ``dt`` of 0.6 ms or less) the samples are returned unchanged,
+    as both modes then inject the same thing. A wavelet that does not start smoothly (for example
+    ``Source.delta``) is band-limited too: the part of its interpolation before time 0 is lost.
+
+    Parameters
+    ----------
+    source : callable
+        ``source(k)`` returns the five samples (vx, vz, taux, tauz, tauxz) of recorded sample
+        ``k``, zero after the end of the wavelet (``PyFWI.acquisition.Source``).
+    nt : int
+        Number of internal time steps.
+    dt_scale : float
+        Internal steps per recorded sample (an integer value).
+
+    Returns
+    -------
+    numpy.ndarray
+        float32, ``(nt, 5)``: row ``n`` is what injSrc adds to the fields at internal step ``n``.
+
+    Used by
+    -------
+    ``PropagationEngine.forward``, in the ``fixed`` mode.
+    """
+    up = int(dt_scale)
+    # The recorded samples that the internal steps 0 to nt - 1 need: up to the last step plus the
+    # half-length of the filter. Before sample 0 the source is zero (resample_poly pads with zeros).
+    recorded = (nt - 1) // up + SOURCE_FILTER_HALF_LENGTH + 2
+    samples = np.array([source(k) for k in range(recorded)], np.float64)
+    if up == 1:
+        return samples[:nt].astype(np.float32)
+    # Low-pass at the recorded Nyquist frequency, designed at the internal rate. resample_poly
+    # inserts up - 1 zeros between the samples, filters, multiplies by up and removes the delay of
+    # the filter: the result passes through the samples at the recorded steps.
+    taps = scipy.signal.firwin(2 * SOURCE_FILTER_HALF_LENGTH * up + 1, 1.0 / up,
+                               window=("kaiser", SOURCE_FILTER_BETA))
+    resampled = scipy.signal.resample_poly(samples, up, 1, axis=0, window=taps)
+    return (resampled[:nt] / up).astype(np.float32)
 
 
 def checkpoint_steps(chpr, nt):
@@ -98,7 +160,8 @@ class PropagationEngine:
     nt, nt_ext : int
         Numbers of internal time steps and of recorded samples.
     dt_scale : float
-        Internal steps per recorded sample: the source is injected every ``dt_scale`` steps.
+        Internal steps per recorded sample (an integer value): the receivers are recorded every
+        ``dt_scale`` steps, and in the ``legacy`` mode the source is injected at those steps only.
     chp : numpy.ndarray
         Checkpoint steps (``checkpoint_steps``).
     dxr : numpy.int32
@@ -110,13 +173,21 @@ class PropagationEngine:
         (``PyFWI.acquisition.Source``).
     rec_top_right_var : int
         First grid row of the right well (sizes the margins).
+    numerics : str, optional
+        Numeric mode of the kernel sources (``PyFWI.backends.selection.select_numerics``):
+        ``"legacy"`` (default) runs the time loops of 0.1.10; ``"fixed"`` injects the source at
+        every internal step and the residual at the very step where it was recorded (step 2.4).
     """
 
     def __init__(self, backend, sources, injection, *, tnz, tnx, ns, nr, nt, nt_ext, dt_scale, chp, dxr,
-                 srcx, srcz, source, rec_top_right_var):
+                 srcx, srcz, source, rec_top_right_var, numerics="legacy"):
         self.backend = backend
         self.tnz, self.tnx, self.ns, self.nr = tnz, tnx, ns, nr
         self.nt, self.nt_ext, self.dt_scale = nt, nt_ext, dt_scale
+        #: True in the fixed numeric mode; ``steps_per_sample`` is ``dt_scale`` as an int.
+        self.numerics, self.fixed, self.steps_per_sample = numerics, numerics == "fixed", int(dt_scale)
+        #: Fixed mode: the source of every internal step (``internal_source``), made by ``forward``.
+        self.source_steps = None
         self.chp, self.nchp = chp, len(chp)
         self.dxr, self.srcx, self.srcz, self.src = dxr, srcx, srcz, source
         # Global size of every launch: one work item per grid point, absorbing boundary included.
@@ -270,12 +341,22 @@ class PropagationEngine:
                  self.Gmu_b, self.g_mu_precond_b, self.Glam_b, self.g_lam_precond_b,
                  self.Grho_b, self.g_rho_precond_b)
 
-    def _inject(self, t):
-        """Inject recorded sample ``t`` (int32) of the source and record the receivers (injSrc)."""
-        src_kv_x, src_kv_z, src_kt_x, src_kt_z, _ = np.float32(self.src(t))
-        # Arguments 13 to 17: the source samples and the time index (the others are set once per
-        # shot by _set_injection_args). The fifth sample is not used by the kernel, as in 0.1.10.
-        for index, value in enumerate((src_kv_x, src_kv_z, src_kt_x, src_kt_z, t), start=13):
+    def _inject(self, samples, row):
+        """Add ``samples`` to the fields at the source and record the receivers in ``row`` (injSrc).
+
+        Parameters
+        ----------
+        samples : array_like
+            The five source samples (vx, vz, taux, tauz, tauxz); the fifth is not used by the
+            kernel, as in 0.1.10.
+        row : int
+            Row of the seismograms where the receivers are recorded. -1 (fixed mode only): inject
+            without recording.
+        """
+        src_kv_x, src_kv_z, src_kt_x, src_kt_z, _ = np.float32(samples)
+        # Arguments 13 to 17: the source samples and the row (the others are set once per shot by
+        # _set_injection_args).
+        for index, value in enumerate((src_kv_x, src_kv_z, src_kt_x, src_kt_z, np.int32(row)), start=13):
             self.backend.set_arg(self.knl.injSrc, index, value)
         self._launch(self.knl.injSrc)
 
@@ -293,6 +374,9 @@ class PropagationEngine:
         coeff = np.int32(+1)
         # The arguments that do not change during the time loop are set once (step 1.3).
         self._set_update_args(coeff)
+        if self.fixed:
+            # Made at every forward modelling: the wavelet may have changed since the last one.
+            self.source_steps = internal_source(self.src, self.nt, self.dt_scale)
         for s in range(self.ns):
             self.backend.call(self.knl.MakeAllZero, self.global_size, *self._field_buffers())
             self._set_injection_args(s)
@@ -306,8 +390,14 @@ class PropagationEngine:
         chpc = 0
         t_src = 0
         for t in np.arange(self.nt):
-            if t % self.dt_scale == 0:
-                self._inject(np.int32(t_src))
+            if self.fixed:
+                # The source at every step. The receivers at every dt_scale steps, in the row of
+                # that recorded sample when it exists: rounding in nt and nt_ext can put the last
+                # recorded step one row past the seismograms, where 0.1.10 writes it.
+                sample, offset = divmod(int(t), self.steps_per_sample)
+                self._inject(self.source_steps[t], sample if offset == 0 and sample < self.nt_ext else -1)
+            elif t % self.dt_scale == 0:
+                self._inject(self.src(t_src), t_src)
                 t_src += 1
 
             # The four field updates; arguments set by _set_update_args.
@@ -351,7 +441,7 @@ class PropagationEngine:
             Residual of every shot, ``{component: (recorded samples, nr * ns)}``.
         observe : callable, optional
             ``observe(s, t, t_src)`` is called after every internal step ``t`` of shot ``s``
-            (``t_src``: the recorded sample to inject next).
+            (``t_src``: the last recorded sample injected, ``nt_ext`` before the first).
         """
         self.backend.call(self.knl.MakeGradZero, self.global_size,
                           self.Gmu_b, self.Glam_b, self.Grho_b,
@@ -388,7 +478,17 @@ class PropagationEngine:
                 self._launch(self.knl.update_velx)
 
             # Adjoint modelling; arguments set by _set_adjoint_args.
-            if t % self.dt_scale == 0:
+            if self.fixed:
+                # Residual sample k at step k * dt_scale, where sample k was recorded. 0.1.10 counts
+                # the samples down from nt_ext - 1 at the last multiple of dt_scale: one sample off
+                # when rounding makes nt_ext one more (dt = 4 ms, t = 0.4 s) or one less (dt = 5 ms,
+                # t = 0.25 s) than the recorded steps.
+                sample, offset = divmod(t, self.steps_per_sample)
+                if offset == 0 and sample < self.nt_ext:
+                    self.residual_sample(sample + 1)
+                    self._launch(self.knl.Adj_injSrc)
+                    t_src = np.int32(sample)
+            elif t % self.dt_scale == 0:
                 self.residual_sample(t_src)
                 self._launch(self.knl.Adj_injSrc)
                 t_src -= 1

@@ -46,11 +46,27 @@ how much and in which numeric mode.
 - None for the default backend (OpenCL). The CUDA backend agrees with OpenCL on the same GPU to a
   relative L2 of 1.1e-6 (seismograms) and 1.9e-5 (gradients) on the propagation cases of the golden
   masters: the two compilers emit different instruction sequences.
-- The `fixed` mode (default of the CUDA backend) differs from `legacy` by up to 2 % on seismograms
-  and 6 % on gradients (relative L2, propagation cases of the golden masters). Almost all of it is the
-  full `dt`: 0.1.10 samples the source with the true step but propagates with a step truncated to
-  6 decimals (0.075 % shorter for a user `dt` of 4 ms). FP32 arithmetic alone changes results by
-  rounding (1e-6 on seismograms, 5e-5 on gradients).
+- The `fixed` mode (default of the CUDA backend) differs from `legacy` by up to 6 % on seismograms
+  and on gradients (relative L2, propagation cases of the golden masters). Two corrections make
+  almost all of it: the source injection (below) and the full `dt` (about 2 % on seismograms):
+  0.1.10 samples the source with the true step but propagates with a step truncated to 6 decimals
+  (0.075 % shorter for a user `dt` of 4 ms). FP32 arithmetic alone changes results by rounding
+  (1e-6 on seismograms, 5e-5 on gradients).
+- In the `fixed` mode the source is resampled to the internal time step (windowed-sinc
+  interpolation, `PyFWI.engine.propagation.internal_source`) and injected at every step, divided by
+  `dt_scale`. 0.1.10 adds one sample every `dt_scale` steps: a train of impulses, whose spectral
+  images excite grid-scale noise and alias into the recorded band. With `dt` = 4 ms the seismograms
+  of `legacy` differ by 3 to 6 % from those of the same wavelet sampled at the internal step (10 m
+  grid), and the noise dominates them at 5 m; in `fixed` the difference is 3e-4 to 5e-4, the error of
+  interpolating the truncated Ricker wavelet. Amplitudes are unchanged: every recorded interval
+  receives the same amount of source as in 0.1.10. With `dt` of 0.6 ms or less nothing changes.
+- In the `fixed` mode the residual sample `k` is injected at the internal step where sample `k` was
+  recorded. 0.1.10 counts the samples down from the last row, and `nt` and `nt_ext` are rounded down
+  separately: for some recording lengths (`dt` = 4 ms and `t` = 0.2 or 0.4 s, for example) every
+  sample was injected one recorded sample early, and the gradient changed by about 50 % (its
+  directional derivatives then differed from finite differences by 88 % instead of 32 %). The same
+  rounding the other way (`dt` = 5 ms, `t` = 0.25 s, for example) recorded the last sample one row
+  past the seismograms; `fixed` does not record it.
 - In the `fixed` mode the crosswell kernels record `vz` in the `vz` seismogram; 0.1.10 (and the
   `legacy` mode) recorded `vx` there, so with `acq_type=0` the `vz` data, and the misfit and
   gradient of components 2 and 4, are a different quantity in `fixed`.

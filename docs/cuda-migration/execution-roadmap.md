@@ -98,7 +98,8 @@ What the preparation step delivered and verified (`babbc0e`, `ad049b8`, `f0ee2d2
 | With the default `chpr=0` of `WavePropagator`, the gradient is wrong (cosine 0.54 with the checkpointed one, amplitude 60× smaller): the field is rebuilt backwards through the absorbing boundary over the whole recording. `chpr ≥ 5` gives exactly the gradient of `chpr = 100`. | The examples always pass `chpr`; strict known-bug test. | 0.2, 0.3, 4.2 |
 | `FWI.lbfgs` gives L-BFGS-B an absolute `pgtol = 1e-8`. With a unit-amplitude source, realistic gradients are 1e-11 to 1e-8, so the optimiser "converges" at iteration 0 and returns the starting model (e.g. a 100×100, 7 m model). Scaling the source wavelet by 1000 or more (it scales observed and predicted data alike) gives a real inversion, the same for any factor. The conjugate-gradient path also left the model unchanged in a small test. The official `fwi_example_surface.py` does update the model, but its model error grows (elastic data inverted from an acoustic start). | The FWI example scales the source and explains why. The tolerance is recorded as a known bug; CG and the official example are characterised in the golden masters. | 0.2, 0.3, 0.4, 2.4 |
 | Model library: `ModelGenerator(..., smoothing=1)` returns the homogeneous background (no anomalies) for `louboutin`, `yang`, `perturbation_dv`, `hu_circles` and `hu_laminar`, not a filtered model; density is in g/cm³ for `louboutin` and in kg/m³ for `yang`; `dupuy` fails with `FileNotFoundError` when PyFWI is installed from the PyPI wheel (no `data/` folder). | Documented in `example/scripts/models.py` and its test; the wheel content is fixed in step 1.1. | 0.3, 1.1 |
-| The source wavelet is sampled at the user `dt` and added once every `dt_scale` internal steps, i.e. as a train of impulses. At grid spacings of 4 to 6 m (15 Hz wavelet, `dt` = 4 ms) this excites a grid-scale checkerboard mode that never leaves the model: 2 to 5 % of the peak energy remains after 1.2 s, against 4e-9 at 10 m, and seismograms show a strong spurious ringing. Injecting the source at every internal step (`dt` = 0.5 ms, `dt_scale` = 1) removes it (2e-9). The adjoint injection of residuals works the same way. | Known-bug test; the `fixed` mode interpolates the source (and the residual) to the internal step. | 0.2, 0.6, 2.4 |
+| The source wavelet is sampled at the user `dt` and added once every `dt_scale` internal steps, i.e. as a train of impulses. At grid spacings of 4 to 6 m (15 Hz wavelet, `dt` = 4 ms) this excites a grid-scale checkerboard mode that never leaves the model: 2 to 5 % of the peak energy remains after 1.2 s, against 4e-9 at 10 m, and seismograms show a strong spurious ringing. Injecting the source at every internal step (`dt` = 0.5 ms, `dt_scale` = 1) removes it (2e-9). The adjoint injection of residuals works the same way. | Known-bug test; the `fixed` mode resamples the source to the internal step (step 2.4, part 4). The residual is not interpolated: measured, its injection as an impulse at the recorded step (the transpose of the recording) gives the better gradient. | 0.2, 0.6, 2.4 (done) |
+| `nt` and `nt_ext` are rounded down separately, and 0.1.10 counts the residual samples down from row `nt_ext - 1`. When the recording has one row more than recorded steps (`dt` = 4 ms, `t` = 0.2 or 0.4 s) every residual sample is injected one recorded sample early: the gradient changes by 54 % and its error against finite differences goes from 32 % to 88 % (t = 0.4 s). One row less (`dt` = 5 ms, 178 of 5,950 lengths from 0.05 to 6 s; no other `dt` of 0.5 to 10 ms) records the last sample one row past the seismograms. | Known-bug tests; the `fixed` mode injects each residual sample at the step where it was recorded and records only rows that exist. | 2.4 (done) |
 | The gradient of 0.1.10 is approximate: its directional derivatives differ from finite differences of the misfit by 31 % in the median (one of six directions even has the wrong sign). The forward propagation itself agrees with the analytic solution to a correlation of 0.9987. | Recorded as the mathematical baseline; the `fixed` mode and the CUDA kernels must not be worse, and are expected to improve it. | 0.6, 2.4 |
 | `RmProfilingAdminOnly: 1`: Nsight Compute cannot read GPU counters without root. | Depends on the project owner (see [Pending actions](#pending-actions-for-the-project-owner)). | 0.8 |
 | The inherited workflows (`pr.yml`, `publish.yml`) test Python 3.8 to 3.10 on three operating systems with the old versions and would publish to PyPI as `PyFWI`. | They must be replaced before any PR or release. | 0.1 |
@@ -526,8 +527,34 @@ CUDA comes in as an option; the default stays `opencl`.
   mathematical baseline got worse (boundary reflection 1.09 % → 1.23 %, gradient against finite
   differences 31 % → 38 %), so both modes keep reading the zero margin as the outer boundary until
   Phase 3 brings explicit halo cells. MAT in `fixed` now: gradient error 31.2 % (as `legacy`),
-  reflection 1.09 % (1.08 %), analytic correlation 0.9979 (0.9987: from the full `dt` combined with
-  the impulse-train source injection, the next part).
+  reflection 1.09 % (1.08 %), analytic correlation 0.9979 (0.9987: from the full `dt`, see part 4).
+- **Result (part 4, source and residual injection):** in `fixed`,
+  `PyFWI.engine.propagation.internal_source` resamples the wavelet to the internal step
+  (windowed-sinc filter, Kaiser β = 10, ±16 recorded samples: within 6e-6 up to 80 % of the
+  recorded Nyquist frequency, images attenuated by more than 100 dB) and the engine injects it at
+  every step divided by `dt_scale` (same amount of source per recorded interval as 0.1.10).
+  `injSrc` records the receivers only when the engine passes a row (`nt ≥ 0`, an `#ifdef
+  PYFWI_FIXED` block; `legacy` token for token as before), and only rows that exist; the residual
+  sample `k` is injected at step `k·dt_scale`, where it was recorded. Variants measured on a copy
+  before choosing: linear interpolation of the source left 2.6e-5 of grid noise (FFT, polyphase
+  Kaiser 5 and 10: 2.5e-9 to 6e-9); interpolating the residual as well made the gradient check
+  worse (31.2 % → 31.9 %), as it is no longer the transpose of point recording; injecting the
+  residual 1 to 4 internal steps later lowers the median error (to 18 % at 3 steps) but moves the
+  six ratios in different directions (one stays negative), so the remaining error is in the
+  gradient itself (the pairing of forward and adjoint fields in `Grad`), left to the adjoint
+  dot-product test. Results: grid noise 2e-2 → 2.5e-9 (known-bug test passes in `fixed`); with
+  `dt` = 4 ms the seismograms match those of the wavelet sampled at the internal step to 2.7e-4
+  (`legacy`: 3.4e-2, 8.7 at a 5 m grid); the gradient no longer depends on the recording length
+  (bit for bit; `legacy`: 54 %); nothing is recorded past the seismograms. `fixed` × `legacy` on the
+  16 propagation cases: up to 6.1 % (seismograms) and 6.3 % (gradients). MAT in `fixed`: gradient
+  31.2 %, reflection 1.09 %, late energy 6.9e-9, analytic correlation 0.9979: the injection does
+  not change it. Measured per trace, both modes arrive about 0.3 ms early (half a time step) at
+  every distance; in order 4 `fixed` keeps that offset from 100 to 400 m (the wave speed is right)
+  while `legacy` drifts by 0.12 ms, the 0.075 % of the truncated `dt`; in order 8 `fixed` drifts
+  0.16 ms early over 300 m, which the truncated `dt` of `legacy` partly hid. That drift of the
+  order-8 scheme is left to the convergence-order measurement. DES: CUDA `fixed` medium 4.5 s /
+  6.2 s (unchanged), small 0.19 s / 0.17 s (forward +0.02 s: one more launch per step, until the
+  fusion of step 3.5). Next: L-BFGS tolerance and MAT in `fixed`.
 
 ### 2.5 API contract on CUDA
 

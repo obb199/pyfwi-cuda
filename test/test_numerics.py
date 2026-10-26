@@ -11,7 +11,12 @@ so far:
 * ``dt`` keeps 9 significant digits instead of 6 decimals (0.000571428... instead of 0.000571).
   0.1.10 samples the source with the true step but propagates with the truncated one, 0.075 %
   shorter; correcting it changes seismograms by about 2 % and gradients by about 6 %;
-* the crosswell kernels record vz in the vz seismogram (0.1.10 recorded vx there).
+* the crosswell kernels record vz in the vz seismogram (0.1.10 recorded vx there);
+* the kernels stay inside their buffers (bounded receiver loops, no zero-coefficient reads);
+* the source is resampled to the internal step and injected at every step (0.1.10 added one
+  sample every ``dt_scale`` steps, an impulse train whose images alias into the recorded band:
+  3 to 6 % of the seismograms at a 10 m grid), the receivers are recorded only in rows that
+  exist, and the residual is injected at the very step where it was recorded.
 """
 import numpy as np
 import pytest
@@ -68,10 +73,10 @@ def _depends_on_the_well_vz(case, key):
 
 @pytest.mark.parametrize("backend", ["opencl", pytest.param("cuda", marks=pytest.mark.gpu)])
 def test_fixed_against_legacy_on_the_propagation_cases(opencl_platform, monkeypatch, request, backend):
-    # The differences published in the CHANGELOG. The full dt dominates (about 2 % on seismograms,
-    # 6 % on gradients); the bounds catch a fixed mode that would change much more, or nothing. The
-    # outputs that depend on the vz seismogram of the wells are a different quantity in the fixed
-    # mode: there the test checks the correction itself.
+    # The differences published in the CHANGELOG: up to 6 % on seismograms (the source injection,
+    # about 2 % from the full dt) and on gradients; the bounds catch a fixed mode that would change
+    # much more, or nothing. The outputs that depend on the vz seismogram of the wells are a
+    # different quantity in the fixed mode: there the test checks the correction itself.
     if backend == "cuda":
         request.getfixturevalue("cuda_device")  # skips without CuPy or without a GPU
     monkeypatch.setenv("PYFWI_BACKEND", f"{backend}:strict" if backend == "cuda" else backend)
@@ -88,4 +93,4 @@ def test_fixed_against_legacy_on_the_propagation_cases(opencl_platform, monkeypa
             layer = key.split("/")[0]
             e, a = np.asarray(golden[key], np.float64), np.asarray(fixed[key], np.float64)
             worst[layer] = max(worst.get(layer, 0), np.linalg.norm(a - e) / max(np.linalg.norm(e), 1e-300))
-    assert 5e-3 < worst["raw_seismogram"] < 5e-2 and 5e-3 < worst["raw_gradient"] < 0.15, worst
+    assert 5e-3 < worst["raw_seismogram"] < 0.1 and 5e-3 < worst["raw_gradient"] < 0.15, worst

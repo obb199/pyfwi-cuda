@@ -183,7 +183,7 @@ class WavePreparation:
             self._backend, {"elastic": kernel, "crosswell": kernel_crosswell, "surface": kernel_surface},
             injection, tnz=self.tnz, tnx=self.tnx, ns=self.ns, nr=self.nr, nt=self.nt, nt_ext=self.nt_ext,
             dt_scale=self.dt_scale, chp=self.chp, dxr=self.dxr, srcx=self.srcx, srcz=self.srcz, source=self.src,
-            rec_top_right_var=self.rec_top_right_var)
+            rec_top_right_var=self.rec_top_right_var, numerics=self.numerics)
 
         # Make a list for seismograms (filled by the engine)
         self.seismogram = self._engine.seismogram

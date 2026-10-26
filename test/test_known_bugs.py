@@ -32,7 +32,10 @@ and must pass everywhere else.
 | ``test_lbfgs_iterates_with_physically_scaled_data`` | absolute ``pgtol = 1e-8``: L-BFGS stops at iteration 0 on realistic data | 2.4 |
 | ``test_kernel_files_are_closed`` | ``kernel_caller`` leaves the three ``.cl`` files open (``ResourceWarning``) | 2.4 (done) |
 | ``test_pml_profile_does_not_depend_on_numpy`` | NumPy 2 type promotion changes the PML profile in the last bit | 1.1 (done) |
-| ``test_source_injection_does_not_excite_grid_noise`` | the source is added once every ``dt_scale`` steps: grid-scale noise at dh of 4-6 m | 2.4 |
+| ``test_source_injection_does_not_excite_grid_noise`` | the source is added once every ``dt_scale`` steps: grid-scale noise at dh of 4-6 m | 2.4 (``fixed`` mode) |
+| ``test_seismograms_do_not_depend_on_the_source_sampling`` | same bug, seen in the seismograms: 3 to 6 % off at dh = 10 m, several times the signal at 5 m | 2.4 (``fixed`` mode) |
+| ``test_residual_is_injected_where_it_was_recorded`` | the residual is injected one recorded sample off when rounding makes ``nt_ext`` differ from the recorded steps | 2.4 (``fixed`` mode) |
+| ``test_receivers_are_recorded_inside_the_seismograms`` | the same rounding records the last sample one row past the seismograms (``dt`` = 5 ms) | 2.4 (``fixed`` mode) |
 | ``test_crosswell_vz_seismogram_records_vz`` | the crosswell ``vz`` seismogram stores ``vx`` | 2.4 (``fixed`` mode) |
 | ``test_crosswell_kernels_assign_vz_to_vz_seismograms`` | same bug, lines 27 and 74 of ``elastic_crosswell.cl`` | 2.4 (``fixed`` mode) |
 | ``test_dt_define_is_not_truncated`` | ``#define dt`` keeps only 6 decimals | 2.4 (``fixed`` mode) |
@@ -263,17 +266,75 @@ def test_pml_profile_does_not_depend_on_numpy():
     assert pml_matches_0_1_10()
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="the source sample is added once every dt_scale internal steps (an impulse train); at "
-                          "grid spacings of 4 to 6 m it excites a grid-scale checkerboard mode that never leaves")
-def test_source_injection_does_not_excite_grid_noise(opencl_platform):
+@pytest.mark.parametrize("numerics", NUMERIC_MODES)
+def test_source_injection_does_not_excite_grid_noise(opencl_platform, monkeypatch, numerics):
+    # 0.1.10 adds the source sample once every dt_scale internal steps (an impulse train); at grid
+    # spacings of 4 to 6 m it excites a grid-scale checkerboard mode that never leaves. The fixed
+    # mode resamples the source to every internal step (PyFWI.engine.propagation.internal_source).
     from tools.math_baseline import homogeneous_run
 
+    monkeypatch.setenv("PYFWI_NUMERICS", numerics)
     # 600 m homogeneous model, 5 m grid, 1.2 s: the wave should leave through the absorbing boundary.
     _, W = homogeneous_run(600.0, 5.0, 4, (300.0, 300.0), [(400.0, 300.0), (500.0, 300.0)], t=1.2, chpr=10)
     energy = [float(np.sum(W.W["taux"][:, :, 0, k].astype(np.float64) ** 2)) for k in range(W.nchp)]
-    # Measured: 2e-2 with dt = 4 ms (dt_scale = 7); 2e-9 when the source is injected at every step.
+    # Measured: 2e-2 with dt = 4 ms (dt_scale = 7); 2e-9 when the source is injected at every step
+    # (dt = 0.5 ms), and 2.5e-9 in the fixed mode.
     assert energy[-1] / max(energy) < 1e-6
+
+
+@pytest.mark.parametrize("numerics", NUMERIC_MODES)
+def test_seismograms_do_not_depend_on_the_source_sampling(opencl_platform, numerics):
+    # The same wavelet sampled at dt = 4 ms, or at the internal step dt = 4/7 ms (dt_scale = 1:
+    # injected as it is at every step), must give the same seismograms at the recorded samples.
+    # PyFWI adds the source sample as it is at each injection, so the second run puts 7 times more
+    # source into every recorded interval: its seismograms are divided by 7. Both runs propagate
+    # with the same internal step, so only the injection differs.
+    def pressure(dt):
+        case = tiny_case(t=0.4, inpa_extra={"dt": dt, "numerics": numerics})
+        return np.asarray(case.W.forward_modeling(case.model, False)["taux"], np.float64)
+
+    coarse, fine = pressure(0.004), pressure(0.004 / 7)[::7] / 7
+    rows = min(len(coarse), len(fine))
+    difference = np.linalg.norm(coarse[:rows] - fine[:rows]) / np.linalg.norm(fine[:rows])
+    # Measured: 3.4e-2 in the legacy mode (8.7 with a 5 m grid, where the grid noise dominates);
+    # 2.7e-4 in the fixed mode (5.2e-4 at 5 m), the error of interpolating the truncated Ricker.
+    assert difference < 2e-3, f"relative difference {difference:.1e}"
+
+
+@pytest.mark.parametrize("numerics", NUMERIC_MODES)
+def test_residual_is_injected_where_it_was_recorded(opencl_platform, numerics):
+    # 0.1.10 counts the residual samples down from nt_ext - 1 at the last internal step that is a
+    # multiple of dt_scale. nt and nt_ext are rounded down separately: with dt = 4 ms, t = 0.4 s
+    # gives nt_ext = 101 rows for 100 recorded steps, and every residual sample is injected one
+    # recorded sample (7 internal steps) too early; t = 0.3 s has as many rows as recorded steps.
+    # A residual that is zero after 200 ms must give the same gradient with both lengths: the
+    # longer recording only adds zeros. With every step stored as a checkpoint (chpr=100) the
+    # forward field is the same in both runs.
+    gradients = []
+    for t in (0.3, 0.4):
+        case = tiny_case(t=t, chpr=100, inpa_extra={"numerics": numerics})
+        case.W.forward_modeling(case.m0, False)
+        rng = np.random.default_rng(1)
+        res = {}
+        for par in ("vx", "vz", "taux", "tauz", "tauxz"):
+            res[par] = np.zeros((case.W.nt_ext, case.W.nr * case.W.ns), np.float32)
+            res[par][5:50] = rng.standard_normal((45, case.W.nr * case.W.ns))
+        gradients.append(case.W.gradient(res, False))
+    for key, short in gradients[0].items():
+        difference = np.linalg.norm(gradients[1][key] - short) / np.linalg.norm(short)
+        # Measured on vp: 0.54 in 0.1.10 and in the legacy mode; 0 (bit for bit) in the fixed mode.
+        assert difference < 1e-5, f"{key}: relative difference {difference:.1e}"
+
+
+@pytest.mark.parametrize("numerics", NUMERIC_MODES)
+def test_receivers_are_recorded_inside_the_seismograms(opencl_platform, monkeypatch, numerics):
+    # The same rounding the other way: with dt = 5 ms (dt_scale = 9) and t = 0.25 s there are 451
+    # internal steps, so 51 recorded steps (0, 9, ..., 450), but nt_ext = 50 rows. 0.1.10 records
+    # the last step in row 50, past the end of the five seismograms.
+    with _filled_outside_buffers(monkeypatch, 1.0) as written_outside:
+        case = tiny_case(t=0.25, inpa_extra={"dt": 0.005, "numerics": numerics})
+        case.W.forward_modeling(case.model, False)
+        assert written_outside(case.W) == []
 
 
 @pytest.mark.parametrize("numerics", NUMERIC_MODES)

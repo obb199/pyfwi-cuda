@@ -20,6 +20,11 @@ __kernel void injSrc(__global float *vx,__global float *vz,
     tauz[center] += tsrcz;
 
   }
+#ifdef PYFWI_FIXED
+  // Fixed mode (step 2.4): the source is injected at every internal step, the receivers recorded
+  // at the recorded steps only; at the other steps the engine passes nt = -1.
+  if (nt < 0) return;
+#endif
 
 #ifdef PYFWI_FIXED
    if(i%dxr==0 && j == rec_top_right_const && i/dxr<Nr){

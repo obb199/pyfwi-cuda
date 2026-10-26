@@ -10,8 +10,9 @@ kernel             effect (``c`` = coefficient +1 or -1, ``cell`` = the source c
 =================  ==============================================================================
 MakeAllZero        zero the five buffers it gets
 MakeGradZero       zero the six gradient and preconditioner buffers
-injSrc             add the four source samples to vx, vz, taux, tauz at ``cell``; then record, for
-                   every component and receiver ``r``: ``value at cell + r + 100 * srcx``
+injSrc             add the four source samples to vx, vz, taux, tauz at ``cell``; then, unless the
+                   row is -1 (fixed mode), record for every component and receiver ``r``:
+                   ``value at cell + r + 100 * srcx``
 update_velx/velz   ``vx += c * rho[0]`` and ``vz += c * rho[0]`` (``rho`` holds 1 / density)
 update_tauz        ``taux += c * lam[0]`` and ``tauz += c * lam[0]``
 update_tauxz       ``tauxz += c * mu[0]``
@@ -136,6 +137,17 @@ class FakeBackend:
 
 # ---------------------------------------------------------------------------- toy kernels
 
+def _write(buffer, start, values):
+    """Write ``values`` from ``buffer[start]`` on, through the allocation around the buffer.
+
+    As on a device, a write past the end of the buffer lands in its margin (a fake buffer is a view
+    of its allocation, see ``FakeBackend.allocate``), where ``margins_changed`` sees it.
+    """
+    whole = buffer.base if buffer.base is not None else buffer
+    offset = (buffer.__array_interface__["data"][0] - whole.__array_interface__["data"][0]) // buffer.itemsize
+    whole[offset + start:offset + start + len(values)] = values
+
+
 def _zero(backend, *buffers):
     for buffer in buffers:
         buffer[:] = 0
@@ -146,9 +158,11 @@ def _inject(backend, vx, vz, taux, tauz, tauxz, s_vx, s_vz, s_taux, s_tauz, s_ta
     cell = int(srcz) * backend.tnx + int(srcx)
     for field, sample in ((vx, sample_vx), (vz, sample_vz), (taux, sample_taux), (tauz, sample_tauz)):
         field[cell] += sample
+    if int(t) < 0:  # the guard of the fixed mode: inject without recording
+        return
     nr = backend.nr
     for field, record in ((vx, s_vx), (vz, s_vz), (taux, s_taux), (tauz, s_tauz), (tauxz, s_tauxz)):
-        record[int(t) * nr:(int(t) + 1) * nr] = field[cell] + np.arange(nr) + 100 * int(srcx)
+        _write(record, int(t) * nr, field[cell] + np.arange(nr) + 100 * int(srcx))
 
 
 def _update_vel(backend, coeff, own, stress1, stress2, rho, vdx, vdz):

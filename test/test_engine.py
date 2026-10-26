@@ -10,7 +10,8 @@ characterisation tests; that these unit tests alone cover the engine is checked 
 
 The case: a 6 x 5 grid, 2 shots with their sources on cells (2, 1) and (2, 3), 3 receivers,
 10 internal steps with an injection every 3 (recorded samples 0 to 3), checkpoints at steps
-0, 4 and 9 (``chpr`` = 30).
+0, 4 and 9 (``chpr`` = 30). Unless a test says otherwise, the engine runs in the ``legacy`` numeric
+mode; the tests of the ``fixed`` mode (step 2.4) are at the end, with ``internal_source``.
 """
 import os
 import subprocess
@@ -35,23 +36,27 @@ def source(t):
     return [10.0 * (t + 1)] * 5
 
 
-def make_engine(injection="surface", chpr=30):
-    """An engine on the fake backend, with a model (1 / rho = 1, lambda = 2, mu = 3) and a boundary."""
+def make_engine(injection="surface", chpr=30, numerics="legacy", nt_ext=NT_EXT):
+    """An engine on the fake backend, with a model (1 / rho = 1, lambda = 2, mu = 3) and a boundary.
+
+    ``nt_ext`` (rows of the seismograms) can differ from the 4 recorded steps, as rounding makes it
+    in PyFWI for some ``dt`` and ``t``.
+    """
     from PyFWI.engine.propagation import PropagationEngine, checkpoint_steps
     backend = FakeBackend(nr=NR, tnx=TNX)
     sources = {"elastic": "elastic source", "crosswell": "crosswell source", "surface": "surface source"}
-    engine = PropagationEngine(backend, sources, injection, tnz=TNZ, tnx=TNX, ns=NS, nr=NR, nt=NT, nt_ext=NT_EXT,
+    engine = PropagationEngine(backend, sources, injection, tnz=TNZ, tnx=TNX, ns=NS, nr=NR, nt=NT, nt_ext=nt_ext,
                                dt_scale=DT_SCALE, chp=checkpoint_steps(chpr, NT), dxr=np.int32(1), srcx=SRCX,
-                               srcz=SRCZ, source=source, rec_top_right_var=0)
+                               srcz=SRCZ, source=source, rec_top_right_var=0, numerics=numerics)
     field = np.ones((TNZ, TNX), np.float32)
     engine.set_pml(0 * field, 0 * field)
     engine.set_model(RHO_INVERSE * field, MU * field, LAM * field)
     return engine
 
 
-def residual():
+def residual(nt_ext=NT_EXT):
     """Residual of both shots: sample k of shot s at receiver r is (k + 1) (s + 1) + r / 10."""
-    samples = np.arange(NT_EXT)[:, None] + 1
+    samples = np.arange(nt_ext)[:, None] + 1
     columns = [(s + 1) * samples + np.arange(NR) / 10 for s in range(NS)]
     one = np.hstack(columns).astype(np.float32)  # (NT_EXT, NR * NS)
     return {par: one.copy() for par in COMPONENTS}
@@ -65,6 +70,17 @@ def injected(step):
 def launches(engine):
     """Names of the kernels launched, in order, from the log of the fake backend."""
     return [entry[1] for entry in engine.backend.log if entry[0] == "launch"]
+
+
+def recorded_rows(engine):
+    """A list that receives the seismogram row (last argument) of every injSrc launch of ``engine``."""
+    rows, play = [], engine.knl.injSrc.function
+
+    def inject(backend, *args):
+        rows.append(int(args[-1]))
+        play(backend, *args)
+    engine.knl.injSrc.function = inject
+    return rows
 
 
 # ---------------------------------------------------------------------------------- helpers
@@ -192,8 +208,10 @@ def test_gradient_rebuilds_the_forward_field_from_the_checkpoints():
     assert (lam_precond == 0).all() and (rho_precond == 0).all()
 
 
-def test_gradient_injects_the_residual_backwards_in_time():
-    engine = make_engine()
+@pytest.mark.parametrize("numerics", ["legacy", "fixed"])
+def test_gradient_injects_the_residual_backwards_in_time(numerics):
+    # Here nt_ext is the number of recorded steps: both modes inject the same samples.
+    engine = make_engine(numerics=numerics)
     engine.forward()
     engine.prepare_gradient()
     res = residual()
@@ -210,8 +228,9 @@ def test_gradient_injects_the_residual_backwards_in_time():
     assert g_lam[0, 0] == pytest.approx(expected)
 
 
-def test_gradient_launch_sequence():
-    engine = make_engine()
+@pytest.mark.parametrize("numerics", ["legacy", "fixed"])
+def test_gradient_launch_sequence(numerics):
+    engine = make_engine(numerics=numerics)
     engine.forward()
     engine.prepare_gradient()
     engine.backend.log.clear()
@@ -234,8 +253,9 @@ def test_gradient_launch_sequence():
 
 # ---------------------------------------------------------------------------------- the rest
 
-def test_observers_see_every_step():
-    engine = make_engine()
+@pytest.mark.parametrize("numerics", ["legacy", "fixed"])
+def test_observers_see_every_step(numerics):
+    engine = make_engine(numerics=numerics)
     forward, backward = [], []
     engine.forward(lambda s, t: forward.append((s, int(t))))
     assert forward == [(s, t) for s in range(NS) for t in range(NT)]
@@ -267,6 +287,105 @@ def test_residual_helpers():
     first = engine.res_shot_b["vx"]
     engine.residual_to_device(res, 1)
     assert engine.res_shot_b["vx"] is first  # same size: the buffer is reused
+
+
+# ---------------------------------------------------------------------------------- fixed mode
+
+def _band_limited(time):
+    """A smooth wavelet with no energy near 125 Hz: a 15 Hz cosine under a Gaussian centred on 0.15 s.
+
+    It starts at 1e-11: nothing of its interpolation before time 0 is lost.
+    """
+    return np.cos(2 * np.pi * 15 * (time - 0.15)) * np.exp(-((time - 0.15) / 0.03) ** 2)
+
+
+def _sampled(k):
+    """The five samples of ``_band_limited`` at recorded sample ``k`` (dt = 4 ms)."""
+    return [_band_limited(k * 0.004)] * 5
+
+
+def test_internal_source_without_resampling_is_the_source():
+    # dt_scale = 1 (a user dt of 0.6 ms or less): both modes inject the samples as they are.
+    from PyFWI.engine.propagation import internal_source
+    expected = np.array([source(k) for k in range(NT)], np.float32)
+    np.testing.assert_array_equal(internal_source(source, NT, 1), expected)
+
+
+def test_internal_source_is_the_wavelet_at_every_internal_step():
+    # dt = 4 ms, 7 internal steps per sample (the examples). Times dt_scale, the source of every
+    # step is the wavelet at that time; at the recorded steps, the recorded samples.
+    from PyFWI.engine.propagation import internal_source
+    scale, nt = 7, 700
+    steps = internal_source(_sampled, nt, scale)
+    assert steps.shape == (nt, 5) and steps.dtype == np.float32
+    exact = _band_limited(np.arange(nt) * 0.004 / scale)
+    assert np.abs(steps[:, 2] * scale - exact).max() < 1e-5
+    # Spread over the steps, the source of each recorded interval is the same as in 0.1.10.
+    total = sum(_sampled(k)[2] for k in range(nt // scale + 1))
+    assert float(steps[:, 2].astype(np.float64).sum()) == pytest.approx(total, rel=1e-6)
+
+
+def test_internal_source_has_no_images_of_the_wavelet():
+    # The impulse train of 0.1.10 (sample k at step 7 k) repeats the spectrum of the wavelet around
+    # every multiple of 1 / dt = 250 Hz: the grid noise of the known bug. The resampled source keeps
+    # it below the recorded Nyquist frequency (125 Hz).
+    from PyFWI.engine.propagation import internal_source
+    scale, nt = 7, 1400
+    resampled = internal_source(_sampled, nt, scale)[:, 2].astype(np.float64)
+    train = np.zeros(nt)
+    train[::scale] = [_sampled(k)[2] for k in range(len(train[::scale]))]
+    above = np.fft.rfftfreq(nt, 0.004 / scale) > 1.3 * 125.0
+    for signal, largest in ((resampled, 1e-5), (train, None)):
+        spectrum = np.abs(np.fft.rfft(signal))
+        ratio = spectrum[above].max() / spectrum.max()
+        assert ratio < largest if largest else ratio > 0.5
+
+
+def test_fixed_forward_injects_at_every_step_and_records_at_the_recorded_steps():
+    from PyFWI.engine.propagation import internal_source
+    engine = make_engine(numerics="fixed")
+    rows = recorded_rows(engine)
+    engine.backend.log.clear()
+    seismogram = engine.forward()
+    per_shot = ["MakeAllZero"] + ["injSrc", "update_velx", "update_velz", "update_tauz", "update_tauxz"] * NT
+    assert launches(engine) == per_shot * NS
+    # The receivers at steps 0, 3, 6 and 9 (rows 0 to 3), nothing in between.
+    assert rows == [t // DT_SCALE if t % DT_SCALE == 0 else -1 for t in range(NT)] * NS
+    # At the source, vx gets 1 / rho per step and the resampled source of every step so far.
+    added = np.cumsum(internal_source(source, NT, DT_SCALE)[:, 0].astype(np.float64))
+    for s in range(NS):
+        for t in range(NT_EXT):
+            before = t * DT_SCALE
+            expected = before * RHO_INVERSE + added[before] + np.arange(NR) + 100 * SRCX[s]
+            np.testing.assert_allclose(seismogram["vx"][t, :, s], expected, rtol=1e-6, err_msg=f"{s} {t}")
+
+
+def test_fixed_forward_records_only_rows_that_exist():
+    # Rounding can give fewer rows than recorded steps (dt = 5 ms, t = 0.25 s: 50 rows, 51 steps).
+    # Here 3 rows for steps 0, 3, 6 and 9: 0.1.10 records step 9 in row 3, past the end of the
+    # seismograms; the fixed mode does not record it.
+    legacy, fixed = make_engine(numerics="legacy", nt_ext=3), make_engine(numerics="fixed", nt_ext=3)
+    legacy_rows, fixed_rows = recorded_rows(legacy), recorded_rows(fixed)
+    legacy.forward()
+    fixed.forward()
+    assert legacy_rows == [0, 1, 2, 3] * NS
+    assert sorted(legacy.margins_changed()) == sorted(f"seismogramid_{par}_b" for par in COMPONENTS)
+    assert max(fixed_rows) == 2 and fixed_rows.count(-1) == NS * (NT - 3)
+    assert fixed.margins_changed() == []
+
+
+@pytest.mark.parametrize("numerics, samples", [("legacy", (4, 3, 2)), ("fixed", (3, 2, 1))])
+def test_gradient_injects_each_residual_sample_where_it_was_recorded(numerics, samples):
+    # Rounding can give one row more than recorded steps (dt = 4 ms, t = 0.4 s): here 5 rows for
+    # samples 0 to 3. 0.1.10 counts down from row 4 at step 9, where sample 3 was recorded: every
+    # sample is injected one recorded sample too early. The fixed mode injects 3, 2, 1 at 9, 6, 3.
+    engine = make_engine(numerics=numerics, nt_ext=5)
+    engine.forward()
+    engine.prepare_gradient()
+    engine.backend.log.clear()
+    engine.gradient(residual(nt_ext=5))
+    copied = [entry[1] for entry in engine.backend.log if entry[0] == "copy"]
+    assert copied == [k * NR * 4 for k in samples for _ in range(5)] * NS
 
 
 def test_the_unit_tests_alone_cover_the_engine(tmp_path):

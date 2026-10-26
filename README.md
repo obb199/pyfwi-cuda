@@ -146,7 +146,9 @@ The backend that runs the kernels is chosen by `inpa['backend']`, else by the en
 
 The numeric mode is chosen the same way, with `inpa['numerics']` or `PYFWI_NUMERICS`: `legacy` gives the
 results of PyFWI 0.1.10 (default on OpenCL), `fixed` corrects its numerical bugs (default on CUDA;
-see [CHANGELOG.md](CHANGELOG.md) for what changes and by how much).
+see [CHANGELOG.md](CHANGELOG.md) for what changes and by how much). The largest change: `fixed` injects
+the source at every internal time step instead of once per recorded sample, which removes a spurious
+grid-scale noise that 0.1.10 creates at grid spacings of a few metres.
 
 CUDA needs CuPy for the CUDA version of the driver (`pip install cupy-cuda13x` for drivers of the
 580 series or newer). The CUDA backend of Phase 2 runs the same kernels as OpenCL (its results agree
