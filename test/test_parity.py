@@ -1,13 +1,21 @@
 """Parity of the CUDA backend with OpenCL on the same GPU (roadmap step 2.3, test type PAR).
 
-The CUDA backend runs the same kernel files as OpenCL; parity is checked in the ``legacy`` numeric
-mode of both (CUDA defaults to ``fixed`` since step 2.4, see ``test_numerics.py``). The two
-compilers (NVRTC and NVIDIA's OpenCL compiler) do not emit the same instructions (contractions
-into fused multiply-adds, ordering), so the results are not identical bit for bit: measured on the
-16 propagation cases of the golden masters, the seismograms differ by at most 1.1e-6 and the
-gradients by 1.9e-5 in relative L2 norm, the same order as the effect of a single bit of the PML
-profile measured in step 0.5 (5.7e-7 and 2.8e-5). ``TOLERANCE`` leaves a margin of about 3; the
-final tolerance is set at gate G2.
+The CUDA backend runs the same kernel files as OpenCL; parity is checked in both numeric modes,
+the same mode on both backends. The two compilers (NVRTC and NVIDIA's OpenCL compiler) do not emit
+the same instructions (contractions into fused multiply-adds, ordering), so the results are not
+identical bit for bit. ``TOLERANCE`` is the final tolerance of gate G2, about 3 times the largest
+difference measured on the whole matrix of the golden masters by ``tools/parity_report.py``
+(``docs/cuda-migration/reports/parity-0.2.0.md``), relative L2 norm:
+
+* seismograms and data at most 1.1e-6 in both modes, the order of a single bit of the PML profile
+  (step 0.5: 5.7e-7); the misfit of the propagation cases 3.0e-6;
+* gradients 1.9e-5 in ``legacy`` (whose constants make part of the arithmetic FP64) and 3.6e-4 in
+  ``fixed`` (FP32 only), on one case: wells and surface, pressure data, energy balancing, whose
+  gradient is the most sensitive to rounding (compiling the CUDA kernels without contraction into
+  fused multiply-adds alone changes it by 7e-4; NVIDIA OpenCL and POCL differ by 3e-5); every other
+  case is below 7e-5;
+* the inversions (FWI with L-BFGS and CG, 2 iterations; eight time-lapse strategies, 1 iteration):
+  models 3.5e-5, misfits 8.2e-5.
 
 Also here: grids that are not a multiple of the CUDA block, determinism and ``compute-sanitizer``
 on the CUDA kernels (no error: the padding of step 1.7 keeps the inherited out-of-bounds accesses
@@ -22,15 +30,17 @@ import sys
 import numpy as np
 import pytest
 
-from golden_cases import propagation_cases
-from golden_runner import run_propagation_case
+from golden_cases import inversion_cases, propagation_cases
+from golden_runner import run_inversion_case, run_propagation_case
 from helpers import forward_and_gradient, running_reference, tiny_case
 
 pytestmark = [pytest.mark.gpu, pytest.mark.skipif(running_reference(), reason="the published 0.1.10 has no CUDA")]
 
-#: Largest relative L2 difference between CUDA and OpenCL, per output layer (see the docstring).
-TOLERANCE = {"raw_seismogram": 3e-6, "observed": 3e-6, "predicted": 3e-6, "misfit": 3e-6,
-             "raw_gradient": 6e-5, "gradient": 6e-5}
+#: Largest relative L2 difference between CUDA and OpenCL, per numeric mode and output layer (see
+#: the docstring); ``model`` and ``inversion_misfit`` are the outputs of the inversion cases.
+TOLERANCE = {mode: {"raw_seismogram": 3e-6, "observed": 3e-6, "predicted": 3e-6, "misfit": 1e-5,
+                    "raw_gradient": gradient, "gradient": gradient, "model": 1e-4, "inversion_misfit": 2.5e-4}
+             for mode, gradient in (("legacy", 6e-5), ("fixed", 1e-3))}
 
 #: Absolute path of the repository root.
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -51,22 +61,61 @@ def _on(backend, monkeypatch, run):
 
 @pytest.fixture
 def both(nvidia_opencl_platform, cuda_device, monkeypatch):
-    """Run a function on OpenCL and on CUDA (the same GPU), both in the legacy mode; returns ``(opencl, cuda)``."""
+    """Run a function on OpenCL and on CUDA (the same GPU), in the numeric mode of ``PYFWI_NUMERICS``
+    (legacy unless the test sets it); returns ``(opencl, cuda)``."""
     monkeypatch.setenv("PYOPENCL_CTX", str(nvidia_opencl_platform))
     monkeypatch.setenv("PYFWI_NUMERICS", "legacy")  # CUDA defaults to the fixed mode (step 2.4)
     return lambda run: (_on("opencl", monkeypatch, run), _on("cuda:strict", monkeypatch, run))
 
 
-@pytest.mark.parametrize("case", propagation_cases(), ids=lambda c: c.name)
-def test_cuda_matches_opencl_on_every_propagation_case(both, case):
-    opencl, cuda = both(lambda: run_propagation_case(case, guard=False))
+def _differences(opencl, cuda, numerics, layer_of=lambda key: key.split("/")[0]):
+    """The outputs whose difference exceeds ``TOLERANCE``, as messages."""
     assert opencl.keys() == cuda.keys()
     failures = []
     for key in opencl:
-        layer, error = key.split("/")[0], relative_l2(opencl[key], cuda[key])
-        if error > TOLERANCE[layer]:
-            failures.append(f"{key}: relative L2 {error:.1e} > {TOLERANCE[layer]:.0e}")
+        layer, error = layer_of(key), relative_l2(opencl[key], cuda[key])
+        if error > TOLERANCE[numerics][layer]:
+            failures.append(f"{key}: relative L2 {error:.1e} > {TOLERANCE[numerics][layer]:.0e}")
+    return failures
+
+
+@pytest.mark.parametrize("numerics", ["legacy", "fixed"])
+@pytest.mark.parametrize("case", propagation_cases(), ids=lambda c: c.name)
+def test_cuda_matches_opencl_on_every_propagation_case(both, monkeypatch, case, numerics):
+    monkeypatch.setenv("PYFWI_NUMERICS", numerics)
+    opencl, cuda = both(lambda: run_propagation_case(case, guard=False))
+    failures = _differences(opencl, cuda, numerics)
     assert not failures, "\n".join(failures)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("numerics", ["legacy", "fixed"])
+@pytest.mark.parametrize("case", inversion_cases(), ids=lambda c: c.name)
+def test_inversions_agree_between_backends(both, monkeypatch, case, numerics):
+    # The inversion cases of the golden masters (FWI with L-BFGS and CG, 2 iterations; the time-lapse
+    # strategies, 1 iteration): the inverted models and the misfits of CUDA and OpenCL.
+    from tools.parity_report import kind_of
+
+    monkeypatch.setenv("PYFWI_NUMERICS", numerics)
+    opencl, cuda = both(lambda: run_inversion_case(case, guard=False))
+    failures = _differences(opencl, cuda, numerics,
+                            lambda key: "inversion_misfit" if kind_of(key) == "misfit" else "model")
+    assert not failures, "\n".join(failures)
+
+
+def test_parity_report_renders_every_output():
+    from tools.parity_report import kind_of, render, summary
+
+    results = {"legacy": {"a1_case": {"raw_seismogram/vx": 1e-7, "raw_gradient/vp": 2e-5, "misfit": 3e-7},
+                          "fwi_lbfgs": {"model/vp": 4e-6, "misfit/0": 5e-5}}}
+    assert [kind_of(k) for k in ("raw_gradient/mu", "misfit", "model/vp", "dm/vp", "b1/vs", "misfit/0/1")] == \
+        ["raw_gradient", "misfit", "model", "model", "model", "misfit"]
+    assert summary(results["legacy"])["misfit"] == (3e-7, "a1_case", "misfit")
+    assert summary(results["legacy"])["inversion misfit"] == (5e-5, "fwi_lbfgs", "misfit/0")
+    report = render(results, {"GPU": "test GPU"})
+    assert report.startswith("# Parity of the CUDA backend") and "- GPU: test GPU" in report
+    assert "| raw_gradient | 2.0e-05 | a1_case | `raw_gradient/vp` |" in report
+    assert report.count("\n| a1_case |") == 3 and "| fwi_lbfgs | `model/vp` | 4.0e-06 |" in report
 
 
 @pytest.mark.parametrize("tnz, tnx", [(61, 67), (100, 100), (127, 129)])
@@ -76,9 +125,9 @@ def test_grids_that_are_not_a_multiple_of_the_block(both, tnz, tnx):
         return forward_and_gradient(tiny_case(nz=tnz - 20, nx=tnx - 20, t=0.15))
     (d_opencl, g_opencl), (d_cuda, g_cuda) = both(run)
     for key in d_opencl:
-        assert relative_l2(d_opencl[key], d_cuda[key]) <= TOLERANCE["observed"], key
+        assert relative_l2(d_opencl[key], d_cuda[key]) <= TOLERANCE["legacy"]["observed"], key
     for key in g_opencl:
-        assert relative_l2(g_opencl[key], g_cuda[key]) <= TOLERANCE["gradient"], key
+        assert relative_l2(g_opencl[key], g_cuda[key]) <= TOLERANCE["legacy"]["gradient"], key
 
 
 def test_cuda_runs_are_deterministic(cuda_device, monkeypatch):

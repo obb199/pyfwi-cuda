@@ -704,6 +704,20 @@ CUDA comes in as an option; the default stays `opencl`.
   and 32 × 4 within 2 % on the medium one; step 3.1 replaces the rule with a tuning). Results are
   bit for bit those of before. DES, 3 runs each, `legacy` on both: small 0.29 s / 0.65 s against
   0.41 s / 0.75 s on OpenCL (forward / gradient), medium 13.7 s / 33.9 s against 17.7 s / 38.7 s.
+- **Result (part 2, PAR):** `tools/parity_report.py` runs the 16 propagation cases and the 10
+  inversion cases of the golden masters on OpenCL and on CUDA, on the same GPU, in both numeric
+  modes, and writes [the parity report](reports/parity-0.2.0.md) with the difference of every output
+  of every case. Largest relative L2 differences: seismograms and data 1.1e-6 (both modes); misfit of
+  the propagation cases 1.1e-6 (`legacy`) and 3.0e-6 (`fixed`); gradients 1.9e-5 (`legacy`) and
+  3.6e-4 (`fixed`); inversions: models 3.5e-5, misfits 8.2e-5. The `fixed` gradients differ more on
+  one case only (wells and surface, pressure data, energy balancing; every other case below 7e-5): it
+  is the most sensitive to rounding, since compiling the CUDA kernels without contraction into fused
+  multiply-adds alone changes its gradient by 7e-4, and NVIDIA OpenCL and POCL differ by 3e-5 there;
+  `legacy` differs less because its double constants make part of its arithmetic FP64. Final
+  tolerances (`test/test_parity.py`, about 3 times these): seismograms and data 3e-6, misfit 1e-5,
+  gradients 6e-5 (`legacy`) and 1e-3 (`fixed`), inverted models 1e-4, inversion misfits 2.5e-4. The
+  parity test of the propagation cases runs in both modes, and a new slow test compares the 10
+  inversions (FWI 2 iterations, time-lapse 1) between backends in both modes: all pass.
 
 ### Gate G2
 
