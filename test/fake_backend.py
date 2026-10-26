@@ -62,6 +62,19 @@ class FakeProgram:
         return FakeKernel(name, TOY_KERNELS[name])
 
 
+class FakeGraph:
+    """What ``FakeBackend.capture`` returns: the recorded launches, run again by ``launch``."""
+
+    def __init__(self, backend, launches):
+        self.backend, self.launches = backend, launches
+
+    def launch(self):
+        self.backend.log.append(("graph", len(self.launches)))
+        for name, function, args in self.launches:
+            self.backend.log.append(("launch", name))
+            function(self.backend, *args)
+
+
 class FakeBackend:
     """The interface of ``PyFWI.backends`` on NumPy arrays (see the module docstring).
 
@@ -79,6 +92,8 @@ class FakeBackend:
     def __init__(self, nr, tnx):
         self.nr, self.tnx = nr, tnx
         self.log = []
+        #: While ``capture`` records: the launches, which then do not run.
+        self._recording = None
 
     # memory
     def allocate(self, host, margin_bytes, fill):
@@ -144,8 +159,21 @@ class FakeBackend:
         kernel.args[index] = value
 
     def launch(self, kernel, global_size):
+        if self._recording is not None:  # a graph is being recorded: nothing runs
+            self._recording.append((kernel.name, kernel.function, list(kernel.args)))
+            return
         self.log.append(("launch", kernel.name))
         kernel.function(self, *kernel.args)
+
+    def capture(self, record):
+        """Record the launches of ``record()`` (with the arguments they have now) into a ``FakeGraph``."""
+        self._recording = []
+        try:
+            record()
+        finally:
+            launches, self._recording = self._recording, None
+        self.log.append(("capture", len(launches)))
+        return FakeGraph(self, launches)
 
     def call(self, kernel, global_size, *args):
         self.set_args(kernel, *args)

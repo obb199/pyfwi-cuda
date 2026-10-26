@@ -24,6 +24,7 @@ Used by
 ``PyFWI.wave_propagation.WavePreparation``. Tested by ``test/test_engine.py`` (with a fake NumPy
 backend, without a device) and by every test that runs a propagation.
 """
+import os
 from types import SimpleNamespace
 
 import numpy as np
@@ -45,6 +46,10 @@ NATIVE_KERNELS = tuple(name for name in KERNELS if name not in ("injSrc", "Adj_i
 #: (step 3.5): ``update_v`` (update_velx + update_velz), ``update_tau`` (update_tauz + update_tauxz)
 #: and ``grad_adjoint_v`` (Grad + Adj_update_v).
 FUSED_KERNELS = ("update_v", "update_tau", "grad_adjoint_v")
+
+#: Longest CUDA graph of the native time loops, in steps (step 3.7): a run between two checkpoints is
+#: replayed in graphs of at most this many steps (a graph per length, recorded once per run).
+MAX_GRAPH_STEPS = 50
 
 #: Value of the margins around every device buffer (step 1.7): what the out-of-bounds reads of the
 #: kernels of 0.1.10 return. 0 reproduces the golden masters, which 0.1.10 computed inside zero
@@ -314,6 +319,11 @@ class PropagationEngine:
             self.step_b = self._table(np.zeros(1, np.int32))
             self.source_cell_b = self._table(np.zeros(1, np.int32))
             self.source_steps_b = backend.allocate_empty(int(nt) * 4 * 4)
+        #: Step 3.7: the native time loops replay CUDA graphs of several steps (backend ``capture``),
+        #: unless ``PYFWI_CUDA_GRAPHS=0`` or a ``show=True`` run observes every step.
+        self.graphs = (self.native_injection and getattr(backend, "capture", None) is not None
+                       and os.environ.get("PYFWI_CUDA_GRAPHS", "1") != "0")
+        self._graph_cache = {}
 
         self.margin_bytes = margin_bytes(tnz, tnx, rec_top_right_var, backend.alignment)
         # The allocation (margins included) of every device buffer, by attribute name.
@@ -535,6 +545,7 @@ class PropagationEngine:
             self.backend.to_device(self.source_steps_b, np.ascontiguousarray(self.source_steps[:, :4]))
             self._set_native_injection_args()
             self.backend.set_args(self.knl.advance, self.step_b, np.int32(+1))
+            self._graph_cache = {}  # recorded again: the buffers of this run may be new
         for s in range(self.ns):
             self.backend.call(self.knl.MakeAllZero, self.global_size, *self._field_buffers())
             if self.native_injection:
@@ -591,6 +602,23 @@ class PropagationEngine:
         self.backend.to_device(self.source_cell_b, np.array([cell], np.int32))
         self.backend.to_device(self.step_b, np.array([step], np.int32))
 
+    def _replay(self, kind, step, count):
+        """Run ``count`` repetitions of ``step()`` as CUDA graphs of at most ``MAX_GRAPH_STEPS`` steps.
+
+        A graph records the launches of ``count`` steps once (backend ``capture``) and replays them
+        with one call (step 3.7); every step reads its time from the device, so one graph serves
+        every run of the same length. The graphs of a run are kept in ``_graph_cache`` by kind and
+        length.
+        """
+        while count > 0:
+            length = min(count, MAX_GRAPH_STEPS)
+            graph = self._graph_cache.get((kind, length))
+            if graph is None:
+                graph = self.backend.capture(lambda n=length: [step() for _ in range(n)])
+                self._graph_cache[(kind, length)] = graph
+            graph.launch()
+            count -= length
+
     def _native_forward_step(self):
         """One forward step with the native kernels: source and receivers, the updates, the next step."""
         self.backend.launch(self.knl.inject_and_record, self.receiver_size)
@@ -605,15 +633,27 @@ class PropagationEngine:
     def _forward_shot_native(self, s, observe):
         """The forward time loop of shot ``s`` with the native kernels and the step on the device.
 
-        The checkpoints are copied after the updates of their step, as in ``_forward_shot``.
+        The checkpoints are copied after the updates of their step, as in ``_forward_shot``. Without
+        ``observe``, the steps between two checkpoints are replayed as CUDA graphs (``_replay``);
+        with it (``show=True``), step by step, the same kernels.
         """
-        stored = {int(c): chpc for chpc, c in enumerate(self.chp)}
-        for t in range(self.nt):
-            self._native_forward_step()
-            if t in stored:
-                self._store_checkpoint(s, stored[t])
-            if observe is not None:
-                observe(s, t)
+        checkpoints = [int(c) for c in self.chp]
+        if self.graphs and observe is None:
+            t = 0
+            for chpc, c in enumerate(checkpoints):
+                if c >= t:
+                    self._replay("forward", self._native_forward_step, c - t + 1)
+                    t = c + 1
+                self._store_checkpoint(s, chpc)
+            self._replay("forward", self._native_forward_step, self.nt - t)
+        else:
+            stored = {c: chpc for chpc, c in enumerate(checkpoints)}
+            for t in range(self.nt):
+                self._native_forward_step()
+                if t in stored:
+                    self._store_checkpoint(s, stored[t])
+                if observe is not None:
+                    observe(s, t)
         self.make_seismogram(s)
 
     def _native_adjoint_step(self, backward):
@@ -637,9 +677,24 @@ class PropagationEngine:
         """The backward time loop of shot ``s`` with the native kernels and the step on the device.
 
         Steps nt - 1 down to 1, as ``_gradient_shot``: at a checkpoint step the forward field is
-        restored, otherwise rebuilt one step back.
+        restored, otherwise rebuilt one step back. Without ``observe`` the runs of steps between two
+        checkpoints are replayed as CUDA graphs; with it, step by step.
         """
         restored = {int(c): chpc for chpc, c in enumerate(self.chp)}
+        if self.graphs and observe is None:
+            t = self.nt - 1
+            while t >= 1:
+                if t in restored:
+                    self._restore_checkpoint(s, restored[t])
+                    self._replay("restored", lambda: self._native_adjoint_step(False), 1)
+                    t -= 1
+                    continue
+                count = 0
+                while t - count >= 1 and t - count not in restored:
+                    count += 1
+                self._replay("adjoint", lambda: self._native_adjoint_step(True), count)
+                t -= count
+            return
         t_src = np.int32(self.nt_ext)
         for t in range(self.nt - 1, 0, -1):
             if t in restored:
@@ -716,6 +771,7 @@ class PropagationEngine:
 
         if self.native_injection:
             self.backend.set_args(self.knl.advance, self.step_b, np.int32(-1))
+            self._graph_cache = {}  # recorded again: the buffers of this run may be new
         for s in range(self.ns):
             self.backend.call(self.knl.MakeAllZero, self.global_size, *self._field_buffers())
             self.backend.call(self.knl.MakeAllZero, self.global_size,

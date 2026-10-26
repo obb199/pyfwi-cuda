@@ -360,7 +360,8 @@ extern "C" __global__ void grad_adjoint_v(const float *vx, const float *vz, cons
 // source of every step comes from source_steps (4 values per step: vx, vz, taux, tauz), the residual
 // from the residual of the shot, and the recorded sample of a step is t / dt_scale when t is a
 // multiple of dt_scale and that sample exists. Every launch of a step then has the same arguments,
-// which a CUDA graph needs (step 3.7), and the residual is read in place, without copies.
+// so that the steps can be recorded once into a CUDA graph and replayed (step 3.7), and the residual
+// is read in place, without copies.
 
 // The recorded sample of internal step t, or -1 when t is not a recorded step (or past the last row).
 __device__ __forceinline__ int recorded_sample(int t, int dt_scale, int rows) {

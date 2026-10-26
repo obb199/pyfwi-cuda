@@ -212,6 +212,10 @@ class CUDABackend:
         self.device.use()
         #: Pinned buffers of the non-blocking copies.
         self._staging = _StagingPool()
+        #: The stream of every copy and launch (made current here): a stream of its own, since the
+        #: legacy default stream cannot be recorded into a CUDA graph (``capture``, step 3.7).
+        self.stream = cp.cuda.Stream()
+        self.stream.use()
 
         properties = cp.cuda.runtime.getDeviceProperties(ordinal)
         name = properties["name"].decode() if isinstance(properties["name"], bytes) else properties["name"]
@@ -315,6 +319,22 @@ class CUDABackend:
         module = cp.RawModule(code=source, options=(f"--gpu-architecture={self.architecture}",))
         module.compile()
         return CUDAProgram(module)
+
+    @staticmethod
+    def capture(record):
+        """Record the launches made by ``record()`` into a CUDA graph and return it (step 3.7).
+
+        Nothing runs while recording; ``graph.launch()`` then replays every launch, in order, on the
+        current stream, at the cost of one call. The launches keep the arguments they had when
+        recorded, so the kernels of a graph read what changes (the time step) from the device.
+        """
+        stream = cp.cuda.get_current_stream()
+        stream.begin_capture()
+        try:
+            record()
+        finally:
+            graph = stream.end_capture()
+        return graph
 
     @staticmethod
     def kernel(program, name):

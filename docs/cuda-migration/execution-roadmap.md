@@ -824,6 +824,19 @@ Each optimisation is a separate commit, with a benchmark before and after, so th
   others. OTM unchanged (the same numbers as step 3.5); the fake backend of the engine tests runs the
   same loops with toy kernels that read the step. DES (5 runs, `fixed`): small 0.17 s / 0.15 s →
   0.14 s / 0.15 s, medium 3.04 s / 5.06 s → 2.90 s / 5.11 s.
+- **3.7 (CUDA graphs):** the CUDA backend runs on a stream of its own (the legacy default stream
+  cannot be recorded) and gets `capture(record)`: the launches of `record()` go into a CUDA graph that
+  one call replays. The native loops replay the steps between two checkpoints as graphs of at most
+  `MAX_GRAPH_STEPS` (50) steps, one graph per kind (forward, adjoint, adjoint after a restore) and
+  length, recorded again at every run (its buffers may be new); the checkpoint copies and restores stay
+  between the graphs. `show=True` (an observer of every step) and `PYFWI_CUDA_GRAPHS=0` run step by
+  step, the same kernels. Tests: on the GPU, graphs give the bits of the step-by-step loops with `chpr`
+  0 (long runs split into graphs of 50 steps), 20 and 100 (graphs of one step); on the fake backend,
+  whose `capture` records the launches and replays them, the same with graphs of 2 steps, and no graph
+  when observed (the `show=True` API test on CUDA compares both paths too). OTM unchanged. DES (5 runs,
+  `fixed`): small 0.14 s / 0.15 s → 0.08 s / 0.09 s (19 and 21 µs per step), medium 2.90 s / 5.11 s →
+  2.76 s / 5.00 s. The medium scenario is now limited by the checkpoint copies: 3.9 MB every 5 steps
+  over PCIe on the stream of the kernels, about 60 µs per step (step 3.8).
 
 ### 3.11 `auto` default and release 0.3.0
 

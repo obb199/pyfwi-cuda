@@ -194,6 +194,51 @@ def test_native_injection_records_and_injects_one_thread_per_receiver():
     assert s == 1
 
 
+def _native_run(graphs, observe=False):
+    """Forward and gradient on the native fake engine, with or without its graphs; returns the outputs and the log."""
+    engine, _ = _native_engine()
+    engine.graphs = graphs
+    forward_seen, backward_seen = [], []
+    seismogram = engine.forward((lambda s, t: forward_seen.append(t)) if observe else None)
+    engine.prepare_gradient()
+    engine.gradient(residual(), (lambda s, t, t_src: backward_seen.append(t)) if observe else None)
+    outputs = {par: seismogram[par].copy() for par in COMPONENTS}
+    outputs.update({f"g{k}": g for k, g in enumerate(engine.read_gradient())})
+    return outputs, engine.backend.log, forward_seen, backward_seen
+
+
+def test_native_graphs_replay_the_step_by_step_loops(monkeypatch):
+    # Step 3.7: the runs of steps between checkpoints are recorded once (capture) and replayed; the
+    # results are those of the step-by-step loops.
+    from PyFWI.engine import propagation
+
+    with_graphs, log, _, _ = _native_run(True)
+    step_by_step, plain_log, _, _ = _native_run(False)
+    for key in step_by_step:
+        np.testing.assert_array_equal(with_graphs[key], step_by_step[key], err_msg=key)
+    captures = [entry for entry in log if entry[0] == "capture"]
+    assert captures and not any(entry[0] == "capture" for entry in plain_log)
+    # One graph per kind and length in a run: checkpoints at steps 0, 4 and 9 give forward runs of 1
+    # and 4 and 5 steps (3 lengths), adjoint runs of 4 steps between the restored steps.
+    assert len(captures) <= 6
+    assert sum(1 for entry in log if entry[0] == "graph") > len(captures)  # replayed for both shots
+    monkeypatch.setattr(propagation, "MAX_GRAPH_STEPS", 2)  # longer runs split into graphs of 2 steps
+    split, split_log, _, _ = _native_run(True)
+    for key in step_by_step:
+        np.testing.assert_array_equal(split[key], step_by_step[key], err_msg=key)
+    assert all(entry[1] <= 2 * 6 for entry in split_log if entry[0] == "capture")  # at most 6 launches a step
+
+
+def test_observed_native_runs_are_not_recorded():
+    # show=True: the observer sees every step, so the loops run step by step, without graphs.
+    observed, log, forward_seen, backward_seen = _native_run(True, observe=True)
+    assert forward_seen == list(range(NT)) * NS and backward_seen == list(range(NT - 1, 0, -1)) * NS
+    assert not any(entry[0] in ("capture", "graph") for entry in log)
+    unobserved, _, _, _ = _native_run(True)
+    for key in observed:
+        np.testing.assert_array_equal(observed[key], unobserved[key], err_msg=key)
+
+
 def test_buffers_live_inside_allocations_with_margins():
     engine = make_engine()
     assert engine.margins_changed() == []

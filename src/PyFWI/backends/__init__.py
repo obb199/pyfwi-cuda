@@ -23,6 +23,8 @@ Every backend offers the same small interface:
 ``set_arg(kernel, index, value)``           set one argument
 ``launch(kernel, global_size)``             run a kernel on a grid, with the arguments set before
 ``call(kernel, global_size, *args)``        set every argument and run
+``capture(record)`` (optional)              record the launches of ``record()`` into a graph that
+                                            ``launch()`` replays (CUDA only, step 3.7)
 ==========================================  ===============================================================
 
 A non-blocking copy keeps using the host array until its event completes: the caller keeps the

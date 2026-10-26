@@ -14,7 +14,9 @@ Measured, the largest difference on the 16 cases:
 * step 3.4 (source, receivers and residual handled one thread per receiver): the same;
 * step 3.5 (fused kernels): the same; the fused kernels give the same bits as the separate native
   kernels (``test_fused_kernels_give_the_bits_of_the_separate_ones``);
-* step 3.6 (the time step on the device): the same.
+* step 3.6 (the time step on the device): the same;
+* step 3.7 (CUDA graphs): the same; replaying the graphs gives the bits of the step-by-step loops
+  (``test_cuda_graphs_give_the_bits_of_the_step_by_step_loops``).
 """
 import numpy as np
 import pytest
@@ -86,6 +88,26 @@ def test_fused_kernels_give_the_bits_of_the_separate_ones(cuda_device, monkeypat
     separate_case.W._engine.fused = False
     fused, separate = forward_and_gradient(fused_case), forward_and_gradient(separate_case)
     for a, b in zip(fused, separate):
+        for key in a:
+            np.testing.assert_array_equal(a[key], b[key], err_msg=key)
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("chpr", [0, 20, 100])
+def test_cuda_graphs_give_the_bits_of_the_step_by_step_loops(cuda_device, monkeypatch, chpr):
+    # Step 3.7: chpr 0 (two checkpoints: long runs, split into graphs of MAX_GRAPH_STEPS), 20 and 100
+    # (a checkpoint at every step: graphs of one step).
+    from helpers import forward_and_gradient
+
+    monkeypatch.setenv("PYFWI_BACKEND", "cuda:strict")
+    monkeypatch.setenv("PYFWI_NUMERICS", "fixed")
+    runs = []
+    for graphs in ("1", "0"):
+        monkeypatch.setenv("PYFWI_CUDA_GRAPHS", graphs)
+        case = tiny_case(sdo=8, acq_type=2, components=4, chpr=chpr)
+        assert case.W._engine.graphs == (graphs == "1")
+        runs.append(forward_and_gradient(case))
+    for a, b in zip(*runs):
         for key in a:
             np.testing.assert_array_equal(a[key], b[key], err_msg=key)
 
