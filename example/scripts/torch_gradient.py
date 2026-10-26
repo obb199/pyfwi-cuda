@@ -12,6 +12,9 @@ What this example shows
 * ``W`` needs checkpoints (``chpr``) for the gradient, exactly as in ``gradient.py``.
 * For an L2 loss, the PyTorch gradient equals the one of PyFWI's own path
   (``fwi_tools.cost_seismic`` + ``WavePropagator.gradient``): the example computes both.
+* The tensors may live on the GPU (``--device cuda``, a PyTorch built for CUDA): the seismograms
+  and the gradient then come back on the same device, shared with CuPy through DLPack (step 4.5
+  of the fork).
 
 How to run it
 -------------
@@ -19,6 +22,7 @@ How to run it
 
     python example/scripts/torch_gradient.py                       # full size, with a figure
     python example/scripts/torch_gradient.py --size small --no-show
+    python example/scripts/torch_gradient.py --size small --no-show --device cuda   # GPU tensors
 
 The test suite (``test/test_examples.py``) calls ``main(size="small")`` and checks that
 both gradients agree and point to the inclusion. It needs PyTorch (CPU is enough).
@@ -59,7 +63,7 @@ def make_models(nz, nx):
     return true, start
 
 
-def main(size="small", show=False):
+def main(size="small", show=False, device="cpu"):
     """Compute the gradient of an L2 loss at the starting model with PyTorch, and with PyFWI directly.
 
     Parameters
@@ -68,6 +72,8 @@ def main(size="small", show=False):
         Problem size, see ``SIZES``.
     show : bool
         If True, plot minus the vp gradient from both paths.
+    device : str
+        Where the tensors live: ``"cpu"``, or ``"cuda"`` (needs PyTorch for CUDA and CuPy).
 
     Returns
     -------
@@ -95,19 +101,20 @@ def main(size="small", show=False):
     # Observed data, through the same autograd function (no gradient needed for them).
     W_obs = wave.WavePropagator(inpa, src, rec_loc, (nz, nx), components=0, n_well_rec=n_well_rec, chpr=0)
     with torch.no_grad():
-        taux_obs, tauz_obs = Fwi.apply(W_obs, *(torch.tensor(true[k]) for k in ("vp", "vs", "rho")))
+        taux_obs, tauz_obs = Fwi.apply(W_obs, *(torch.tensor(true[k], device=device) for k in ("vp", "vs", "rho")))
 
     # Starting model as tensors that track gradients; a propagator with checkpoints.
-    params = {k: torch.tensor(start[k], requires_grad=True) for k in ("vp", "vs", "rho")}
+    params = {k: torch.tensor(start[k], requires_grad=True, device=device) for k in ("vp", "vs", "rho")}
     W = wave.WavePropagator(inpa, src, rec_loc, (nz, nx), components=0, n_well_rec=n_well_rec, chpr=20)
     taux, tauz = Fwi.apply(W, params["vp"], params["vs"], params["rho"])
     loss = 0.5 * torch.sum((taux - taux_obs) ** 2) + 0.5 * torch.sum((tauz - tauz_obs) ** 2)
     loss.backward()  # runs W.gradient with the derivative of the loss as adjoint source
-    torch_gradient = {k: v.grad.numpy() for k, v in params.items()}
+    assert all(v.grad.device == v.device for v in params.values())  # the gradient on the device of the model
+    torch_gradient = {k: v.grad.cpu().numpy() for k, v in params.items()}
 
     # The same gradient with PyFWI's own tools (the forward run of W above is reused).
-    d_est = process.prepare_residual({"taux": taux.detach().numpy(), "tauz": tauz.detach().numpy()}, 1)
-    d_obs = process.prepare_residual({"taux": taux_obs.numpy(), "tauz": tauz_obs.numpy()}, 1)
+    d_est = process.prepare_residual({"taux": taux.detach().cpu().numpy(), "tauz": tauz.detach().cpu().numpy()}, 1)
+    d_obs = process.prepare_residual({"taux": taux_obs.cpu().numpy(), "tauz": tauz_obs.cpu().numpy()}, 1)
     _, adj_src = tools.cost_seismic(d_est, d_obs, fun=tools.CostFunction("l2"))
     pyfwi_gradient = W.gradient(adj_src, show=False)
 
@@ -122,13 +129,14 @@ def main(size="small", show=False):
         plt.tight_layout()
         plt.show()
 
-    return {"loss": float(loss), "torch_gradient": torch_gradient, "pyfwi_gradient": pyfwi_gradient,
-            "true": true, "start": start, "inpa": inpa}
+    return {"loss": float(loss.detach()), "torch_gradient": torch_gradient, "pyfwi_gradient": pyfwi_gradient,
+            "true": true, "start": start, "inpa": inpa, "device": str(taux.device)}
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Gradient through PyTorch with PyFWI.torchfwi.Fwi.")
     parser.add_argument("--size", choices=sorted(SIZES), default="full", help="problem size")
     parser.add_argument("--no-show", action="store_true", help="do not plot")
+    parser.add_argument("--device", default="cpu", help="where the tensors live: cpu (default) or cuda")
     args = parser.parse_args()
-    main(size=args.size, show=not args.no_show)
+    main(size=args.size, show=not args.no_show, device=args.device)

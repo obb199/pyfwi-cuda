@@ -11,8 +11,10 @@
 #               Used for development and for running the tests.
 #   cuda12      The same with CuPy/CUDA 12 instead (the [cuda12] extra, roadmap step 2.6), to run
 #               the parity tests with a CUDA 12 runtime and NVRTC 12; same versions of the rest.
+#   torch       dev with PyTorch for CUDA 13 (roadmap step 4.5), on the CUDA 13.0 runtime that
+#               PyTorch pins: PyFWI.torchfwi with GPU tensors, exchanged with CuPy through DLPack.
 #
-# Usage:     tools/setup_envs.sh [ref|dev|cuda12|all]        (default: all)
+# Usage:     tools/setup_envs.sh [ref|dev|cuda12|torch|all]  (default: all)
 #
 # Variables: ENVS_DIR  where the environments go (default: <folder above the repo>/envs)
 #            UV        path of the uv executable (default: uv on PATH, else ~/.local/bin/uv)
@@ -27,6 +29,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # absolute path of the
 ENVS_DIR="${ENVS_DIR:-$(dirname "$REPO")/envs}"
 UV="${UV:-$(command -v uv || echo "$HOME/.local/bin/uv")}"
 TORCH_CPU="https://download.pytorch.org/whl/cpu"          # index with the CPU-only PyTorch wheels
+TORCH_CU130="https://download.pytorch.org/whl/cu130"      # index with the PyTorch wheels for CUDA 13.0
 
 # new_venv <python-version> <dir>
 #   Create an empty virtual environment. Returns 1 (and does nothing) when <dir> already
@@ -73,11 +76,21 @@ make_cuda12() {
   pip_install "$env" --no-deps --no-build-isolation -e "$REPO"
 }
 
+# make_torch: dev with PyTorch for CUDA 13 (requirements/torch.txt), the repository in editable mode.
+make_torch() {
+  local env="$ENVS_DIR/torch"
+  new_venv 3.12 "$env" || return 0
+  pip_install "$env" -r "$REPO/requirements/torch.txt" \
+    --extra-index-url "$TORCH_CU130" --index-strategy unsafe-best-match
+  pip_install "$env" --no-deps --no-build-isolation -e "$REPO"
+}
+
 case "${1:-all}" in
   ref) make_ref ;;
   dev) make_dev ;;
   cuda12) make_cuda12 ;;
-  all) make_ref; make_dev; make_cuda12 ;;
-  *) echo "usage: $0 [ref|dev|cuda12|all]" >&2; exit 2 ;;
+  torch) make_torch ;;
+  all) make_ref; make_dev; make_cuda12; make_torch ;;
+  *) echo "usage: $0 [ref|dev|cuda12|torch|all]" >&2; exit 2 ;;
 esac
 echo "Environments in $ENVS_DIR. Check them with: \$ENV/bin/python $REPO/tools/check_env.py"

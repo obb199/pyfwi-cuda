@@ -1067,6 +1067,21 @@ Everything here is optional and off by default. Each feature has its own toleran
 
 - **Goes in:** DLPack without copies, in `envs/torch`.
 - **Tests:** INT (same `data_ptr`; results equal to the NumPy path; gradient × finite differences; CPU tensors keep working); the PyTorch example of 0.3 with GPU tensors.
+- **Result:** `envs/torch` (`tools/setup_envs.sh torch`, `requirements/torch.txt`): PyTorch 2.14.1 for CUDA
+  13.0 with CuPy 14.2 on the runtime that PyTorch pins (13.0, which the driver 580 runs), everything else at
+  the versions of `dev`; `check_env.py` passes there. `torchfwi.Fwi` takes the model as CPU or CUDA tensors
+  and returns the seismograms and the gradient on the device of the model: a CUDA tensor goes to CuPy
+  through DLPack (the same data pointer: no copy on the GPU) and to the host, as PyFWI's propagators take
+  NumPy arrays; the results come back into a CuPy array that the returned tensor shares (DLPack). A device
+  path without the host would need propagators that take device arrays: not in this step. The CUDA backend
+  now records its graphs on its own stream whatever stream is current (a CuPy device context, as PyTorch
+  code may use, had left the legacy default stream current, which cannot be recorded). The example
+  `torch_gradient.py` takes `--device cuda`. Tests (in `envs/torch`; a slow test runs them from the other
+  environments): the exchanges share the memory (`data_ptr`); CUDA tensors give the seismograms and
+  gradients of CPU tensors bit for bit (the loss, summed by PyTorch in another order, within 1e-6), and the
+  gradient of PyFWI's own path; the vp gradient of a PyTorch loss within 2 % of centred finite differences
+  (0.0 to 0.5 % measured, with the perturbation inside the model as in the mathematical baseline); the example
+  scripts with CPU tensors there too.
 
 ### 4.6 Geophysical validation
 

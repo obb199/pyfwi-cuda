@@ -34,9 +34,14 @@ how much and in which numeric mode.
   (`0,1`), the gradients of the shots added on the host in their order, so that any number of processes
   gives the same bits. A failing process raises with its traceback.
 
+- `PyFWI.torchfwi.Fwi` takes CUDA tensors (step 4.5): the seismograms and the gradient come back on the
+  device of the model, exchanged with CuPy through DLPack (`envs/torch`: `tools/setup_envs.sh torch`, PyTorch
+  for CUDA 13). The example `torch_gradient.py` takes `--device cuda`.
+
 ### Changed
 
 - The cost function no longer deep-copies its inputs three times (same values).
+- The CUDA backend records its graphs on its own stream, whatever stream another library made current.
 
 ### Numerical changes
 

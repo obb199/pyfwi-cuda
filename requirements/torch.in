@@ -1,0 +1,25 @@
+# Packages of the PyTorch environment, envs/torch (roadmap step 4.5): the fork with PyTorch for CUDA 13
+# (torch.cuda), to run PyFWI.torchfwi with GPU tensors, exchanged with CuPy through DLPack. PyTorch pins
+# its CUDA runtime (13.0, which the driver 580 runs), so the CUDA packages are those it needs, with CuPy
+# for CUDA 13 on the same runtime; everything else at the versions of dev.txt:
+#   uv pip compile requirements/torch.in \
+#       -c <(grep -vE '^(cuda-|cupy-|nvidia-|torch==|triton)' requirements/dev.txt) \
+#       --extra-index-url https://download.pytorch.org/whl/cu130 --index-strategy unsafe-best-match \
+#       --python-version 3.12 -o requirements/torch.txt
+numpy
+scipy
+matplotlib
+hdf5storage
+requests
+segyio
+pyopencl
+pocl-binary-distribution
+cupy-cuda13x[ctk]
+cuda-core[cu13]
+torch==2.14.1+cu130
+pytest
+pytest-timeout
+coverage
+ruff
+setuptools
+wheel

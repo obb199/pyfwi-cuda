@@ -59,7 +59,7 @@ listed in [CHANGELOG.md](CHANGELOG.md). Next: Phase 4, opt-in features.
 
 ## Development setup
 
-The project uses three Python environments, created next to the repository (in `../envs/`) by
+The project uses four Python environments, created next to the repository (in `../envs/`) by
 [uv](https://docs.astral.sh/uv/), without sudo:
 
 - `ref-0.1.10`: Python 3.10 with PyFWI 0.1.10 exactly as published on PyPI and the package versions
@@ -67,10 +67,11 @@ The project uses three Python environments, created next to the repository (in `
 - `dev`: Python 3.12 with this repository installed in editable mode, CuPy for CUDA 13, PyOpenCL
   and the test tools.
 - `cuda12`: the same with CuPy for CUDA 12, to check the CUDA backend with a CUDA 12 runtime.
+- `torch`: the same as `dev` with PyTorch built for CUDA 13, for `PyFWI.torchfwi` with tensors on the GPU.
 
 ```bash
 pipx install uv                                  # once
-tools/setup_envs.sh all                          # creates ../envs/ref-0.1.10, ../envs/dev and ../envs/cuda12
+tools/setup_envs.sh all                          # creates ../envs/ref-0.1.10, dev, cuda12 and torch
 ../envs/dev/bin/python tools/check_env.py        # checks GPU, CUDA, OpenCL and a PyFWI run
 ../envs/dev/bin/python -m pytest -m "not slow"   # fast test suite
 ```

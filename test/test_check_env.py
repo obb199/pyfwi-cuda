@@ -129,6 +129,17 @@ def test_cuda12_env_has_cuda12_stack_and_the_rest_of_dev():
     assert {name: cuda12[name] for name in shared} == {name: dev[name] for name in shared}
 
 
+def test_torch_env_has_cuda_pytorch_and_the_rest_of_dev():
+    # envs/torch (roadmap step 4.5): PyTorch for CUDA 13 and CuPy on the CUDA 13.0 runtime that PyTorch
+    # pins; everything else at the versions of dev.txt.
+    torch_env, dev = _pins("torch.txt"), _pins("dev.txt")
+    assert torch_env["torch"] == "2.14.1+cu130" and torch_env["cupy-cuda13x"].startswith("14.")
+    assert torch_env["nvidia-cuda-runtime"].startswith("13.0") and torch_env["cuda-core"]
+    shared = {name for name in torch_env if name in dev and not re.match(r"(cuda-|cupy-|nvidia-|torch$|triton)", name)}
+    assert {"numpy", "scipy", "pyopencl", "pocl-binary-distribution", "pytest"} <= shared
+    assert {name: torch_env[name] for name in shared} == {name: dev[name] for name in shared}
+
+
 def test_both_envs_pin_same_pocl():
     # Bit-for-bit comparisons on the CPU OpenCL need the same POCL compiler on both sides.
     assert _pins("ref-0.1.10.txt")["pocl-binary-distribution"] == _pins("dev.txt")["pocl-binary-distribution"]
@@ -139,7 +150,7 @@ def test_setup_envs_script_is_valid_bash():
     assert os.access(script, os.X_OK)
     subprocess.run(["bash", "-n", script], check=True)  # -n: parse only, run nothing
     r = subprocess.run(["bash", script, "nothing"], check=False, capture_output=True, text=True)
-    assert r.returncode == 2 and "usage:" in r.stderr and "cuda12" in r.stderr
+    assert r.returncode == 2 and "usage:" in r.stderr and "cuda12" in r.stderr and "torch" in r.stderr
 
 
 def _run_check_env(*args, env=None):
@@ -214,7 +225,7 @@ ENVS = os.path.join(os.path.dirname(REPO), "envs")
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("name", ["ref-0.1.10", "dev", "cuda12"])
+@pytest.mark.parametrize("name", ["ref-0.1.10", "dev", "cuda12", "torch"])
 def test_check_env_passes_in_every_environment(nvidia_opencl_platform, name):
     # Roadmap steps 0.1 and 2.6: the full check (with the PyFWI smoke run) in each environment.
     python = os.path.join(ENVS, name, "bin", "python")

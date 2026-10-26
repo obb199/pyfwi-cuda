@@ -340,20 +340,21 @@ class CUDABackend:
         module.compile()
         return CUDAProgram(module)
 
-    @staticmethod
-    def capture(record):
+    def capture(self, record):
         """Record the launches made by ``record()`` into a CUDA graph and return it (step 3.7).
 
         Nothing runs while recording; ``graph.launch()`` then replays every launch, in order, on the
         current stream, at the cost of one call. The launches keep the arguments they had when
-        recorded, so the kernels of a graph read what changes (the time step) from the device.
+        recorded, so the kernels of a graph read what changes (the time step) from the device. The
+        recording uses the stream of the backend even when other code (PyTorch, a CuPy device context:
+        step 4.5) made another stream current, as the legacy default stream cannot be recorded.
         """
-        stream = cp.cuda.get_current_stream()
-        stream.begin_capture()
-        try:
-            record()
-        finally:
-            graph = stream.end_capture()
+        with self.stream:
+            self.stream.begin_capture()
+            try:
+                record()
+            finally:
+                graph = self.stream.end_capture()
         return graph
 
     @staticmethod
