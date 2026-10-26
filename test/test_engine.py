@@ -246,6 +246,39 @@ def test_native_graphs_replay_the_step_by_step_loops(monkeypatch):
     assert all(entry[1] <= 2 * 6 for entry in split_log if entry[0] == "capture")  # at most 6 launches a step
 
 
+def test_native_graphs_are_kept_from_run_to_run():
+    # Step 3.11: the buffers keep their allocations (filled as new ones), so the graphs of a run serve
+    # the next ones; a new allocation or another undamped rectangle empties the cache. The first
+    # gradient allocates its buffers, which empties it once: the second run records the forward
+    # graphs again, the third records nothing.
+    engine, _ = _native_engine(batch=2)
+    runs = []
+    for _ in range(3):
+        engine.backend.log.clear()
+        field = np.ones((TNZ, TNX), np.float32)
+        engine.set_pml(0 * field, 0 * field)
+        engine.set_model(RHO_INVERSE * field, MU * field, LAM * field)
+        seismogram = engine.forward()
+        engine.prepare_gradient()
+        engine.gradient(residual())
+        runs.append(({par: seismogram[par].copy() for par in COMPONENTS}, engine.read_gradient(),
+                     sum(1 for entry in engine.backend.log if entry[0] == "capture")))
+    assert runs[0][2] > runs[1][2] > runs[2][2] == 0  # graphs recorded by each run
+    for seismogram, gradient, _ in runs[1:]:
+        for par in COMPONENTS:
+            np.testing.assert_array_equal(seismogram[par], runs[0][0][par])
+        for a, b in zip(gradient, runs[0][1]):
+            np.testing.assert_array_equal(a, b)
+    assert engine._graph_cache
+    engine.residual_to_device(residual(nt_ext=NT_EXT - 1), 0)  # fewer rows: a new residual buffer
+    assert not engine._graph_cache
+    engine.forward()
+    assert engine._graph_cache
+    damped = np.ones((TNZ, TNX), np.float32)
+    engine.set_pml(damped, damped)  # no undamped rectangle any more
+    assert not engine._graph_cache
+
+
 def test_observed_native_runs_are_not_recorded():
     # show=True: the observer sees every step, so the loops run step by step, without graphs.
     observed, log, forward_seen, backward_seen = _native_run(True, observe=True)
@@ -628,6 +661,26 @@ def test_fixed_forward_injects_at_every_step_and_records_at_the_recorded_steps()
             before = t * DT_SCALE
             expected = before * RHO_INVERSE + added[before] + np.arange(NR) + 100 * SRCX[s]
             np.testing.assert_allclose(seismogram["vx"][t, :, s], expected, rtol=1e-6, err_msg=f"{s} {t}")
+
+
+def test_the_source_is_resampled_only_when_it_changes(monkeypatch):
+    # Step 3.11: the samples of the wavelet are read at every forward modelling, and resampled (and
+    # copied to the device) only when they changed.
+    from PyFWI.engine import propagation
+
+    engine, _ = _native_engine()
+    calls = []
+    resample = propagation.resampled_source
+    monkeypatch.setattr(propagation, "resampled_source", lambda *args: calls.append(1) or resample(*args))
+    engine.forward()
+    first = engine.source_steps.copy()
+    engine.forward()
+    assert len(calls) == 1
+    engine.src = lambda t: [20.0 * (t + 1)] * 5  # another wavelet: twice the amplitude
+    engine.forward()
+    assert len(calls) == 2
+    np.testing.assert_allclose(engine.source_steps, 2 * first, rtol=1e-6)
+    np.testing.assert_allclose(engine.source_steps_b.reshape(NT, 4), engine.source_steps[:, :4])  # on the device
 
 
 def test_fixed_forward_records_only_rows_that_exist():

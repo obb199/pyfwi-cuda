@@ -179,6 +179,28 @@ def test_batches_match_the_parity_kernels_and_are_deterministic(cuda_device, mon
 
 
 @pytest.mark.gpu
+def test_a_reused_propagator_gives_the_bits_of_a_new_one(cuda_device, monkeypatch):
+    # Step 3.11: the CUDA graphs are kept from run to run (the buffers keep their allocations). A
+    # propagator that modelled another model first gives the bits of a new one.
+    import PyFWI.fwi_tools as tools
+    import PyFWI.processing as process
+
+    monkeypatch.setenv("PYFWI_BACKEND", "cuda:strict")
+    monkeypatch.setenv("PYFWI_NUMERICS", "fixed")
+    kw = {"ns": 3, "sdo": 8, "acq_type": 2, "components": 4, "chpr": 20}
+    reused, new = tiny_case(**kw), tiny_case(**kw)
+    observed = process.prepare_residual(reused.W.forward_modeling(reused.model, False), 1)
+    outputs = []
+    for case in (reused, new):
+        predicted = case.W.forward_modeling(case.m0, False)
+        _, adjoint = tools.cost_seismic(process.prepare_residual(predicted, 1), observed, fun=tools.CostFunction("l2"))
+        outputs.append({**{f"d {k}": v for k, v in predicted.items()}, **case.W.gradient(adjoint, False)})
+    assert reused.W._engine._graph_cache  # kept, not recorded again
+    for key in outputs[0]:
+        np.testing.assert_array_equal(outputs[0][key], outputs[1][key], err_msg=key)
+
+
+@pytest.mark.gpu
 def test_the_slots_of_a_batch_are_separated_by_a_row_of_margin(cuda_device, monkeypatch):
     # Step 3.9: the stencils of the last rows read one row past the field. With a single shot that row
     # is the margin after the buffer; in a batch, the row of margin after every slot, not the first row

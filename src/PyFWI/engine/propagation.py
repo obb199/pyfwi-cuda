@@ -117,13 +117,25 @@ def internal_source(source, nt, dt_scale):
 
     Used by
     -------
-    ``PropagationEngine.forward``, in the ``fixed`` mode.
+    ``PropagationEngine.forward``, in the ``fixed`` mode, in two parts (``recorded_source``, then
+    ``resampled_source``), so that it resamples only a wavelet that changed.
     """
+    return resampled_source(recorded_source(source, nt, dt_scale), nt, dt_scale)
+
+
+def recorded_source(source, nt, dt_scale):
+    """The recorded samples of the source that ``internal_source`` resamples, ``(samples, 5)`` float64.
+
+    Those that the internal steps 0 to ``nt - 1`` need: up to the last step plus the half-length of
+    the filter. Before sample 0 the source is zero (``resample_poly`` pads with zeros).
+    """
+    recorded = (nt - 1) // int(dt_scale) + SOURCE_FILTER_HALF_LENGTH + 2
+    return np.array([source(k) for k in range(recorded)], np.float64)
+
+
+def resampled_source(samples, nt, dt_scale):
+    """``internal_source`` from the samples of ``recorded_source``: float32, ``(nt, 5)``."""
     up = int(dt_scale)
-    # The recorded samples that the internal steps 0 to nt - 1 need: up to the last step plus the
-    # half-length of the filter. Before sample 0 the source is zero (resample_poly pads with zeros).
-    recorded = (nt - 1) // up + SOURCE_FILTER_HALF_LENGTH + 2
-    samples = np.array([source(k) for k in range(recorded)], np.float64)
     if up == 1:
         return samples[:nt].astype(np.float32)
     # Low-pass at the recorded Nyquist frequency, designed at the internal rate. resample_poly
@@ -365,8 +377,9 @@ class PropagationEngine:
         self.nt, self.nt_ext, self.dt_scale = nt, nt_ext, dt_scale
         #: True in the fixed numeric mode; ``steps_per_sample`` is ``dt_scale`` as an int.
         self.numerics, self.fixed, self.steps_per_sample = numerics, numerics == "fixed", int(dt_scale)
-        #: Fixed mode: the source of every internal step (``internal_source``), made by ``forward``.
-        self.source_steps = None
+        #: Fixed mode: the source of every internal step (``internal_source``), made by ``forward``
+        #: from the recorded samples ``_source_samples``, again only when they change (step 3.11).
+        self.source_steps = self._source_samples = None
         self.chp, self.nchp = chp, len(chp)
         self.dxr, self.srcx, self.srcz, self.src = dxr, srcx, srcz, source
         # Global size of every launch: one work item per grid point, absorbing boundary included.
@@ -420,7 +433,8 @@ class PropagationEngine:
             self.source_cell_b = self._table(np.zeros(self.batch, np.int32))
             self.source_steps_b = backend.allocate_empty(int(nt) * 4 * 4)
         #: Step 3.7: the native time loops replay CUDA graphs of several steps (backend ``capture``),
-        #: unless ``PYFWI_CUDA_GRAPHS=0`` or a ``show=True`` run observes every step.
+        #: unless ``PYFWI_CUDA_GRAPHS=0`` or a ``show=True`` run observes every step. The graphs are kept
+        #: from run to run while the buffers they use stay (``_set_buffer``, step 3.11).
         self.graphs = (self.native_injection and getattr(backend, "capture", None) is not None
                        and os.environ.get("PYFWI_CUDA_GRAPHS", "1") != "0")
         self._graph_cache = {}
@@ -498,10 +512,21 @@ class PropagationEngine:
         The allocation is ``[margin | the data of host | margin]``, the margins holding
         ``MARGIN_FILL``; ``self.<name>`` is the buffer of the data, which the kernels use, and
         ``self._allocations[name]`` the whole allocation (``margins_changed`` reads it). Replacing a
-        buffer releases its old allocation.
+        buffer releases its old allocation. With CUDA graphs (step 3.11), a buffer of the same size
+        keeps its allocation, filled exactly as a new one (margins included), so that the graphs
+        that use it stay valid; a new allocation empties the graph cache (``_replay``).
         """
+        host = np.ascontiguousarray(host)
+        old = self._allocations.get(name)
+        if self.graphs and old is not None and self.backend.nbytes(old) == host.nbytes + 2 * self.margin_bytes:
+            margin = self.margin_bytes // host.itemsize
+            whole = np.full(host.size + 2 * margin, MARGIN_FILL, host.dtype)
+            whole[margin:margin + host.size] = host.reshape(-1)
+            self.backend.to_device(old, whole)
+            return
         buffer, self._allocations[name] = self.backend.allocate(host, self.margin_bytes, MARGIN_FILL)
         setattr(self, name, buffer)
+        self._graph_cache = {}
 
     def _table(self, host):
         """A device copy of the int32 array ``host``, without margins (the receiver tables)."""
@@ -565,7 +590,10 @@ class PropagationEngine:
         """
         self._set_buffer("vdx_pml_b", vdx_pml)
         self._set_buffer("vdz_pml_b", vdz_pml)
-        self.undamped = undamped_rectangle(vdx_pml, vdz_pml)
+        undamped = undamped_rectangle(vdx_pml, vdz_pml)
+        if undamped != getattr(self, "undamped", None):
+            self._graph_cache = {}  # an argument of the graphs (_replay)
+        self.undamped = undamped
 
     def set_model(self, rho_inverse, mu, lam):
         """Device buffers of the model (1 / density and the Lame parameters), per forward run."""
@@ -724,13 +752,18 @@ class PropagationEngine:
         # The arguments that do not change during the time loop are set once (step 1.3).
         self._set_update_args(coeff)
         if self.fixed:
-            # Made at every forward modelling: the wavelet may have changed since the last one.
-            self.source_steps = internal_source(self.src, self.nt, self.dt_scale)
+            # The wavelet may have changed since the last forward modelling: its samples are read
+            # every time, and resampled when they changed (0.4 ms of host time on the small scenario,
+            # with the GPU idle, before step 3.11).
+            samples = recorded_source(self.src, self.nt, self.dt_scale)
+            if self._source_samples is None or not np.array_equal(samples, self._source_samples):
+                self._source_samples = samples
+                self.source_steps = resampled_source(samples, self.nt, self.dt_scale)
+                if self.native_injection:
+                    self.backend.to_device(self.source_steps_b, np.ascontiguousarray(self.source_steps[:, :4]))
         if self.native_injection:
-            self.backend.to_device(self.source_steps_b, np.ascontiguousarray(self.source_steps[:, :4]))
             self._set_native_injection_args()
             self.backend.set_args(self.knl.advance, self.step_b, np.int32(+1))
-            self._graph_cache = {}  # recorded again: the buffers of this run may be new
         for shots in self._batches(observe):
             self.slots, self._last_slot = len(shots), len(shots) - 1
             self.backend.call(self.knl.MakeAllZero, self._size(self.global_size), *self._field_buffers())
@@ -804,12 +837,16 @@ class PropagationEngine:
 
         A graph records the launches of ``count`` steps once (backend ``capture``) and replays them
         with one call (step 3.7); every step reads its time from the device, so one graph serves
-        every run of the same length. The graphs of a run are kept in ``_graph_cache`` by kind,
-        length and slots of the batch (step 3.9: a shorter last batch has launches of its own).
+        every run of the same length. The graphs are kept in ``_graph_cache`` by kind, length, slots
+        of the batch (step 3.9: a shorter last batch has launches of its own) and kernel set, from
+        run to run (step 3.11): recording one took 0.2 to 1.1 ms of host time, a few per run. A graph
+        keeps the arguments of its launches, so the cache is emptied when a buffer it may use is
+        replaced (``_set_buffer``, ``residual_to_device``) or the undamped rectangle changes
+        (``set_pml``); the other arguments are the same at every run of a kind.
         """
         while count > 0:
             length = min(count, MAX_GRAPH_STEPS)
-            key = (kind, length, self.slots)
+            key = (kind, length, self.slots, self.fused)
             graph = self._graph_cache.get(key)
             if graph is None:
                 graph = self.backend.capture(lambda n=length: [step() for _ in range(n)])
@@ -859,8 +896,27 @@ class PropagationEngine:
                     self._store_checkpoints(shots, stored[t])
                 if observe is not None:
                     observe(shots[0], t)  # the only shot of an observed batch (_batches)
-        for slot, s in enumerate(shots):
-            self.make_seismogram(s, slot)
+        self._read_seismograms(shots)
+
+    def _read_seismograms(self, shots):
+        """Read the seismograms of the batch ``shots`` into ``self.seismogram``: one read per component.
+
+        ``make_seismogram`` for every shot read each slot of each component apart, waiting after
+        each shot; the slots of a batch follow each other in the seismogram buffers, so one read of
+        the first ``len(shots)`` slots does (step 3.11: 20 reads of the small scenario, 0.6 ms with
+        the GPU idle between them, became 5).
+        """
+        count = len(shots)
+        buffers = (self.seismogramid_vx_b, self.seismogramid_vz_b, self.seismogramid_taux_b,
+                   self.seismogramid_tauz_b, self.seismogramid_tauxz_b)
+        if count < self.batch:  # only CUDA, which runs batches, has section
+            nbytes = count * int(self.nt_ext) * int(self.nr) * 4
+            buffers = [self.backend.section(buffer, 0, nbytes) for buffer in buffers]
+        host = {par: np.empty((count, self.nt_ext, self.nr), np.float32) for par in COMPONENTS}
+        events = [self.backend.to_host(host[par], buffer, blocking=False) for par, buffer in zip(COMPONENTS, buffers)]
+        self.backend.wait(events)
+        for par in COMPONENTS:
+            self.seismogram[par][:, :, shots[0]:shots[-1] + 1] = host[par].transpose(1, 2, 0)
 
     def _store_checkpoints(self, shots, chpc):
         """Store checkpoint ``chpc`` of every shot of the batch ``shots``, each from its slot: those kept on
@@ -1020,7 +1076,6 @@ class PropagationEngine:
 
         if self.native_injection:
             self.backend.set_args(self.knl.advance, self.step_b, np.int32(-1))
-            self._graph_cache = {}  # recorded again: the buffers of this run may be new
         for shots in self._batches(observe):
             self.slots, self._last_slot = len(shots), len(shots) - 1
             self.backend.call(self.knl.MakeAllZero, self._size(self.global_size), *self._field_buffers())
@@ -1153,6 +1208,7 @@ class PropagationEngine:
             nbytes = self.batch * shots[0].nbytes
             if self.res_shot_b.get(par) is None or self.backend.nbytes(self.res_shot_b[par]) != nbytes:
                 self.res_shot_b[par] = self.backend.allocate_empty(nbytes)
+                self._graph_cache = {}  # an argument of the graphs (_replay)
             target = self.res_shot_b[par]
             if count < self.batch:  # the last batch: the first slots of the buffer
                 target = self.backend.section(target, 0, shots.nbytes)

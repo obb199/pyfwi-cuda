@@ -895,6 +895,34 @@ Each optimisation is a separate commit, with a benchmark before and after, so th
 
 - **Goes in:** the default becomes `auto`. Whether OpenCL also switches to `fixed` by default in this version is decided and recorded at G3.
 - **Tests:** SEL of the new default; PKG; EXA; FWI; full DES; PRF; EST.
+- **Result, part 1 (`auto` default):** without `inpa['backend']` or `PYFWI_BACKEND`, PyFWI asks for
+  `auto`: CUDA when the OpenCL device that would be used is an NVIDIA GPU, or when there is no OpenCL
+  device at all, and CUDA can run; otherwise OpenCL, with the reason (`Selection.describe`: `cuda device
+  0 (auto, the default)`, or `opencl (auto, the default; CUDA cannot run: ...)`). CUDA cannot run without
+  CuPy, so an installation without a `cuda` extra keeps the OpenCL engine and the results of 0.1.10.
+  The test suite pins OpenCL for the tests that choose no backend (the golden masters are those of
+  0.1.10); SEL tests the default with simulated devices and, on the RTX, a propagator with no backend
+  asked runs CUDA `fixed` on the NVIDIA device and OpenCL `legacy` on POCL. `tools/benchmark.py` now
+  records what ran (backend, numeric mode, kernel set, batch).
+- **Result, part 2 (PRF):** `tools/timeline.py` runs a benchmark scenario under Nsight Systems (NVTX
+  ranges around one forward modelling and one gradient, every graph node traced) and reports the time
+  the GPU is busy and the idle gaps ([timeline report](reports/timeline-0.3.0.md)). The first timeline of
+  the small scenario showed 23 to 26 gaps of 10 us or more per forward modelling (2 to 3.5 ms of 25 ms),
+  all host work: the CUDA graphs recorded again at every run (the model and gradient buffers were new
+  allocations), the seismograms read shot by shot, the source resampled at every run. A buffer of the
+  same size now keeps its allocation (filled as a new one, margins included) and the graphs stay from
+  run to run; one read per component takes the seismograms of a whole batch; the source is resampled
+  only when its samples change. After: 7 to 9 such gaps, the GPU busy 86 % (median; 95 % in the
+  gradient) in the small scenario and 97 % / 99 % in the medium one; inside the time loops only the
+  sub-microsecond gaps between graph nodes remain, the rest is the preparation before the loops and the
+  reading of the results after them (the desktop, drawn by the same GPU, adds isolated pauses of about
+  1 ms). DES (same session): small forward 22.3 ms → 21.9 ms, the rest unchanged. Tests: a propagator
+  reused with another model first gives the bits of a new one (GPU); on the fake backend the third run
+  records no graph and gives the same bits, and a new buffer or another undamped rectangle empties the
+  cache; the source is resampled only when it changes; `busy_and_gaps` on hand-made intervals and the
+  whole tool on the tiny scenario. The bandwidth of the kernels is estimated from the timeline until the
+  Nsight Compute counters are open (owner action): 205 to 266 GB/s on the medium scenario, at least 57 to
+  74 % of the 360 GB/s of the RTX 3060, as fast as the plain copy of the checkpoints.
 
 ### Gate G3
 
