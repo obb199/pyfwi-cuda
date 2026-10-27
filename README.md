@@ -34,6 +34,8 @@ the user's code.
 - [CUDA against OpenCL on the project's graphics card](docs/cuda-migration/cuda-vs-opencl.md): how much
   faster CUDA is on the GeForce RTX 3060 of the project, why, and what it costs, for readers who know
   neither GPUs nor the code.
+- [Notebooks to see the difference yourself](example/cuda_vs_opencl/): five notebooks that run the same
+  calculations on both backends of your GPU: speed, results, a complete inversion, where the time goes, memory.
 - [User guide](docs/cuda-migration/user-guide.md): for users of PyFWI: which engine runs, the numeric
   modes and why their results differ, how close CUDA and OpenCL are, the optional features, and what to do
   when something goes wrong.
@@ -60,7 +62,7 @@ Next: the maintenance steps of the roadmap (documentation, merges of the origina
 | --- | --- |
 | `src/PyFWI/` | The PyFWI package (OpenCL kernels in `*.cl`) |
 | `src/PyFWI/engine/`, `src/PyFWI/backends/` | The time loops of the propagation, and the backends that run their kernels (OpenCL; CUDA in Phase 2) |
-| `example/` | The original examples (notebooks, run by the tests in a reduced size, and one script); `example/scripts/`: the examples of the fork |
+| `example/` | The original examples (notebooks, run by the tests in a reduced size, and one script); `example/scripts/`: the examples of the fork; `example/cuda_vs_opencl/`: notebooks that compare the two backends |
 | `test/` | Test suite (`pytest`); hardware-dependent tests skip themselves when the hardware is missing |
 | `tools/check_env.py` | Checks that an environment can run PyFWI and the CUDA tool chain |
 | `tools/check_install.py` | Checks an installed copy of the package (files, metadata, every module imports) |

@@ -21,6 +21,14 @@ how much and in which numeric mode.
   `fixed` mode; default against default 10.6× to 21×), why, and what it costs, for readers who know neither
   GPUs nor the code; `tools/cuda_vs_opencl.py` measures the session and draws the figures, and a test checks
   every number of the document against the stored results.
+- [Notebooks to see the difference yourself](example/cuda_vs_opencl/): five notebooks that run the same
+  calculations on both backends of your GPU, side by side on four engines (two backends × two numeric modes):
+  speed on three model sizes, results (rounding between the backends, real corrections between the modes), a
+  complete inversion, the time of one time step (the fixed cost of a step, the kernels, several sources at
+  once) and memory (where the checkpoints live, boundary saving, FP16). They share `comparison.py`, are stored
+  without outputs, and the test suite runs them in a reduced size on a GPU and checks the numbers they quote
+  against the stored results. The new notebooks are linted by `ruff check .`; the original ones stay excluded,
+  now one by one.
 
 ### Numerical changes
 

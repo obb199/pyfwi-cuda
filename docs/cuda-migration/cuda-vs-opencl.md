@@ -150,7 +150,9 @@ be shared between several NVIDIA cards, and PyTorch can hand its data to PyFWI o
 
 ## How to reproduce
 
-On a machine with an NVIDIA card and the development environment (`tools/setup_envs.sh dev`):
+To see the difference on your own card, run the notebooks of [`example/cuda_vs_opencl/`](../../example/cuda_vs_opencl/README.md):
+they run the same calculations on both backends, step by step, with figures. To repeat the measurements of this
+document, on a machine with an NVIDIA card and the development environment (`tools/setup_envs.sh dev`):
 
 ```bash
 ../envs/dev/bin/python tools/cuda_vs_opencl.py --measure   # the session (about 25 minutes), then the figures

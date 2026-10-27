@@ -96,7 +96,11 @@ target-version = "py310"
 extend-exclude = [
     "docs/conf.py",
     "example/fwi_example_surface.py",
-    "example/*.ipynb",
+    "example/fwi_example_crosswell.ipynb",
+    "example/fwi_example_surface.ipynb",
+    "example/gradient_example.ipynb",
+    "example/grad_pytorch.ipynb",
+    "example/tlfwi_example_crosswell.ipynb",
     "test/test_ricker.py",
     "src/PyFWI/acquisition.py",
     "src/PyFWI/fwi.py",
@@ -121,5 +125,6 @@ extend-exclude = [
 "src/PyFWI/**/__init__.py" = ["N999"]
 
 [tool.ruff.lint.isort]
-# Modules of this repository, imported from the tests (test/ is on sys.path under pytest).
-known-first-party = ["PyFWI", "tools", "helpers", "oob_guard", "conftest", "fake_backend", "golden_cases", "golden_runner", "golden_store"]
+# Modules of this repository, imported from the tests (test/ is on sys.path under pytest) and, for
+# comparison, from the notebooks of example/cuda_vs_opencl/ (which run from that folder).
+known-first-party = ["PyFWI", "tools", "comparison", "helpers", "oob_guard", "conftest", "fake_backend", "golden_cases", "golden_runner", "golden_store"]
