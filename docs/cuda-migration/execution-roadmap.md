@@ -38,7 +38,7 @@ This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into 
 | 3.11 | `auto` default and release 0.3.0 | **done** · **[G3](gates/G3.md) approved** |
 | 4.1–4.6 | Cost function on the GPU, boundary saving, FP16, multi-GPU, DLPack, geophysical validation | Phase 4 · **done** (the geophysical review is the owner's) |
 | 4.7 | Release 0.4.0 | **done** · **[G4](gates/G4.md) approved**, the geophysical review open |
-| 5.x | Final documentation, upstream, publication and conditional optimisations | Maintenance |
+| 5.x | Final documentation, upstream, publication and conditional optimisations | Maintenance · 5.1 and 5.2 **done**; 5.3, 5.4 the owner's; 5.5 waits for Nsight Compute |
 | 6 | Final document: what CUDA gains over OpenCL on the project's GPU, didactic | **The last step** |
 
 Estimated duration in the analysis: about 20 weeks for one person (Phase 0 ≈ 3, Phase 1 ≈ 3, Phase 2 ≈ 4, Phase 3 ≈ 6, Phase 4 ≈ 4), or about 14 with two people, because Phase 4 can run in parallel with Phase 3 after G2.
@@ -1163,6 +1163,15 @@ PKG, EXA, FWI, DES, PRF, EST and a CHANGELOG with the tolerances of every opt-in
   frequency; every replacement must match, so a changed notebook is noticed), on both engines; the CPU CI
   runs them on POCL (`grad_pytorch.ipynb` needs PyTorch, which it does not install). 53 s on the RTX for the
   ten runs.
+- **5.2:** `upstream` fetched on Oct 27, 2026: its `main` and `dev` branches are still at `1434a16` (Nov 4,
+  2024), the base of the fork; nothing to merge. `check_env.py` passes. To repeat at every release:
+  `git fetch upstream && git rev-list --count HEAD..upstream/main`; after a merge, the full suite.
+- **5.3 and 5.4:** decisions of the owner (pending action 6); nothing sent upstream, the repository private.
+- **5.5:** its condition cannot be checked: Nsight Compute still cannot read the GPU counters
+  (`RmProfilingAdminOnly: 1`, pending action 1). The timeline estimates 205 to 266 GB/s for the kernels of
+  the medium scenario, 57 to 74 % of the 360 GB/s of the RTX 3060 ([timeline 0.3.0](reports/timeline-0.3.0.md)),
+  which suggests kernels bound by memory bandwidth, so tiling or temporal blocking may pay; by the rule of this
+  step they wait for the measurement.
 
 ## 6. Final document: CUDA against OpenCL on the project's GPU
 
