@@ -41,6 +41,9 @@ def engine(run):
     batches = {s.get("engine", {}).get("batch", 1) for s in run["scenarios"].values()}
     if batches != {1}:
         text += ", batches of " + "/".join(str(b) for b in sorted(batches))
+    for feature, name in (("boundary_saving", "boundary saving"), ("fp16", "FP16")):  # Phase 4, opt-in
+        if described.get(feature):
+            text += f", {name}"
     return text
 
 
@@ -63,10 +66,12 @@ def render(runs):
         lines.append(f"| {run['label']} | {m['opencl_device']} (driver {m['driver']}) | {m['pyfwi']} | "
                      f"{engine(run)} | {m['pyopencl']} | {m['numpy']} | {run['date']} |")
     note = ("Times are medians of the measured runs, scaled to the number of shots of the scenario. "
-            "Speed-up is relative to the first run.")
+            "Speed-up is relative to the first run. GPU memory: the peak of one forward modelling and one "
+            "gradient of the shots run (not scaled), CUDA backend only (recorded since 0.4.0).")
     header = ("| Scenario | Run | Forward (s) | Gradient (s) | Speed-up fwd / grad | Host ms per step fwd / grad | "
-              "Launches per step fwd / grad | Blocking copies per step | CV fwd / grad | GPU °C before / after |")
-    lines += ["", note, "", header, "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+              "Launches per step fwd / grad | Blocking copies per step | CV fwd / grad | GPU °C before / after | "
+              "GPU memory (MB) |")
+    lines += ["", note, "", header, "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     reference = runs[0]["scenarios"]
     order = {name: i for i, name in enumerate(("tiny", "small", "medium", "large"))}  # by size, unknown names last
     scenarios = sorted((s for s in reference if all(s in r["scenarios"] for r in runs)),
@@ -78,12 +83,14 @@ def render(runs):
             fwd, grad = r["forward_s"]["median"], r["gradient_s"]["median"]
             speed = f"{ref['forward_s']['median'] / fwd:.2f} / {ref['gradient_s']['median'] / grad:.2f}"
             temps = f"{r['gpu_before'].get('temperature_c', '?')} / {r['gpu_after'].get('temperature_c', '?')}"
+            memory = f"{r['device_peak_mb']:.0f}" if r.get("device_peak_mb") else "-"
             scale = f" (scaled x{r['scale']:g} to {r['scaled_to_shots']} shots)" if r["scale"] != 1 else ""
             lines.append(
                 f"| {scenario}{scale} | {run['label']} | {fwd:.2f} | {grad:.2f} | {speed} | "
                 f"{r['host_ms_per_step']['forward']:.3f} / {r['host_ms_per_step']['gradient']:.3f} | "
                 f"{r['per_step']['forward_launches']:.2f} / {r['per_step']['gradient_launches']:.2f} | "
-                f"{r['per_step']['blocking_copies']:.2f} | {r['cv_forward']:.3f} / {r['cv_gradient']:.3f} | {temps} |")
+                f"{r['per_step']['blocking_copies']:.2f} | {r['cv_forward']:.3f} / {r['cv_gradient']:.3f} | {temps} | "
+                f"{memory} |")
     return "\n".join(lines) + "\n"
 
 

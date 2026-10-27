@@ -83,9 +83,24 @@ def test_cli_writes_a_complete_result_file(opencl_platform, tmp_path):
     # What ran (step 3.11): here OpenCL, which the suite pins (test/conftest.py).
     if not running_reference():
         assert tiny["engine"] == {"backend": "opencl (opencl asked by PYFWI_BACKEND)", "numerics": "legacy",
-                                  "cuda_kernels": None, "batch": 1}
+                                  "cuda_kernels": None, "batch": 1, "boundary_saving": False, "fp16": False}
     else:
         assert tiny["engine"]["backend"] == "opencl (PyFWI 0.1.10)"
+    assert tiny["device_peak_mb"] is None  # OpenCL memory is not in CuPy's pool
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(running_reference(), reason="the published 0.1.10 has no CUDA backend")
+def test_the_peak_device_memory_and_the_opt_in_features(cuda_device, monkeypatch):
+    # Since 0.4.0 the result file says which opt-in features ran and the peak device memory of the CUDA
+    # backend: the FP16 mode stores the fields and checkpoints in half the bytes, so its peak is lower.
+    from tools.benchmark import run_scenario
+    monkeypatch.setenv("PYFWI_BACKEND", "cuda:strict")
+    single = run_scenario("tiny", 1, guard=False)
+    monkeypatch.setenv("PYFWI_FP16", "1")
+    half = run_scenario("tiny", 1, guard=False)
+    assert single["engine"]["fp16"] is False and half["engine"]["fp16"] is True
+    assert 0 < half["device_peak_mb"] < single["device_peak_mb"]
 
 
 def _fake_run(label, forward, gradient):
@@ -115,7 +130,19 @@ def test_report_names_what_ran():
                                                                            "batch": 2}}
     text = render([_fake_run("old", 2.0, 2.0), run])
     assert "| old | " in text and " | not recorded | " in text  # files written before step 3.11
-    assert "cuda device 0 (auto, the default), fixed, native kernels, batches of 2/4" in text
+    assert "cuda device 0 (auto, the default), fixed, native kernels, batches of 2/4 |" in text
+    for scenario in run["scenarios"].values():  # the opt-in features of Phase 4 (recorded since 0.4.0)
+        scenario["engine"] = {**scenario["engine"], "boundary_saving": True, "fp16": True}
+    assert "native kernels, batches of 2/4, boundary saving, FP16 |" in render([run])
+
+
+def test_report_shows_the_peak_device_memory():
+    from tools.benchmark_report import render
+    run = _fake_run("cuda", 1.0, 1.0)
+    run["scenarios"]["small"]["device_peak_mb"] = 81.6
+    text = render([_fake_run("opencl", 2.0, 2.0), run])
+    assert text.splitlines()[-2].endswith("| - |")  # OpenCL, and files written before 0.4.0
+    assert text.splitlines()[-1].endswith("| 82 |")
 
 
 def test_report_orders_scenarios_by_size_and_states_the_scaling():

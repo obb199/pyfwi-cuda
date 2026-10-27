@@ -5,8 +5,9 @@ What it measures
 For each scenario: the wall-clock time of one forward modelling and of one gradient
 (median of ``--repeats`` runs after one warm-up run), the time per internal time step,
 the number of OpenCL kernel launches and of host<->device copies (blocking or not) per
-time step, what ran (backend, numeric mode, CUDA kernel set and shots per batch:
-``engine_description``), and the state of the GPU (temperature, SM clock, power) before and
+time step, what ran (backend, numeric mode, CUDA kernel set, shots per batch and the opt-in
+features of Phase 4: ``engine_description``), the peak device memory of the CUDA backend
+(``device_peak``), and the state of the GPU (temperature, SM clock, power) before and
 after, to spot thermal throttling. GeForce cards change their clock with temperature, hence
 the warm-up and the median.
 
@@ -129,6 +130,27 @@ def gpu_state():
         return {}
 
 
+@contextlib.contextmanager
+def device_peak():
+    """The peak device memory of the CUDA backend during the block: ``{"device_peak_mb": MB}`` at exit.
+
+    Every device buffer of the CUDA backend comes from CuPy's memory pool, which keeps the blocks it
+    has allocated for reuse: emptied of its unused blocks first, the pool holds at the end of the block
+    the most memory that was in use at once (to the rounding of its blocks). The dict stays empty
+    without CuPy or without a CUDA device (OpenCL runs give 0 MB: their memory is not in the pool).
+    """
+    result = {}
+    try:
+        import cupy
+        pool = cupy.get_default_memory_pool()
+        pool.free_all_blocks()  # the blocks of earlier runs that nothing uses any more
+    except Exception:  # noqa: BLE001 (no CuPy, or no CUDA device: nothing to measure)
+        pool = None
+    yield result
+    if pool is not None:
+        result["device_peak_mb"] = pool.total_bytes() / 2 ** 20
+
+
 def build(scenario):
     """PyFWI inputs of a scenario: ``(propagator, true model, starting model)``."""
     import PyFWI.acquisition as acq
@@ -184,21 +206,27 @@ def engine_description(W):
     -------
     dict
         ``backend`` (``Selection.describe`` of ``PyFWI.backends.selection``), ``numerics``,
-        ``cuda_kernels`` (``"native"``, ``"parity"`` or None on OpenCL) and ``batch`` (shots run at
-        once, step 3.9). PyFWI 0.1.10 has none of these: OpenCL, the legacy arithmetic, one shot at a
-        time.
+        ``cuda_kernels`` (``"native"``, ``"parity"`` or None on OpenCL), ``batch`` (shots run at
+        once, step 3.9), ``boundary_saving`` and ``fp16`` (the opt-in features of steps 4.2 and 4.3).
+        PyFWI 0.1.10 has none of these: OpenCL, the legacy arithmetic, one shot at a time.
     """
     attributes = vars(W)  # not getattr: WavePropagator forwards unknown names to its engine
     selection, engine = attributes.get("backend_selection"), attributes.get("_engine")
     return {"backend": selection.describe() if selection is not None else "opencl (PyFWI 0.1.10)",
             "numerics": attributes.get("numerics", "legacy"), "cuda_kernels": attributes.get("cuda_kernels"),
-            "batch": getattr(engine, "batch", 1)}
+            "batch": getattr(engine, "batch", 1), "boundary_saving": bool(attributes.get("boundary_saving")),
+            "fp16": bool(attributes.get("fp16"))}
 
 
 def run_scenario(scenario, repeats, guard=True):
-    """Warm-up run, then ``repeats`` measured runs; returns the scenario's results."""
+    """Warm-up run, then ``repeats`` measured runs; returns the scenario's results.
+
+    The peak device memory is that of the warm-up run (the measured runs keep the previous propagator
+    alive while the next one runs); it is for the shots run, not scaled.
+    """
     s = SCENARIOS[scenario]
-    run_once(scenario, guard)  # warm-up: compilation, caches, GPU clocks
+    with device_peak() as memory:
+        run_once(scenario, guard)  # warm-up: compilation, caches, GPU clocks
     before = gpu_state()
     forwards, gradients = [], []
     for _ in range(repeats):
@@ -221,6 +249,7 @@ def run_scenario(scenario, repeats, guard=True):
                      "blocking_copies": (fc["blocking_copies"] + gc["blocking_copies"]) / steps},
         "launches_by_kernel": {k[7:]: v for k, v in (fc + gc).items() if k.startswith("launch:")},
         "engine": engine_description(W),
+        "device_peak_mb": memory.get("device_peak_mb") if vars(W).get("cuda_kernels") else None,
         "gpu_before": before, "gpu_after": after, "guard_bands": guard,
     }
 
