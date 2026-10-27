@@ -1151,6 +1151,19 @@ PKG, EXA, FWI, DES, PRF, EST and a CHANGELOG with the tolerances of every opt-in
 | 5.4 | Decide publication: public repository, name on PyPI | Owner's decision; before that, full PKG and licence review (CuPy MIT and cuda.core Apache-2.0, compatible with GPLv3) |
 | 5.5 | Conditional optimisations: tiling, temporal blocking, whole loop in a graph with conditional nodes | Only if Nsight Compute shows kernels bound by memory bandwidth; same protocol as Phase 3 |
 
+**Results of the wrap-up:**
+
+- **5.1:** the [user guide](user-guide.md), linked from the README, for users of PyFWI: which engine runs and
+  how to choose it, the two numeric modes (each bug of 0.1.10 that `fixed` corrects, with its effect), how
+  close CUDA and OpenCL are (the tolerances of the parity report and of complete inversions), the optional
+  features and what to do when something goes wrong; the installation stays in the README. The five
+  notebooks of `example/` (the examples of the original PyFWI) run unchanged; each now opens with a note on
+  how it runs with the fork (engine, numeric modes, a link to the guide). DOC: `test/test_notebooks.py` runs
+  every notebook as a script in a new process, in a reduced size (recordings of 0.3 s, one iteration per
+  frequency; every replacement must match, so a changed notebook is noticed), on both engines; the CPU CI
+  runs them on POCL (`grad_pytorch.ipynb` needs PyTorch, which it does not install). 53 s on the RTX for the
+  ten runs.
+
 ## 6. Final document: CUDA against OpenCL on the project's GPU
 
 The last step of the project, after everything above: a didactic document, easy to read for someone who

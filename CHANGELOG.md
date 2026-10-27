@@ -9,6 +9,14 @@ how much and in which numeric mode.
 
 ## [Unreleased]
 
+### Added
+
+- A [user guide](docs/cuda-migration/user-guide.md) for users of PyFWI: choosing the engine, the numeric modes
+  and the bugs of 0.1.10 that `fixed` corrects, how close CUDA and OpenCL are, the optional features,
+  troubleshooting (step 5.1).
+- The notebooks of `example/` open with a note on how they run with the fork, and the test suite runs them in
+  a reduced size on both engines (`test/test_notebooks.py`; on POCL in the CPU CI).
+
 ### Numerical changes
 
 - None so far.

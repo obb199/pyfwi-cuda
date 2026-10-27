@@ -31,6 +31,9 @@ the user's code.
   0.1.10, why CUDA (through CuPy) helps, the target architecture and the risks.
 - [Execution and verification roadmap](docs/cuda-migration/execution-roadmap.md): every step from
   the current state to version 0.4, with the tests and checks of each step.
+- [User guide](docs/cuda-migration/user-guide.md): for users of PyFWI: which engine runs, the numeric
+  modes and why their results differ, how close CUDA and OpenCL are, the optional features, and what to do
+  when something goes wrong.
 - [Overview of release 0.3.0](docs/cuda-migration/overview.md): what the fork changed and what it
   gained so far, explained with figures.
 
@@ -54,7 +57,7 @@ Next: the maintenance steps of the roadmap (documentation, merges of the origina
 | --- | --- |
 | `src/PyFWI/` | The PyFWI package (OpenCL kernels in `*.cl`) |
 | `src/PyFWI/engine/`, `src/PyFWI/backends/` | The time loops of the propagation, and the backends that run their kernels (OpenCL; CUDA in Phase 2) |
-| `example/` | The original examples (notebooks and one script) |
+| `example/` | The original examples (notebooks, run by the tests in a reduced size, and one script); `example/scripts/`: the examples of the fork |
 | `test/` | Test suite (`pytest`); hardware-dependent tests skip themselves when the hardware is missing |
 | `tools/check_env.py` | Checks that an environment can run PyFWI and the CUDA tool chain |
 | `tools/check_install.py` | Checks an installed copy of the package (files, metadata, every module imports) |
