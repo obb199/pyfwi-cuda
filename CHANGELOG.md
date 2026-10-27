@@ -9,6 +9,30 @@ how much and in which numeric mode.
 
 ## [Unreleased]
 
+### Numerical changes
+
+- None so far.
+
+## [0.4.0] - 2026-10-27
+
+Opt-in features (Phase 4 of the roadmap, gate [G4](docs/cuda-migration/gates/G4.md)): every one is off by
+default, so the defaults and the results of 0.3.0 do not change; each has a tolerance validated by a complete
+FWI (the FP16 mode excepted: see below). Measured in one session ([benchmark](docs/cuda-migration/reports/benchmark-0.4.0.md)):
+boundary saving takes 4.2 to 10.7 times less GPU memory, FP16 half of it and runs 1.25 to 1.36 times faster,
+both together 7.6 to 20 times less memory; the default is 77× / 32× (small), 29.5× / 14.4× (medium) and
+17.0× / 11.9× (large) faster than 0.1.10, as in 0.3.0. Complete inversions on both backends for the review
+of a geophysicist: [geophysical validation](docs/cuda-migration/reports/geophysical-validation-0.4.0.dev0.md).
+
+### Tolerances of the opt-in features
+
+| Feature | How to turn it on | Tolerance (measured) | Complete FWI |
+| --- | --- | --- | --- |
+| Cost function, filters and smoothing on the GPU | `PYFWI_CUDA_COST=1` (needs CuPy) | Cost and residual within 1e-6 of the host; the filters in float32 (1.1e-7) | Model and misfits within 1e-4 of the host |
+| Boundary saving | `PYFWI_BOUNDARY_SAVING=1` (CUDA, `fixed` mode) | Gradient within 1e-4 of a checkpoint at every step (4.8e-7 to 1.2e-6); seismograms identical; 3,500 steps without drift | Model of the exact rebuild within 1e-4 |
+| FP16 fields | `PYFWI_FP16=1` (CUDA, `fixed` mode) | Seismograms at least 40 dB of signal-to-noise ratio against float32 (44 to 57 dB), gradients at least 30 dB (33 to 46 dB), also with extreme amplitudes | **Not met**: the inversion does not converge (the rounding makes the misfit too rough for the line search); for modelling and gradients only |
+| Shots in several processes | `PYFWI_CUDA_DEVICES=0,1` (CUDA) | The bits of one process | The bits of one process |
+| CUDA tensors in `torchfwi` | tensors on a CUDA device (`envs/torch`) | The bits of CPU tensors (the loss within 1e-6); the gradient within 2 % of finite differences (0.0 to 0.5 %) | The gradient is that of CPU tensors bit for bit |
+
 ### Added
 
 - `PYFWI_CUDA_COST=1` (step 4.1, off by default): the L2 cost function, its multi-scale low-pass filters
@@ -44,6 +68,9 @@ how much and in which numeric mode.
   (`docs/cuda-migration/reports/geophysical-validation-0.4.0.dev0.md`). CUDA and OpenCL in the same mode
   give the same estimates within 1.7 % of what the inversion recovers (the metrics within 0.008).
 
+- `tools/benchmark.py` records the opt-in features that ran and the peak GPU memory of the CUDA backend;
+  `tools/benchmark_report.py` shows them.
+
 ### Changed
 
 - The cost function no longer deep-copies its inputs three times (same values).
@@ -51,8 +78,7 @@ how much and in which numeric mode.
 
 ### Numerical changes
 
-- None so far (`PYFWI_CUDA_COST=1` changes the results by float32 rounding of the filters, 1e-7, on request
-  only).
+- None by default. On request, each opt-in feature changes the results within its tolerance (table above).
 
 ## [0.3.0] - 2026-10-26
 

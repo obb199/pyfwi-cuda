@@ -257,3 +257,33 @@ def test_release_0_3_0_meets_the_targets_of_gate_g3():
             assert fixed[name][kind]["median"] < previous[name][kind]["median"], (name, kind)
             assert legacy[name][kind]["median"] < opencl[name][kind]["median"], (name, kind)
     assert {name: fixed[name]["engine"]["batch"] for name in fixed} == {"small": 4, "medium": 2, "large": 1}
+
+
+def test_release_0_4_0_measures_the_gains_of_the_opt_in_features():
+    # Gate G4 (docs/cuda-migration/reports/benchmark-0.4.0.md): the default keeps the targets of G3 and is
+    # not slower than the default of 0.3.0 by more than 5 % (no regression; it is 4 to 10 % faster, the GPU
+    # state); boundary saving takes at most a quarter of the peak GPU memory of the checkpoints (measured
+    # 4.2x to 10.7x less), FP16 about half (50 to 51 %) and is faster in the medium and large scenarios
+    # (1.30x to 1.36x). Recorded results.
+    def runs(*labels):
+        return [_stored("release-0.4.0", label)["scenarios"] for label in labels]
+
+    ref, fixed, boundary, half, both = runs("ref-0.1.10-pyopencl-2022", "fork-0.4.0-cuda-fixed",
+                                            "fork-0.4.0-cuda-boundary-saving", "fork-0.4.0-cuda-fp16",
+                                            "fork-0.4.0-cuda-boundary-saving-fp16")
+    previous = _stored("release-0.3.0", "fork-0.3.0-cuda-fixed")["scenarios"]
+    targets = {"small": 20, "medium": 10, "large": 3}
+    for name, target in targets.items():
+        engines = [run[name]["engine"] for run in (fixed, boundary, half, both)]
+        assert [(e["boundary_saving"], e["fp16"]) for e in engines] == [(False, False), (True, False), (False, True),
+                                                                          (True, True)]
+        memory = {key: run[name]["device_peak_mb"] for key, run in zip(("fixed", "boundary", "half", "both"),
+                                                                        (fixed, boundary, half, both))}
+        assert memory["boundary"] < 0.25 * memory["fixed"], name
+        assert memory["half"] == pytest.approx(0.5 * memory["fixed"], rel=0.05), name
+        assert memory["both"] < memory["boundary"] and memory["both"] < memory["half"], name
+        for kind in ("forward_s", "gradient_s"):
+            assert ref[name][kind]["median"] / fixed[name][kind]["median"] > target, (name, kind)
+            assert fixed[name][kind]["median"] < 1.05 * previous[name][kind]["median"], (name, kind)
+            if name != "small":  # the small scenario is limited by the host
+                assert half[name][kind]["median"] < 0.8 * fixed[name][kind]["median"], (name, kind)

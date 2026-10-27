@@ -36,8 +36,8 @@ This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into 
 | 2.7 | Parity report and release 0.2.0 | **done** · **[G2](gates/G2.md) approved** |
 | 3.1–3.10 | CUDA optimisations, one per commit, with a benchmark before and after | Phase 3 · **done** |
 | 3.11 | `auto` default and release 0.3.0 | **done** · **[G3](gates/G3.md) approved** |
-| 4.1–4.6 | Cost function on the GPU, boundary saving, FP16, multi-GPU, DLPack, geophysical validation | Phase 4 |
-| 4.7 | Release 0.4.0 | **G4** |
+| 4.1–4.6 | Cost function on the GPU, boundary saving, FP16, multi-GPU, DLPack, geophysical validation | Phase 4 · **done** (the geophysical review is the owner's) |
+| 4.7 | Release 0.4.0 | **done** · **[G4](gates/G4.md) approved**, the geophysical review open |
 | 5.x | Final documentation, upstream, publication and conditional optimisations | Maintenance |
 | 6 | Final document: what CUDA gains over OpenCL on the project's GPU, didactic | **The last step** |
 
@@ -1115,12 +1115,31 @@ Everything here is optional and off by default. Each feature has its own toleran
 
 PKG, EXA, FWI, DES, PRF, EST and a CHANGELOG with the tolerances of every opt-in feature.
 
+- **Result:** version 0.4.0. `tools/benchmark.py` now records the opt-in features that ran and the peak GPU
+  memory of the CUDA backend (CuPy's memory pool, emptied before the warm-up run). Full DES in one session
+  ([benchmark report](reports/benchmark-0.4.0.md), `bench/release-0.4.0/`, 0.1.10 measured again beside it):
+  the default is 77× / 32× (small), 29.5× / 14.4× (medium) and 17.0× / 11.9× (large) faster than 0.1.10, 4 to
+  10 % faster than 0.3.0 (the GPU state: 0.1.10 also ran up to 10 % faster); boundary saving 4.2× (small),
+  10.7× (medium) and 4.2× (large) less GPU memory, the gradient 1.5 to 18 % slower; FP16 50 to 51 % of the
+  memory, 1.25× to 1.36× faster; both 7.6× to 20× less memory. [Parity report](reports/parity-0.4.0.md):
+  the differences of 0.3.0, case by case (Phase 4 left the default path as it was). PRF
+  ([timeline](reports/timeline-0.4.0.md)): the GPU as busy as in 0.3.0 (small 88.8 % / 95.5 %, median of 5
+  runs; medium 97.7 % / 99.0 %), and as busy with boundary saving or FP16. EST: the real medium scenario (8
+  shots) runs in every configuration with finite gradients: by default 4 of the 8 shots keep their
+  checkpoints on the GPU (8.7 GB), forward 2.0 s, gradient 4.1 s; with FP16 all 8 (forward 1.0 s, gradient
+  2.75 s); with boundary saving 1.5 GB (forward 1.3 s, gradient 3.8 s). PKG, EXA and FWI: the suites. The
+  CHANGELOG has the table of the tolerances; a test checks the recorded results of the release.
+
 ### Gate G4
 
-- [ ] Every opt-in feature with a documented tolerance validated by a complete FWI.
-- [ ] Defaults unchanged (API and EXA tests pass without any environment variable).
-- [ ] Memory and time gains measured.
-- [ ] Geophysical review recorded.
+**Approved with the geophysical review open** on Oct 27, 2026: [G4.md](gates/G4.md).
+
+- [x] Every opt-in feature with a documented tolerance validated by a complete FWI. (FP16: not met, documented
+  as a mode for modelling and gradients; its FWI test is a strict `xfail`.)
+- [x] Defaults unchanged (API and EXA tests pass without any environment variable).
+- [x] Memory and time gains measured.
+- [ ] Geophysical review recorded. (The report is ready: [geophysical validation](reports/geophysical-validation-0.4.0.dev0.md);
+  the review is the owner's action.)
 
 ## Wrap-up and maintenance
 

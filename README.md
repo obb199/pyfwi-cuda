@@ -34,14 +34,19 @@ the user's code.
 - [Overview of release 0.3.0](docs/cuda-migration/overview.md): what the fork changed and what it
   gained so far, explained with figures.
 
-**Status:** release 0.3.0, the end of Phase 3 ([gate G3](docs/cuda-migration/gates/G3.md)): on an NVIDIA
+**Status:** release 0.4.0, the end of Phase 4 ([gate G4](docs/cuda-migration/gates/G4.md)). On an NVIDIA
 GPU the CUDA backend runs kernels written for CUDA, in the `fixed` numeric mode that corrects the numerical
-bugs of 0.1.10, 18 to 71 times faster than 0.1.10 for the forward modelling and 12 to 30 times for the
-gradient ([benchmark](docs/cuda-migration/reports/benchmark-0.3.0.md)), within recorded tolerances of
-OpenCL ([parity report](docs/cuda-migration/reports/parity-0.3.0.md)). The default backend is `auto`: CUDA
-when CuPy is installed (a `cuda` extra) and the GPU is NVIDIA; otherwise the OpenCL engine, in the `legacy`
-mode, with exactly the results of 0.1.10 (the golden masters in `test/golden/` check it). Every change is
-listed in [CHANGELOG.md](CHANGELOG.md). Next: Phase 4, opt-in features.
+bugs of 0.1.10, 17 to 77 times faster than 0.1.10 for the forward modelling and 12 to 32 times for the
+gradient ([benchmark](docs/cuda-migration/reports/benchmark-0.4.0.md)), within recorded tolerances of
+OpenCL ([parity report](docs/cuda-migration/reports/parity-0.4.0.md)); complete inversions give the same
+estimates on both backends ([geophysical validation](docs/cuda-migration/reports/geophysical-validation-0.4.0.dev0.md),
+awaiting the review of a geophysicist). The default backend is `auto`: CUDA when CuPy is installed (a `cuda`
+extra) and the GPU is NVIDIA; otherwise the OpenCL engine, in the `legacy` mode, with exactly the results of
+0.1.10 (the golden masters in `test/golden/` check it). Release 0.4.0 adds opt-in features, all off by default
+(see [Tuning](#tuning-the-cuda-backend)): the cost function on the GPU, boundary saving (4 to 11 times less GPU memory), FP16
+fields (half the memory; for modelling and gradients, not inversions), the shots in several processes and CUDA
+tensors in `PyFWI.torchfwi`; their tolerances are in [CHANGELOG.md](CHANGELOG.md), which lists every change.
+Next: the maintenance steps of the roadmap (documentation, merges of the original repository).
 
 ## Repository layout
 
@@ -55,7 +60,7 @@ listed in [CHANGELOG.md](CHANGELOG.md). Next: Phase 4, opt-in features.
 | `tools/check_install.py` | Checks an installed copy of the package (files, metadata, every module imports) |
 | `tools/setup_envs.sh` | Re-creates the reference and development environments |
 | `requirements/` | Pinned package versions of each environment |
-| `docs/cuda-migration/` | Analysis, roadmap and, later, gate reports |
+| `docs/cuda-migration/` | Analysis, roadmap, overview, gate decisions (`gates/`) and reports (`reports/`) |
 
 ## Development setup
 
