@@ -106,6 +106,20 @@ def test_fp16_with_boundary_saving(cuda_device, monkeypatch):
 
 
 @pytest.mark.xfail(strict=True, reason=(
+    "a limit of half precision, measured: the seismograms of FP16 carry a rounding noise about 40 dB below them, "
+    "which enters the residual; when the residual itself is weak, as here (a smooth starting model whose data "
+    "differ little from the observed ones on a 150 x 150 model), the noise is a large part of it and the gradient "
+    "follows: 10 to 14 dB against float32, against 36 to 40 dB for the 40 x 40 case of the same geometry; on a "
+    "300 x 300 model with 0.6 s of recording, where the waves barely reach the inclusion, below 0 dB"))
+def test_the_gradient_of_a_larger_model(cuda_device, monkeypatch):
+    # The tolerance of the gradients (GRADIENT_SNR, from the 40 x 40 CASES) on a larger model: it does not hold,
+    # see the reason of the xfail (found by the notebook example/cuda_vs_opencl/5_memory.ipynb).
+    ((d32, g32), _), ((d16, g16), _) = _runs(monkeypatch, {"sdo": 4, "ns": 2, "nz": 150, "nx": 150, "t": 0.6})
+    assert min(snr(d32[key], d16[key]) for key in d32 if np.any(d32[key])) >= SEISMOGRAM_SNR  # this one holds
+    assert min(snr(g32[key], g16[key]) for key in g32) >= GRADIENT_SNR
+
+
+@pytest.mark.xfail(strict=True, reason=(
     "a limit of half precision, measured: the rounding of every update leaves an error about 60 dB below the "
     "peak of the fields, which the late, attenuated part of the recordings falls under, and which changes "
     "chaotically with the model, so the misfit is rough (a model change of 0.002 m/s moved it by 6 %) and the "

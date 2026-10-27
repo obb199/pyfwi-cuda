@@ -30,6 +30,17 @@ how much and in which numeric mode.
   against the stored results. The new notebooks are linted by `ruff check .`; the original ones stay excluded,
   now one by one.
 
+### Fixed
+
+- The documented accuracy of the FP16 mode (release 0.4.0): its tolerances were measured on 40 × 40 test
+  models, where they hold (gradients 33 to 46 dB from float32). Notebook
+  `example/cuda_vs_opencl/5_memory.ipynb` found that they do not hold on larger models: the seismograms of
+  FP16 carry a rounding noise about 40 dB below them, which enters the residual, and when the residual is
+  weak the gradient follows the noise (10 to 14 dB on a 150 × 150 model with a smooth starting model; below
+  0 dB on a 300 × 300 model whose waves barely reach the inclusion). The README and the user guide now say
+  that FP16 is for looking at waves; `test/test_fp16.py` records the case as a strict expected failure.
+  Nothing changes in the code.
+
 ### Numerical changes
 
 - None so far.

@@ -112,7 +112,7 @@ Off by default; each is turned on by an environment variable and documented with
 | --- | --- | --- | --- |
 | Cost function and filters on the GPU | `PYFWI_CUDA_COST=1` | An inversion about 30 % faster on small models | Results within 1e-6 |
 | Boundary saving | `PYFWI_BOUNDARY_SAVING=1` | 4 to 11 times less GPU memory, faster when the checkpoints did not fit | A gradient up to 18 % slower; CUDA, `fixed` mode only |
-| FP16 fields | `PYFWI_FP16=1` | Half the memory, up to 1.36 times faster | Seismograms at least 44 dB from float32; **not for inversions**, which do not converge; CUDA, `fixed` mode only |
+| FP16 fields | `PYFWI_FP16=1` | Half the memory, up to 1.36 times faster | Seismograms about 40 dB from float32; gradients far off when the residual is weak (10 to 14 dB on a 150 × 150 model); **not for inversions**, which do not converge; CUDA, `fixed` mode only |
 | Shots in several processes | `PYFWI_CUDA_DEVICES=0,1` | One process per GPU | Nothing measurable with one GPU; same results |
 | CUDA tensors in `torchfwi` | tensors on a CUDA device | Gradients for PyTorch models on the GPU | The model and results still cross the host memory |
 
