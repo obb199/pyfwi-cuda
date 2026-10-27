@@ -16,6 +16,11 @@ how much and in which numeric mode.
   troubleshooting (step 5.1).
 - The notebooks of `example/` open with a note on how they run with the fork, and the test suite runs them in
   a reduced size on both engines (`test/test_notebooks.py`; on POCL in the CPU CI).
+- [CUDA against OpenCL on the project's graphics card](docs/cuda-migration/cuda-vs-opencl.md) (step 6): how
+  much faster CUDA is on the RTX 3060 (like for like 1.17× to 1.48× in the `legacy` mode, 8.8× to 22× in the
+  `fixed` mode; default against default 10.6× to 21×), why, and what it costs, for readers who know neither
+  GPUs nor the code; `tools/cuda_vs_opencl.py` measures the session and draws the figures, and a test checks
+  every number of the document against the stored results.
 
 ### Numerical changes
 

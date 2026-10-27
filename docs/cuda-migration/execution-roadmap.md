@@ -39,7 +39,7 @@ This roadmap turns the [analysis and migration plan](analysis-and-plan.md) into 
 | 4.1–4.6 | Cost function on the GPU, boundary saving, FP16, multi-GPU, DLPack, geophysical validation | Phase 4 · **done** (the geophysical review is the owner's) |
 | 4.7 | Release 0.4.0 | **done** · **[G4](gates/G4.md) approved**, the geophysical review open |
 | 5.x | Final documentation, upstream, publication and conditional optimisations | Maintenance · 5.1 and 5.2 **done**; 5.3, 5.4 the owner's; 5.5 waits for Nsight Compute |
-| 6 | Final document: what CUDA gains over OpenCL on the project's GPU, didactic | **The last step** |
+| 6 | Final document: what CUDA gains over OpenCL on the project's GPU, didactic | **done** · [cuda-vs-opencl.md](cuda-vs-opencl.md) |
 
 Estimated duration in the analysis: about 20 weeks for one person (Phase 0 ≈ 3, Phase 1 ≈ 3, Phase 2 ≈ 4, Phase 3 ≈ 6, Phase 4 ≈ 4), or about 14 with two people, because Phase 4 can run in parallel with Phase 3 after G2.
 
@@ -1195,6 +1195,20 @@ project (the GeForce RTX 3060 of the development machine), with figures and plai
   is linked from the README.
 - **Criterion:** a reader who is not a developer understands, from the document alone, how much faster the
   CUDA backend is on this GPU, why, and what it costs to use it.
+- **Result:** [cuda-vs-opencl.md](cuda-vs-opencl.md), linked from the README. `tools/cuda_vs_opencl.py
+  --measure` ran one session on the RTX 3060 (Oct 27, 2026; `bench/cuda-vs-opencl/`): the benchmark of the
+  three scenarios on OpenCL and CUDA, each in the `legacy` and the `fixed` mode, and the share of the time
+  the GPU works (OpenCL profiling events; Nsight Systems for CUDA). Like for like, CUDA is 1.17× to 1.48×
+  faster in the `legacy` mode (the same kernel files on both) and 8.8× to 22× in the `fixed` mode (the
+  kernels written for CUDA); default against default, 10.6× to 21×. The document explains, without jargon,
+  where the gain comes from (fewer orders from the host: 4.1 / 6.3 OpenCL commands per step; a GPU busy 94 %
+  to 99 % of the time against 55 % to 89 %; the checkpoints kept on the GPU instead of 1.0 / 1.7 copies per
+  step; kernels that read less memory; the options of Phase 4, with their memory), what does not change
+  (results within the recorded tolerances, the API, when OpenCL is the right choice), what CUDA costs and how
+  to reproduce it. The figures are drawn by the script from the stored files; `test/test_cuda_vs_opencl.py`
+  checks that every number with a unit in the document is one that `facts()` computes from them (the two
+  exceptions, the 12 GB of the card and the 80 % budget of the checkpoints, are listed and the latter checked
+  in the code), that the session is complete and says what the document says, and that the README links it.
 
 ## Pending actions for the project owner
 

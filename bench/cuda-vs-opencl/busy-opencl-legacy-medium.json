@@ -1,0 +1,9 @@
+{
+ "backend": "opencl",
+ "busy_fraction": 0.8943863762608321,
+ "gpu_s": 12.633126976,
+ "method": "opencl_profile",
+ "mode": "legacy",
+ "scenario": "medium",
+ "wall_s": 14.1249098950002
+}

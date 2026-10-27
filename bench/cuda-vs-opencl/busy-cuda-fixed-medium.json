@@ -1,0 +1,19 @@
+{
+ "backend": "cuda",
+ "busy_fraction": 0.9858786531793724,
+ "gpu_s": 1.249345734,
+ "method": "timeline",
+ "mode": "fixed",
+ "ranges": {
+  "forward": {
+   "busy_ns": 354120282,
+   "span_ns": 362748944
+  },
+  "gradient": {
+   "busy_ns": 895225452,
+   "span_ns": 904491938
+  }
+ },
+ "scenario": "medium",
+ "wall_s": 1.267240882
+}

@@ -31,6 +31,9 @@ the user's code.
   0.1.10, why CUDA (through CuPy) helps, the target architecture and the risks.
 - [Execution and verification roadmap](docs/cuda-migration/execution-roadmap.md): every step from
   the current state to version 0.4, with the tests and checks of each step.
+- [CUDA against OpenCL on the project's graphics card](docs/cuda-migration/cuda-vs-opencl.md): how much
+  faster CUDA is on the GeForce RTX 3060 of the project, why, and what it costs, for readers who know
+  neither GPUs nor the code.
 - [User guide](docs/cuda-migration/user-guide.md): for users of PyFWI: which engine runs, the numeric
   modes and why their results differ, how close CUDA and OpenCL are, the optional features, and what to do
   when something goes wrong.
