@@ -1087,6 +1087,29 @@ Everything here is optional and off by default. Each feature has its own toleran
 
 - **Goes in:** reference cases of multi-scale FWI and of every `TimeLapse` strategy, on both backends.
 - **Tests:** FWI; review by the geophysicist with the figures and misfit curves in `docs/cuda-migration/reports/`.
+- **Result:** `tools/geophysical_validation.py` runs the model of Louboutin et al. (2018) of the original
+  examples (100 × 100 cells of 7 m): multi-scale FWI of vp with surface acquisition, and the eight time-lapse
+  strategies with crosswell acquisition and the monitor of `tlfwi_example_crosswell.ipynb` (vp 20 % higher in
+  a box); bands below 15, 25 and 45 Hz, 15 L-BFGS iterations each (the examples' 2 + 2 iterations leave the
+  model almost unchanged). Every case runs in three configurations on the RTX 3060: CUDA `fixed` (its
+  default), OpenCL `fixed` (the same mathematics: measures the backend) and OpenCL `legacy` (its default:
+  with `fixed`, measures the corrections of step 2.4, the question of G3). The starting models carry the true
+  vs and density (the examples set vs to 0 and the density to 1, which vp alone cannot explain). Results in
+  `bench/geophysical-0.4.0.dev0/` (the misfit of every evaluation, every estimate), figures and misfit curves
+  in the [report](reports/geophysical-validation-0.4.0.dev0.md), written for the reviewer. The misfit
+  decreased in all 198 stages. CUDA against OpenCL in the `fixed` mode: at most 1.7 % of what the inversion
+  recovers (FWI after 45 iterations: the rounding of the two backends, about 1e-6 of a gradient, changes the
+  line searches and the paths part; 59 evaluations against 61), the metrics within 0.008 (model error ratio
+  0.648 against 0.643, time-lapse correlations equal to two decimals). `legacy` against `fixed`: up to 15 %
+  of the change (`cu`, `dm21`), the metrics within 0.021; every configuration recovers about half of the
+  inclusion contrast and of the time-lapse change (correlations 0.70 to 0.75). Run time: CUDA 8 to 30 s per
+  case, OpenCL 62 to 291 s. The tests check the models against the examples, the metrics, the recording of
+  the misfit, the figures and the report (synthetic results), and a reduced version on the GPU (slow, 4.5
+  min): every stage converges in every configuration, and CUDA gives the estimates of OpenCL within 1e-2
+  (measured 2.4e-4). Two notes for the reviewer in the report: `dd` inverts the composite data from the
+  starting model, not from the baseline result as in Asnaashari et al. (2011), and `wa` returns its two
+  estimates without the weights of the average. **The review itself is the owner's action** (pending: the
+  report ends with a line for the verdict).
 
 ### 4.7 Release 0.4.0
 

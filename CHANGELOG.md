@@ -38,6 +38,12 @@ how much and in which numeric mode.
   device of the model, exchanged with CuPy through DLPack (`envs/torch`: `tools/setup_envs.sh torch`, PyTorch
   for CUDA 13). The example `torch_gradient.py` takes `--device cuda`.
 
+- `tools/geophysical_validation.py` (step 4.6): complete multi-scale FWI and the eight time-lapse strategies
+  on the model of the original examples, with CUDA (`fixed`) and OpenCL (`fixed` and `legacy`) on the same
+  GPU; figures, misfit curves and a report for the review of a geophysicist
+  (`docs/cuda-migration/reports/geophysical-validation-0.4.0.dev0.md`). CUDA and OpenCL in the same mode
+  give the same estimates within 1.7 % of what the inversion recovers (the metrics within 0.008).
+
 ### Changed
 
 - The cost function no longer deep-copies its inputs three times (same values).
